@@ -8,7 +8,8 @@ const OEM_SHORT = { 'poly-lens': 'PL', 'logitech-sync': 'LS', 'zoom-rooms': 'ZR'
 const OEM_NAME = { 'poly-lens': 'Poly Lens', 'logitech-sync': 'Logitech Sync', 'zoom-rooms': 'Zoom Rooms', 'webex-control-hub': 'Webex Control Hub', 'teams-rooms': 'Teams Rooms', 'google-meet-hardware': 'Google Meet hardware' };
 const FILTER_KEYS = [
   ['customer', 'Customer'], ['region', 'Region'], ['site', 'Site'], ['platform', 'Platform'],
-  ['oem', 'OEM'], ['deviceType', 'Device type'], ['health', 'Health'],
+  ['oem', 'Source'], ['deviceType', 'Device type'], ['health', 'Health'],
+  ['firmwareStatus', 'Firmware'], ['warrantyStatus', 'Warranty'],
 ];
 
 const ICONS = {
@@ -52,9 +53,12 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// Firmware and warranty filters belong to the asset views only.
+const ASSET_FILTERS = ['firmwareStatus', 'warrantyStatus'];
+const assetFiltersOn = () => ['devices', 'lifecycle'].includes(route().name);
 function qs(extra = {}) {
   const p = new URLSearchParams();
-  for (const [k] of FILTER_KEYS) if (S.filters[k]?.length) p.set(k, S.filters[k].join(','));
+  for (const [k] of FILTER_KEYS) if (S.filters[k]?.length && (!ASSET_FILTERS.includes(k) || assetFiltersOn())) p.set(k, S.filters[k].join(','));
   if (S.filters.q) p.set('q', S.filters.q);
   for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
   const s = p.toString();
@@ -82,7 +86,7 @@ async function renderLogin(error) {
         <h1>Every meeting room device, one view.</h1>
         <p>Health, alerts and sync status for Microsoft Teams, Zoom, Cisco Webex and Google Meet rooms, pulled from each manufacturer's cloud through plug-in connectors.</p>
       </div>
-      <div class="login-badges"><span>Poly Lens</span><span>Logitech Sync</span><span>Multi-customer</span><span>Live alert feed</span></div>
+      <div class="login-badges"><span>Poly Lens</span><span>Logitech Sync</span><span>Zoom Rooms</span><span>Webex</span><span>SLA reporting</span><span>Firmware &amp; lifecycle</span><span>Audit log</span></div>
     </div>
     <div class="login-form">
       <form id="loginForm">
@@ -118,37 +122,78 @@ function pulseMark() {
 }
 
 // ------------------------------------------------------------------ shell
+// Sidebar icons (16px line icons, original).
+const NAV_ICON = {
+  overview: '<path d="M2 9h4v5H2zM6.5 5h3v9h-3zM10 2h4v12h-4z"/>',
+  map: '<path d="M8 15s5-4.6 5-8.5A5 5 0 0 0 3 6.5C3 10.4 8 15 8 15z"/><circle cx="8" cy="6.5" r="1.8"/>',
+  estate: '<path d="M2 14V4l5-2v12M7 14V6l7 2v6M2 14h12"/>',
+  devices: '<rect x="2" y="3" width="12" height="8" rx="1.5"/><path d="M5.5 14h5M8 11v3"/>',
+  alerts: '<path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 2h-11zM6.5 14.5h3"/>',
+  sla: '<path d="M2 12a6 6 0 1 1 12 0"/><path d="M8 12l3-4"/>',
+  lifecycle: '<path d="M13.5 6.5A5.5 5.5 0 0 0 3 5M2.5 9.5A5.5 5.5 0 0 0 13 11"/><path d="M3 2v3h3M13 14v-3h-3"/>',
+  connections: '<circle cx="4" cy="8" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="12" cy="12" r="2"/><path d="M5.8 7l4.4-2.2M5.8 9l4.4 2.2"/>',
+  models: '<path d="M2.5 4.5L8 2l5.5 2.5v7L8 14l-5.5-2.5z"/><path d="M2.5 4.5L8 7l5.5-2.5M8 7v7"/>',
+  customers: '<circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 14a4.5 4.5 0 0 1 9 0M11 3.5a2.3 2.3 0 0 1 0 4.5M12.5 10a3.8 3.8 0 0 1 2 4"/>',
+  audit: '<path d="M4 1.5h6l3 3V14.5H4z"/><path d="M6.5 8h4M6.5 10.5h4M6.5 5.5h2"/>',
+};
+const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
+const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log' };
+
+function navGroups() {
+  return [
+    ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts']],
+    ['Service', ['sla', 'lifecycle']],
+    ['Configure', ['connections', ...(isAdmin() ? ['models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['audit'] : [])]],
+  ];
+}
+
 function renderShell() {
   const initials = (S.me.name || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('');
+  const label = { estate: 'Sites &amp; rooms', sla: 'SLA', models: 'Models' };
   $('#app').innerHTML = `
-  <header class="topbar"><div class="topbar-inner">
-    <a class="brand" href="#/overview"><div class="brand-mark">${pulseMark()}</div><div>Estate Monitor<small>${esc(S.me.customerName || S.me.actingCustomerName || (isSuper() ? 'Super admin' : 'Service provider view'))}</small></div></a>
-    <nav class="nav" id="nav">
-      <a href="#/overview" data-r="overview">Overview</a>
-      <a href="#/map" data-r="map">Map</a>
-      <a href="#/estate" data-r="estate">Sites &amp; rooms</a>
-      <a href="#/devices" data-r="devices">Devices</a>
-      <a href="#/lifecycle" data-r="lifecycle">Lifecycle</a>
-      <a href="#/sla" data-r="sla">SLA</a>
-      <a href="#/alerts" data-r="alerts">Alerts</a>
-      <a href="#/connections" data-r="connections">Connections</a>
-      ${isAdmin() ? '<a href="#/models" data-r="models">Models</a><a href="#/audit" data-r="audit">Audit log</a>' : ''}
-      ${isSuper() ? '<a href="#/customers" data-r="customers">Customers</a>' : ''}
-    </nav>
-    <div class="top-right">
-      ${isAdmin() ? `<select class="enter-select" id="enterSel" aria-label="Enter a customer"><option value="">${acting() ? 'Exit to all customers' : 'Enter customer…'}</option>${S.customers.map((c) => `<option value="${esc(c.id)}" ${c.id === acting() ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}
-      <span class="live" id="live"><i></i>Live</span>
-      <span class="user-chip"><span class="avatar">${esc(initials)}</span><span>${esc(S.me.name)}</span></span>
-      <button class="btn-ghost-light" id="logout">Sign out</button>
+  <div class="shell">
+    <aside class="side" id="side">
+      <a class="brand" href="#/overview"><div class="brand-mark">${pulseMark()}</div><div>Estate Monitor<small>${esc(S.me.customerName || S.me.actingCustomerName || (isSuper() ? 'Super admin' : isAdmin() ? 'Service provider' : 'Customer view'))}</small></div></a>
+      <nav class="nav" id="nav">${navGroups().map(([g, items]) => `<div class="nav-group">${esc(g)}</div>${items.map((k) => `<a href="#/${k}" data-r="${k}">${navIcon(k)}<span>${label[k] || ROUTE_TITLE[k]}</span>${k === 'alerts' ? '<b class="nav-badge" id="alertBadge" hidden></b>' : ''}</a>`).join('')}`).join('')}</nav>
+      <div class="side-foot">
+        <span class="avatar">${esc(initials)}</span>
+        <span class="who">${esc(S.me.name)}<small>${esc({ super_admin: 'Super admin', provider_admin: 'Provider admin', customer_viewer: 'Customer' }[S.me.role] || S.me.role)}</small></span>
+        <button class="icon-btn" id="logout" title="Sign out" aria-label="Sign out"><svg viewBox="0 0 16 16"><path d="M6 2.5H3v11h3M10 5l3 3-3 3M13 8H6"/></svg></button>
+      </div>
+    </aside>
+    <div class="scrim-side" id="sideScrim"></div>
+    <div class="content">
+      <header class="topbar"><div class="topbar-inner">
+        <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu"><svg viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h12"/></svg></button>
+        <div class="top-title" id="topTitle"></div>
+        <div class="top-right">
+          ${isAdmin() ? `<select class="enter-select" id="enterSel" aria-label="Enter a customer"><option value="">${acting() ? 'Exit to all customers' : 'All customers'}</option>${S.customers.map((c) => `<option value="${esc(c.id)}" ${c.id === acting() ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}
+          <span class="live" id="live"><i></i>Live</span>
+        </div>
+      </div></header>
+      ${acting() ? `<div class="acting-bar"><span>You're viewing <b>${esc(S.me.actingCustomerName)}</b> exactly as that customer sees their estate.</span><button class="btn btn-sm btn-outline" id="exitCust">Exit customer</button></div>` : ''}
+      <section class="hero"><div class="hero-inner" id="hero"></div></section>
+      <main><div id="filters"></div><div id="view"></div></main>
     </div>
-  </div></header>
-  ${acting() ? `<div class="acting-bar"><span>You're viewing <b>${esc(S.me.actingCustomerName)}</b> exactly as that customer sees their estate.</span><button class="btn btn-sm btn-outline" id="exitCust">Exit customer</button></div>` : ''}
-  <section class="hero"><div class="hero-inner" id="hero"></div></section>
-  <main><div id="filters"></div><div id="view"></div></main>
+  </div>
   <div class="toast-wrap" id="toasts"></div>`;
   $('#enterSel')?.addEventListener('change', (e) => enterCustomer(e.target.value || null));
   $('#exitCust')?.addEventListener('click', () => enterCustomer(null));
+  const side = (open) => document.body.classList.toggle('side-open', open);
+  $('#menuBtn').addEventListener('click', () => side(!document.body.classList.contains('side-open')));
+  $('#sideScrim').addEventListener('click', () => side(false));
+  $('#nav').addEventListener('click', (e) => { if (e.target.closest('a')) side(false); });
   $('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); S.me = null; renderLogin(); });
+  updateAlertBadge();
+}
+
+/** Count of devices currently critical or offline, shown on the Alerts nav item. */
+function updateAlertBadge(summary) {
+  const el = $('#alertBadge');
+  if (!el) return;
+  const apply = (t) => { const n = (t?.critical || 0) + (t?.offline || 0); el.hidden = !n; el.textContent = n > 99 ? '99+' : n; el.title = `${n} devices critical or offline`; };
+  if (summary) apply(summary.totals);
+  else api('/api/summary').then((x) => apply(x.totals)).catch(() => {});
 }
 
 function route() {
@@ -160,6 +205,8 @@ async function navigate() {
   if (!S.me) return;
   const r = route();
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.r === r.name));
+  const group = navGroups().find(([, items]) => items.includes(r.name))?.[0];
+  if ($('#topTitle')) $('#topTitle').textContent = [group, isAdmin() ? null : S.me.customerName].filter(Boolean).join(' · ');
   const withFilters = ['overview', 'estate', 'devices', 'map', 'lifecycle', 'sla'].includes(r.name);
   if (r.name !== 'map') destroyMap();
   $('#filters').innerHTML = '';
@@ -190,9 +237,10 @@ function hero(title, sub, crumbs) {
 function renderFilters() {
   const o = S.options;
   if (!o) return;
-  const keys = FILTER_KEYS.filter(([k]) => !(k === 'customer' && o.customer.length < 2));
-  const opt = (k) => (o[k] || []).map((x) => (typeof x === 'string' ? { value: x, label: k === 'health' ? HLABEL[x] : x } : x));
-  const any = FILTER_KEYS.some(([k]) => S.filters[k].length) || S.filters.q;
+  const keys = FILTER_KEYS.filter(([k]) => !(k === 'customer' && o.customer.length < 2) && (!ASSET_FILTERS.includes(k) || assetFiltersOn()));
+  const LABELS = { health: HLABEL, firmwareStatus: FW_LABEL, warrantyStatus: W_LABEL };
+  const opt = (k) => (o[k] || []).map((x) => (typeof x === 'string' ? { value: x, label: LABELS[k]?.[x] ?? x } : x));
+  const any = keys.some(([k]) => S.filters[k].length) || S.filters.q;
   $('#filters').innerHTML = `<div class="filters">
     ${keys.map(([k, label]) => {
     const sel = S.filters[k];
@@ -256,8 +304,9 @@ function refreshView() {
 
 // ------------------------------------------------------------------ overview
 async function viewOverview() {
-  const [summary] = await Promise.all([api(`/api/summary${qs()}`), loadConnections()]);
+  const [summary, , sla, life] = await Promise.all([api(`/api/summary${qs()}`), loadConnections(), api(`/api/sla${qs({ window: '7d' })}`).catch(() => null), api(`/api/lifecycle${qs()}`).catch(() => null)]);
   S.summary = summary;
+  updateAlertBadge(summary);
   const t = summary.totals;
   const pct = (n) => (t.total ? `${Math.round((n / t.total) * 100)}%` : '0%');
   const availability = t.total ? (((t.total - t.offline) / t.total) * 100).toFixed(1) : '0.0';
@@ -271,6 +320,7 @@ async function viewOverview() {
         <div class="meta"><span>${availability}% online</span><span>${summary.mergedDuplicates} merged duplicates</span></div></div>
       ${HEALTH.map((h) => `<div class="kpi" data-h="${h}"><div class="lbl">${ICONS[h]}${HLABEL[h]}</div><div class="val">${t[h]}</div><div class="pct">${pct(t[h])} of estate</div><div class="bar f-${h}" style="width:${t.total ? (t[h] / t.total) * 100 : 0}%"></div></div>`).join('')}
     </div>
+    ${serviceStrip(sla, life)}
     <div class="grid cols-main">
       <div class="grid">
         <div class="grid cols-2">
@@ -298,6 +348,28 @@ async function viewOverview() {
   bindBreakdowns();
   renderFeed();
   renderSyncList();
+}
+
+/** Headline service figures on the overview, each linking to its tab. */
+function serviceStrip(sla, life) {
+  if (!sla && !life) return '';
+  const tiles = [];
+  if (sla) {
+    const o = sla.overall;
+    const targets = [...new Set(sla.byCustomer.map((c) => c.target))];
+    const target = targets.length === 1 ? targets[0] : null;
+    const ok = target !== null ? o.availability >= target : o.customersMeeting === o.customers;
+    tiles.push(['#/sla', 'Availability, 7 days', pctText(o.availability), target !== null ? `Target ${target}%` : `${o.customersMeeting} of ${o.customers} customers on target`, o.availability === null ? '' : ok ? 'good' : 'crit']);
+    tiles.push(['#/sla', 'Incidents, 7 days', o.incidents, `Mean time to restore ${mins(o.mttrMin)}`, '']);
+  }
+  if (life) {
+    const f = life.firmware; const n = (k) => f[k] || 0;
+    const rated = n('compliant') + n('ahead') + n('behind');
+    tiles.push(['#/lifecycle', 'Firmware compliance', rated ? `${(((n('compliant') + n('ahead')) / rated) * 100).toFixed(1)}%` : '—', `${n('behind')} below approved baseline`, n('behind') ? 'warn' : 'good']);
+    const w = life.warranty;
+    tiles.push(['#/lifecycle', 'Warranty', `${w.expired || 0} expired`, `${w.expiring || 0} expire within 90 days`, w.expired ? 'crit' : w.expiring ? 'warn' : 'good']);
+  }
+  return `<div class="stats service-strip">${tiles.map(([href, l, v, sub, tone]) => `<a class="stat ${tone}" href="${href}"><div class="lbl">${l}</div><div class="val">${v}</div><div class="pct">${sub}</div></a>`).join('')}</div>`;
 }
 
 const ROW_ACTIONS = new Map();
@@ -466,7 +538,8 @@ const COLS = {
   room: ['Room', (d) => esc(d.room), (d) => d.room],
   platform: ['Platform', (d) => esc(d.platform), (d) => d.platform],
   serial: ['Serial', (d) => `<span class="mono">${esc(d.serial || '—')}</span>`, (d) => d.serial || ''],
-  firmware: ['Firmware', (d) => `<span class="mono">${esc(d.firmware || '—')}</span>`, (d) => d.firmware || ''],
+  firmware: ['Firmware', (d) => `<span class="mono">${esc(d.firmware || '—')}</span>${d.firmwareStatus === 'behind' ? ` <span class="chip crit" title="Approved baseline ${esc(d.baseline)}">below ${esc(d.baseline)}</span>` : ''}`, (d) => d.firmware || ''],
+  warranty: ['Warranty', (d) => (d.warrantyStatus === 'unknown' ? '<span class="muted">—</span>' : `${chip(W_LABEL[d.warrantyStatus], W_TONE[d.warrantyStatus])}`), (d) => d.warrantyExpires || ''],
   lastSeen: ['Last seen', (d) => ago(d.lastSeen), (d) => d.lastSeen || ''],
   sources: ['Sources', (d) => `<span class="src-tags">${d.oems.map((o) => `<span class="pill" title="${esc(OEM_NAME[o] || o)}">${OEM_SHORT[o] || o}</span>`).join('')}</span>`, (d) => d.oems.length],
 };
@@ -505,7 +578,7 @@ async function viewDevices() {
   const devices = await api(`/api/devices${qs()}`);
   S.devices = devices;
   hero('Devices', `${devices.length} devices match the current filters. Duplicates reported by more than one source appear once.`);
-  const cols = ['health', 'device', 'deviceType', ...(isAdmin() && !acting() ? ['customer'] : []), 'site', 'room', 'platform', 'serial', 'firmware', 'lastSeen', 'sources'];
+  const cols = ['health', 'device', 'deviceType', ...(isAdmin() && !acting() ? ['customer'] : []), 'site', 'room', 'platform', 'serial', 'firmware', 'warranty', 'lastSeen', 'sources'];
   const known = new Set(devices.map((d) => d.id));
   for (const id of [...S.selected]) if (!known.has(id)) S.selected.delete(id);
   $('#view').innerHTML = `${isAdmin() ? '<div class="bulk-hint muted">Tick devices to group them into a room or update them in bulk.</div>' : ''}<div class="card">${deviceTable(devices, cols, true)}</div>`;
@@ -773,6 +846,7 @@ function openEvents() {
     clearTimeout(invTimer);
     invTimer = setTimeout(async () => {
       S.options = await api('/api/filters').catch(() => S.options);
+      updateAlertBadge();
       const r = route().name;
       if (['overview', 'estate', 'devices', 'map'].includes(r) && !$('#drawerWrap') && !S.openFilter && !S.selected.size && !S.schematicDirty) refreshView();
       if (r === 'connections' && !$('#drawerWrap')) viewConnections();

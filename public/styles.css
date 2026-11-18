@@ -372,6 +372,47 @@ tr.warn-row td { background: #fffaf0; }
 .drawer .help.block { font-size: 12px; color: var(--ink-3); }
 .table-wrap.flat td { white-space: normal; }
 .table-wrap.flat td .pill { margin: 1px 0; }
-.nav { gap: 2px; }
-.nav a { padding: 8px 10px; font-size: 13.5px; }
-@media (max-width: 1500px) { .user-chip span:last-child { display: none; } .top-right { gap: 10px; } }
+
+/* ---------- app shell: sidebar navigation ---------- */
+.shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
+.side {
+  position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 6px; padding: 18px 14px 14px; color: #fff; z-index: 40;
+  background: radial-gradient(420px 260px at 0% 0%, rgba(26, 92, 255, .35), transparent 70%),
+    radial-gradient(380px 320px at 100% 100%, rgba(107, 75, 255, .35), transparent 70%), var(--navy-900);
+  border-right: 1px solid rgba(255, 255, 255, .06);
+}
+.side .brand { padding: 0 6px 14px; border-bottom: 1px solid rgba(255, 255, 255, .08); margin-bottom: 6px; }
+.side .brand small { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+.nav { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto; overflow-x: hidden; }
+.nav-group { font-size: 10.5px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: rgba(255, 255, 255, .42); padding: 14px 10px 6px; }
+.nav a { display: flex; align-items: center; gap: 10px; color: rgba(255, 255, 255, .74); padding: 8px 10px; border-radius: 10px; font-weight: 600; font-size: 13.5px; white-space: nowrap; box-shadow: none; }
+.nav a:hover { color: #fff; background: rgba(255, 255, 255, .07); text-decoration: none; }
+.nav a.active { color: #fff; background: rgba(255, 255, 255, .12); box-shadow: inset 3px 0 0 #3b9bff; }
+.nav-ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: .9; }
+.nav-badge { margin-left: auto; background: var(--crit); color: #fff; font-size: 11px; font-weight: 800; border-radius: 999px; padding: 1px 7px; min-width: 20px; text-align: center; }
+.side-foot { display: flex; align-items: center; gap: 10px; padding: 12px 6px 0; border-top: 1px solid rgba(255, 255, 255, .08); }
+.side-foot .who { flex: 1; min-width: 0; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-foot .who small { display: block; font-size: 11px; font-weight: 600; opacity: .6; }
+.icon-btn { background: transparent; border: 1px solid rgba(255, 255, 255, .2); color: #fff; border-radius: 10px; width: 34px; height: 34px; display: grid; place-items: center; cursor: pointer; flex: none; }
+.icon-btn:hover { background: rgba(255, 255, 255, .1); }
+.icon-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.content { min-width: 0; }
+.topbar { background: var(--navy-900); }
+.topbar-inner { max-width: 1440px; height: 56px; gap: 14px; }
+.top-title { flex: 1; font-weight: 700; font-size: 13px; color: rgba(255, 255, 255, .6); letter-spacing: .04em; text-transform: uppercase; }
+.menu-btn { display: none; }
+.hero { padding: 6px 0 64px; }
+.filters { top: 64px; }
+.scrim-side { display: none; }
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .side { position: fixed; left: 0; top: 0; width: 260px; transform: translateX(-100%); transition: transform .2s ease; }
+  body.side-open .side { transform: none; box-shadow: 0 0 60px rgba(0, 0, 0, .4); }
+  body.side-open .scrim-side { display: block; position: fixed; inset: 0; background: rgba(7, 18, 51, .45); z-index: 35; }
+  .menu-btn { display: grid; }
+  .top-title { color: #fff; }
+  .live { display: none; }
+}
+a.stat { color: inherit; text-decoration: none; transition: transform .12s, box-shadow .12s; }
+a.stat:hover { transform: translateY(-1px); box-shadow: 0 1px 2px rgba(11, 29, 77, .08), 0 12px 28px rgba(11, 29, 77, .1); text-decoration: none; }
+.service-strip .val { font-size: 24px; }

@@ -146,6 +146,7 @@ export class Inventory {
     const filters = {
       customerId: list(f.customer), region: list(f.region), site: list(f.site), platform: list(f.platform),
       deviceType: list(f.deviceType), health: list(f.health),
+      firmwareStatus: list(f.firmwareStatus), warrantyStatus: list(f.warrantyStatus),
     };
     const oems = list(f.oem);
     const q = f.q ? String(f.q).toLowerCase() : null;
@@ -254,6 +255,8 @@ export class Inventory {
       oem: [...new Set(devs.flatMap((d) => d.oems))].sort().map((o) => ({ value: o, label: getConnectorClass(o).displayName })),
       deviceType: uniq((d) => d.deviceType),
       health: HEALTH_ORDER,
+      firmwareStatus: ['behind', 'compliant', 'ahead', 'no-baseline', 'uncatalogued', 'unknown'].filter((v) => devs.some((d) => d.firmwareStatus === v)),
+      warrantyStatus: ['expired', 'expiring', 'active', 'unknown'].filter((v) => devs.some((d) => d.warrantyStatus === v)),
     };
   }
 }

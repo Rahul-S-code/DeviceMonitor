@@ -109,7 +109,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const scope = (req) => allowedCustomers(req.user, store, req.session);
   const inScope = (req, customerId) => scope(req).includes(customerId);
   // Empty onboarded sites/rooms only make sense when no device-level filter is active.
-  const configuredScope = (req) => (['platform', 'oem', 'deviceType', 'health', 'q', 'room'].some((k) => req.query[k]) ? null : { allowed: scope(req), f: req.query });
+  const configuredScope = (req) => (['platform', 'oem', 'deviceType', 'health', 'firmwareStatus', 'warrantyStatus', 'q', 'room'].some((k) => req.query[k]) ? null : { allowed: scope(req), f: req.query });
 
   // "Enter" a customer: admins see the app exactly as that customer's estate.
   app.post('/api/session/enter', requireAdmin, requireJson, (req, res) => {
