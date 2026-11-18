@@ -35,6 +35,9 @@ export class TeamsRoomsConnector extends BaseConnector {
   static liveSupported = false;
   static liveNote = 'Microsoft retired the Graph teamworkDevice API (MC1183294) and has not published a replacement, so there is no supported API to read Teams Rooms health. This connection runs on mock data. Teams Rooms devices are still monitored live through Poly Lens and Logitech Sync.';
   static docsUrl = 'https://learn.microsoft.com/en-us/answers/questions/5569164/what-is-replacing-the-teamworkdevice-endpoint-on-g';
+  static apis = [
+    { id: 'graph-teamwork-devices', name: 'Microsoft Graph teamworkDevice', method: 'GET', url: 'https://graph.microsoft.com/beta/teamwork/devices', availability: 'retired', purpose: 'Teams Rooms device health (retired by Microsoft, MC1183294)', auth: 'Entra app (TeamworkDevice.Read.All)' },
+  ];
 
   async testConnection() {
     if (this.isLive) return { ok: false, message: this.constructor.liveNote };

@@ -12,6 +12,7 @@ import { hashPassword } from './auth.js';
 const EMPTY = {
   customers: [], users: [], connections: [], siteDirectory: {}, roomDirectory: {},
   schematics: {}, deviceOverrides: {}, alerts: [], models: [], audit: [], manualDevices: [],
+  designs: [], apiChecks: {},
 };
 const MAX_AUDIT = 5000;
 export const DEFAULT_SLA_TARGET = 99.5;
@@ -24,6 +25,7 @@ export const roomKey = (customerId, site, room) => `${customerId}|${site}|${room
 export class Store {
   constructor(dataDir) {
     this.file = path.join(dataDir, 'store.json');
+    this.designDir = path.join(dataDir, 'designs');
     fs.mkdirSync(dataDir, { recursive: true });
     this.data = fs.existsSync(this.file) ? { ...structuredClone(EMPTY), ...JSON.parse(fs.readFileSync(this.file, 'utf8')) } : structuredClone(EMPTY);
     this.timer = null;
@@ -67,6 +69,32 @@ export class Store {
     const k = roomKey(customerId, site, room);
     if (schematic) this.data.schematics[k] = schematic; else delete this.data.schematics[k];
     this.save();
+  }
+
+  // --- room design documents (uploaded files) ---------------------------
+  designsFor(customerId, site, room) {
+    return this.data.designs.filter((d) => d.customerId === customerId && d.site === site && d.room === room);
+  }
+
+  designPath(d) { return path.join(this.designDir, `${d.id}.${d.ext}`); }
+
+  addDesign(meta, buf) {
+    const id = crypto.randomUUID();
+    const d = { id, ...meta, size: buf.length, uploadedAt: new Date().toISOString() };
+    fs.mkdirSync(this.designDir, { recursive: true });
+    fs.writeFileSync(this.designPath(d), buf, { mode: 0o600 });
+    this.data.designs.push(d);
+    this.save();
+    return d;
+  }
+
+  removeDesign(id) {
+    const i = this.data.designs.findIndex((d) => d.id === id);
+    if (i < 0) throw new Error('File not found');
+    const [d] = this.data.designs.splice(i, 1);
+    try { fs.unlinkSync(this.designPath(d)); } catch { /* already gone */ }
+    this.save();
+    return d;
   }
 
   override(deviceId) { return this.data.deviceOverrides[deviceId] ?? null; }
@@ -346,6 +374,7 @@ export class Store {
     for (const map of [this.data.roomDirectory, this.data.schematics]) for (const k of Object.keys(map)) if (k.startsWith(`${id}|`)) delete map[k];
     this.data.alerts = this.data.alerts.filter((a) => a.customerId !== id);
     this.data.manualDevices = this.manualDevices.filter((d) => d.customerId !== id);
+    for (const d of this.data.designs.filter((x) => x.customerId === id)) this.removeDesign(d.id);
     unregisterMockCustomer(id);
     this.save();
   }

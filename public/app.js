@@ -138,15 +138,16 @@ const NAV_ICON = {
   models: '<path d="M2.5 4.5L8 2l5.5 2.5v7L8 14l-5.5-2.5z"/><path d="M2.5 4.5L8 7l5.5-2.5M8 7v7"/>',
   customers: '<circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 14a4.5 4.5 0 0 1 9 0M11 3.5a2.3 2.3 0 0 1 0 4.5M12.5 10a3.8 3.8 0 0 1 2 4"/>',
   audit: '<path d="M4 1.5h6l3 3V14.5H4z"/><path d="M6.5 8h4M6.5 10.5h4M6.5 5.5h2"/>',
+  apis: '<path d="M1.5 8h3l2-5 3 10 2-5h3"/>',
 };
 const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
-const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log' };
+const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker' };
 
 function navGroups() {
   return [
     ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts']],
     ['Service', ['sla', 'lifecycle']],
-    ['Configure', ['connections', ...(isAdmin() ? ['models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['audit'] : [])]],
+    ['Configure', ['connections', ...(isAdmin() ? ['models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['apis', 'audit'] : [])]],
   ];
 }
 
@@ -226,6 +227,7 @@ async function navigate() {
     else if (r.name === 'sla') await viewSla();
     else if (r.name === 'models' && isAdmin()) await viewModels();
     else if (r.name === 'audit' && isAdmin()) await viewAudit();
+    else if (r.name === 'apis' && isAdmin()) await viewApis();
     else location.hash = '#/overview';
   } catch (e) {
     if (e.message !== 'Signed out') $('#view').innerHTML = `<div class="card"><div class="notice err">${esc(e.message)}</div></div>`;
@@ -510,6 +512,11 @@ async function viewEstate(args) {
   schemCard.style.marginTop = '18px';
   $('#view').appendChild(schemCard);
   mountSchematic(schemCard, { customerId, site, room, devices: r.devices });
+  const docCard = document.createElement('div');
+  docCard.className = 'card';
+  docCard.style.marginTop = '18px';
+  $('#view').appendChild(docCard);
+  mountDesigns(docCard, { customerId, site, room });
   $('#savePlat')?.addEventListener('click', async () => {
     await api('/api/rooms/platform', { method: 'PUT', body: { customerId, site, room, platform: $('#roomPlat').value } });
     toast(ICONS.resolved, 'Room platform saved');
@@ -1112,185 +1119,580 @@ async function viewMap(args, isRefresh) {
   setTimeout(() => map.invalidateSize(), 50);
 }
 
-// ------------------------------------------------------------------ room schematic
-const NODE_KINDS = [['core', 'Codec / video bar'], ['controller', 'Touch controller'], ['camera', 'Camera'], ['audio', 'Audio / mic'], ['display', 'Display'], ['source', 'PC / laptop / source'], ['network', 'Network'], ['peripheral', 'Other']];
-const CABLES = ['HDMI', 'USB', 'USB-C', 'Ethernet', 'PoE', 'DisplayPort', 'Audio', 'Power', 'Wireless'];
+// ------------------------------------------------------------------ room schematic designer
+// Building blocks with typed ports (HDMI in/out, USB, LAN, power...) are
+// placed on a canvas and wired port to port. The same drawing is the
+// troubleshooting view: live health on linked devices, a cable schedule,
+// signal-path tracing and flagged cables.
+const KIND_LABEL = { core: 'Codec / video bar', controller: 'Controller', camera: 'Camera', audio: 'Audio', display: 'Display', source: 'Source / PC', network: 'Network', av: 'AV signal', power: 'Power', peripheral: 'Other' };
+const KIND_COLOR = { core: '#1a5cff', controller: '#6b4bff', camera: '#12b5e5', audio: '#b4318f', display: '#0b1d4d', source: '#e07a1f', network: '#0d8fb3', av: '#3b77ff', power: '#4a5373', peripheral: '#9aa1b8' };
 const CABLE_STYLE = {
-  HDMI: ['#1a5cff', ''], USB: ['#6b4bff', ''], 'USB-C': ['#9b7bff', ''], Ethernet: ['#0d8fb3', ''], PoE: ['#0b1d4d', '6 4'],
-  DisplayPort: ['#3b77ff', '6 4'], Audio: ['#b4318f', ''], Power: ['#4a5373', '2 4'], Wireless: ['#7d849e', '1 5'],
+  HDMI: ['#1a5cff', ''], DisplayPort: ['#3b77ff', '6 4'], HDBaseT: ['#2c3e9e', '9 3'], USB: ['#6b4bff', ''], 'USB-C': ['#9b7bff', ''],
+  Ethernet: ['#0d8fb3', ''], PoE: ['#0b6e8a', '6 4'], Audio: ['#b4318f', ''], Speaker: ['#d0569f', '4 3'], Fibre: ['#e07a1f', ''], Power: ['#4a5373', '2 4'], Wireless: ['#7d849e', '1 5'],
 };
-const COLUMN = { source: 0, network: 0, core: 1, controller: 2, camera: 2, audio: 2, peripheral: 2, display: 3 };
+const COND_LABEL = { ok: 'Tested OK', suspect: 'Suspect', faulty: 'Faulty' };
+const DIR_LABEL = { in: 'In', out: 'Out', io: 'In/out' };
+const DEVTYPE_BLOCK = { 'Video bar': 'video-bar', 'Video system': 'codec', 'Touch controller': 'controller', Camera: 'camera', 'Whiteboard camera': 'content-camera', 'Conference phone': 'speakerphone', 'Desk phone': 'speakerphone', 'Room PC': 'room-pc', 'Room sensor': 'sensor', Display: 'display' };
+const PORT_FAMILY = { PoE: 'Ethernet', 'USB-C': 'USB', Speaker: 'Audio' };
+const portFits = (a, b) => (PORT_FAMILY[a] || a) === (PORT_FAMILY[b] || b);
+const BW = 216; const HEAD = 48; const ROW = 20;
+const portKey = (id, name) => `${id}|${String(name || '').toLowerCase()}`;
 
-function layoutSchematic(sch) {
-  const W = 190; const H = 58; const GX = 90; const GY = 30;
-  const cols = [[], [], [], []];
-  for (const n of sch.nodes) cols[COLUMN[n.kind] ?? 2].push(n);
-  // Network gear sits below sources in the first column.
-  cols[0].sort((a, b) => (a.kind === 'network') - (b.kind === 'network'));
-  const pos = {};
-  const maxRows = Math.max(1, ...cols.map((c) => c.length));
-  cols.forEach((col, ci) => {
-    const offset = ((maxRows - col.length) * (H + GY)) / 2;
-    col.forEach((n, ri) => {
-      pos[n.id] = Number.isFinite(n.x) ? { x: n.x, y: n.y } : { x: 20 + ci * (W + GX), y: 20 + offset + ri * (H + GY) };
-    });
-  });
-  const width = Math.max(...Object.values(pos).map((p) => p.x + W), 300) + 20;
-  const height = Math.max(...Object.values(pos).map((p) => p.y + H), 120) + 20;
-  return { pos, W, H, width, height };
+function portSide(n, p) {
+  if (p.dir === 'in') return 'L';
+  if (p.dir === 'out') return 'R';
+  return ['network', 'power', 'source'].includes(n.kind) ? 'R' : 'L';
+}
+function nodeGeom(n) {
+  const left = []; const right = [];
+  for (const p of n.ports || []) (portSide(n, p) === 'L' ? left : right).push(p);
+  return { w: BW, h: HEAD + Math.max(left.length, right.length, 1) * ROW + 8, left, right };
+}
+function portAnchor(n, name) {
+  const g = nodeGeom(n);
+  const key = String(name || '').toLowerCase();
+  let i = g.left.findIndex((p) => p.name.toLowerCase() === key);
+  if (i >= 0) return { x: n.x, y: n.y + HEAD + i * ROW + ROW / 2, dir: -1 };
+  i = g.right.findIndex((p) => p.name.toLowerCase() === key);
+  if (i >= 0) return { x: n.x + g.w, y: n.y + HEAD + i * ROW + ROW / 2, dir: 1 };
+  return { x: n.x + g.w, y: n.y + HEAD / 2, dir: 1 };
 }
 
+const LAYOUT_COL = { source: 0, network: 0, power: 0, camera: 1, audio: 1, controller: 1, av: 1, peripheral: 1, core: 2, display: 3 };
+/** Give positions to nodes that have none (or to all, when `all`). */
+function autoLayout(sch, all = false) {
+  const colY = [24, 24, 24, 24];
+  for (const n of sch.nodes) if (!all && Number.isFinite(n.x)) { const c = LAYOUT_COL[n.kind] ?? 1; colY[c] = Math.max(colY[c], n.y + nodeGeom(n).h + 28); }
+  for (const n of sch.nodes) {
+    if (!all && Number.isFinite(n.x)) continue;
+    const c = LAYOUT_COL[n.kind] ?? 1;
+    n.x = 24 + c * 270; n.y = colY[c];
+    colY[c] += nodeGeom(n).h + 28;
+  }
+  return sch;
+}
+
+function linkGeom(sch, l) {
+  const a = sch.nodes.find((n) => n.id === l.from); const b = sch.nodes.find((n) => n.id === l.to);
+  if (!a || !b) return null;
+  const p = portAnchor(a, l.fromPort); const q = portAnchor(b, l.toPort);
+  const c = Math.max(46, Math.abs(q.x - p.x) / 2);
+  const c1 = { x: p.x + p.dir * c, y: p.y }; const c2 = { x: q.x + q.dir * c, y: q.y };
+  return { d: `M${p.x},${p.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${q.x},${q.y}`, mx: (p.x + 3 * c1.x + 3 * c2.x + q.x) / 8, my: (p.y + 3 * c1.y + 3 * c2.y + q.y) / 8 };
+}
+const cableText = (l) => [l.label, l.cable, l.length ? `${l.length} m` : null].filter(Boolean).join(' · ');
+const nodeName = (sch, id) => sch.nodes.find((n) => n.id === id)?.label || id;
+const endText = (sch, id, port) => `${nodeName(sch, id)}${port ? ` · ${port}` : ''}`;
+
+/** Upstream and downstream items of a node, following cable direction. */
+function tracePath(sch, id) {
+  const walk = (start, fwd) => {
+    const seen = new Set(); const links = new Set(); const q = [start];
+    while (q.length) {
+      const cur = q.shift();
+      sch.links.forEach((l, i) => {
+        const [a, b] = fwd ? [l.from, l.to] : [l.to, l.from];
+        if (a !== cur) return;
+        links.add(i);
+        if (!seen.has(b) && b !== start) { seen.add(b); q.push(b); }
+      });
+    }
+    return { nodes: seen, links };
+  };
+  const up = walk(id, false); const down = walk(id, true);
+  return { up: up.nodes, down: down.nodes, links: new Set([...up.links, ...down.links]) };
+}
+
+/** The schematic as SVG markup (no outer <svg>). */
+function schematicBody(sch, devices, o = {}) {
+  const dev = new Map(devices.map((d) => [d.id, d]));
+  const used = new Map();
+  sch.links.forEach((l, i) => { used.set(portKey(l.from, l.fromPort), i); used.set(portKey(l.to, l.toPort), i); });
+  const dim = o.trace ? (id) => id !== o.sel?.id && !o.trace.up.has(id) && !o.trace.down.has(id) : () => false;
+  const labels = [];
+  const links = sch.links.map((l, i) => {
+    const g = linkGeom(sch, l); if (!g) return '';
+    let [color, dash] = CABLE_STYLE[l.cable] || ['#7d849e', ''];
+    if (l.condition === 'faulty') { color = '#d03b3b'; dash = '5 3'; } else if (l.condition === 'suspect') color = '#c98a00';
+    const sel = o.sel?.type === 'link' && o.sel.i === i;
+    const faded = o.trace && !o.trace.links.has(i);
+    const txt = cableText(l); const tw = txt.length * 6.1 + 16;
+    const title = `<title>${esc(`${endText(sch, l.from, l.fromPort)} → ${endText(sch, l.to, l.toPort)}\n${txt}${l.condition ? ` · ${COND_LABEL[l.condition]}` : ''}${l.note ? `\n${l.note}` : ''}`)}</title>`;
+    // Cable tags sit above the blocks so they stay readable.
+    labels.push(`<g class="sl sl-tag${faded ? ' faded' : ''}" data-link="${i}">${title}<rect x="${g.mx - tw / 2}" y="${g.my - 9}" width="${tw}" height="18" rx="9" fill="#fff" stroke="${color}" stroke-width="${sel ? 2 : 1}"/><text x="${g.mx}" y="${g.my + 4}" text-anchor="middle" fill="${color}" class="sl-t">${esc(txt)}</text></g>`);
+    return `<g class="sl${sel ? ' sel' : ''}${faded ? ' faded' : ''}" data-link="${i}">${title}
+      <path class="sl-hit" d="${g.d}"/><path class="sl-line" d="${g.d}" stroke="${color}" stroke-dasharray="${dash}" stroke-width="${sel ? 4 : l.condition === 'faulty' ? 3 : 2.2}"/></g>`;
+  }).join('');
+  const nodes = sch.nodes.map((n) => {
+    const g = nodeGeom(n); const d = n.deviceId ? dev.get(n.deviceId) : null;
+    const sel = o.sel?.type === 'node' && o.sel.id === n.id;
+    const kc = KIND_COLOR[n.kind] || '#9aa1b8';
+    const sub = [n.model && n.model !== n.label ? n.model : KIND_LABEL[n.kind], n.location].filter(Boolean).join(' · ');
+    const port = (p, i, side) => {
+      const y = HEAD + i * ROW + ROW / 2; const li = used.get(portKey(n.id, p.name)); const l = li === undefined ? null : sch.links[li];
+      const color = l?.condition === 'faulty' ? '#d03b3b' : (CABLE_STYLE[p.type] || ['#7d849e'])[0];
+      const x = side === 'L' ? -5 : g.w - 5;
+      return `<g class="sp${o.pending && o.pending.node === n.id && o.pending.port === p.name ? ' armed' : ''}" data-node="${esc(n.id)}" data-port="${esc(p.name)}"><title>${esc(`${p.name} · ${p.type} ${DIR_LABEL[p.dir].toLowerCase()}${l ? `\n→ ${l.from === n.id ? endText(sch, l.to, l.toPort) : endText(sch, l.from, l.fromPort)}` : '\nFree'}`)}</title>
+        <rect class="sp-hit" x="${side === 'L' ? -10 : g.w - 70}" y="${y - ROW / 2}" width="80" height="${ROW}"/>
+        <rect x="${x}" y="${y - 5}" width="10" height="10" rx="2.5" fill="${l ? color : '#fff'}" stroke="${color}" stroke-width="1.6"/>
+        <text x="${side === 'L' ? 11 : g.w - 11}" y="${y + 4}" text-anchor="${side === 'L' ? 'start' : 'end'}" class="sp-t${l ? '' : ' free'}">${esc(p.name.length > 15 ? `${p.name.slice(0, 14)}…` : p.name)}</text></g>`;
+    };
+    return `<g class="sn${sel ? ' sel' : ''}${dim(n.id) ? ' faded' : ''}" data-node="${esc(n.id)}" transform="translate(${n.x},${n.y})">
+      <rect class="sn-box" width="${g.w}" height="${g.h}" rx="10" stroke="${d ? HCOLOR[d.health] : '#d5dbea'}" stroke-width="${d && d.health !== 'healthy' ? 2.6 : 1.3}"/>
+      <rect width="${g.w}" height="5" rx="2.5" fill="${kc}"/>
+      <text x="12" y="23" class="sn-t">${esc(n.label.length > 24 ? `${n.label.slice(0, 23)}…` : n.label)}</text>
+      <text x="12" y="39" class="sn-s">${esc(sub.length > 32 ? `${sub.slice(0, 31)}…` : sub)}</text>
+      ${d ? `<g><title>${esc(`${HLABEL[d.health]}${d.healthReason ? `: ${d.healthReason}` : ''}`)}</title><circle cx="${g.w - 15}" cy="20" r="6" fill="${HCOLOR[d.health]}"/></g>` : ''}
+      ${g.left.map((p, i) => port(p, i, 'L')).join('')}${g.right.map((p, i) => port(p, i, 'R')).join('')}</g>`;
+  }).join('');
+  return `${links}${nodes}${labels.join('')}<path id="tmpWire" class="tmp-wire" d=""/>`;
+}
+function canvasSize(sch) {
+  let w = 700; let h = 300;
+  for (const n of sch.nodes) { const g = nodeGeom(n); w = Math.max(w, n.x + g.w + 120); h = Math.max(h, n.y + g.h + 60); }
+  return { w, h };
+}
+
+/** Read-only drawing, e.g. the map sidebar. */
 function schematicSVG(sch, devices = []) {
   if (!sch?.nodes?.length) return '<div class="empty">No schematic yet</div>';
-  const { pos, W, H, width, height } = layoutSchematic(sch);
-  const devById = new Map(devices.map((d) => [d.id, d]));
-  const usedCables = [...new Set(sch.links.map((l) => l.cable))];
-  const linkSvg = sch.links.map((l, i) => {
-    const a = pos[l.from]; const b = pos[l.to];
-    if (!a || !b) return '';
-    const leftToRight = a.x <= b.x;
-    const x1 = leftToRight ? a.x + W : a.x; const x2 = leftToRight ? b.x : b.x + W;
-    const sameCol = Math.abs(a.x - b.x) < 5;
-    const y1 = a.y + H / 2 + ((i % 3) - 1) * 8; const y2 = b.y + H / 2 + ((i % 3) - 1) * 8;
-    const dx = sameCol ? 70 : Math.max(40, Math.abs(x2 - x1) / 2);
-    const sx1 = sameCol ? a.x + W : x1; const sx2 = sameCol ? b.x + W : x2;
-    const d = sameCol
-      ? `M${sx1},${y1} C${sx1 + dx},${y1} ${sx2 + dx},${y2} ${sx2},${y2}`
-      : `M${x1},${y1} C${x1 + (leftToRight ? dx : -dx)},${y1} ${x2 - (leftToRight ? dx : -dx)},${y2} ${x2},${y2}`;
-    const [color, dash] = CABLE_STYLE[l.cable] || ['#7d849e', ''];
-    const mx = sameCol ? sx1 + dx * 0.75 : (x1 + x2) / 2; const my = (y1 + y2) / 2;
-    const title = `${l.cable}: ${sch.nodes.find((n) => n.id === l.from)?.label}${l.fromPort ? ` (${l.fromPort})` : ''} → ${sch.nodes.find((n) => n.id === l.to)?.label}${l.toPort ? ` (${l.toPort})` : ''}${l.note ? ` · ${l.note}` : ''}`;
-    return `<g class="schem-link"><title>${esc(title)}</title><path d="${d}" stroke="${color}" stroke-width="2.4" fill="none" stroke-dasharray="${dash}" marker-end="url(#arr)"/>
-      <rect x="${mx - 34}" y="${my - 10}" width="68" height="20" rx="10" fill="#fff" stroke="${color}"/><text x="${mx}" y="${my + 4}" text-anchor="middle" class="schem-cable" fill="${color}">${esc(l.cable)}</text></g>`;
-  }).join('');
-  const nodeSvg = sch.nodes.map((n) => {
-    const p = pos[n.id];
-    const dev = n.deviceId ? devById.get(n.deviceId) : null;
-    const kindLabel = NODE_KINDS.find(([k]) => k === n.kind)?.[1] || n.kind;
-    const ports = sch.links.filter((l) => l.from === n.id || l.to === n.id).map((l) => (l.from === n.id ? l.fromPort : l.toPort)).filter(Boolean);
-    return `<g class="schem-node"><title>${esc(n.label)}${n.model ? ` · ${n.model}` : ''}${ports.length ? `\nPorts: ${ports.join(', ')}` : ''}</title>
-      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="12" fill="#fff" stroke="${dev ? HCOLOR[dev.health] : '#d5dbea'}" stroke-width="${dev ? 2.5 : 1.2}"/>
-      <rect x="${p.x}" y="${p.y}" width="6" height="${H}" rx="3" fill="${n.kind === 'core' ? '#1a5cff' : n.kind === 'display' ? '#0b1d4d' : n.kind === 'network' ? '#0d8fb3' : '#b9c3e0'}"/>
-      <text x="${p.x + 16}" y="${p.y + 24}" class="schem-label">${esc(n.label.length > 24 ? `${n.label.slice(0, 23)}…` : n.label)}</text>
-      <text x="${p.x + 16}" y="${p.y + 42}" class="schem-sub">${esc(dev ? `${HLABEL[dev.health]} · ${kindLabel}` : kindLabel)}</text>
-      ${dev ? `<circle cx="${p.x + W - 14}" cy="${p.y + 14}" r="5" fill="${HCOLOR[dev.health]}"/>` : ''}</g>`;
-  }).join('');
-  return `<svg class="schem-svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Room schematic">
-    <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#7d849e"/></marker></defs>
-    ${linkSvg}${nodeSvg}</svg>
-    <div class="legend" style="margin-top:8px">${usedCables.map((c) => `<span><i style="background:${(CABLE_STYLE[c] || ['#7d849e'])[0]}"></i>${esc(c)}</span>`).join('')}<span class="muted">Hover a cable or item for ports</span></div>`;
+  const s = autoLayout(structuredClone(sch));
+  const { w, h } = canvasSize(s);
+  return `<svg class="schem-svg" viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="Room schematic">${schematicBody(s, devices)}</svg>`;
+}
+
+/** What to check in this room: unhealthy linked devices with their cabling, and flagged cables. */
+function roomFindings(sch, devices) {
+  const out = [];
+  const dev = new Map(devices.map((d) => [d.id, d]));
+  for (const n of sch.nodes) {
+    const d = n.deviceId ? dev.get(n.deviceId) : null;
+    if (n.deviceId && !d) { out.push({ level: 'warning', node: n.id, title: `${n.label} is linked to a device that is no longer in this room`, checks: [], affected: [] }); continue; }
+    if (!d || !['warning', 'critical', 'offline'].includes(d.health)) continue;
+    const checks = sch.links.filter((l) => l.to === n.id || l.from === n.id).map((l) => {
+      const mine = l.from === n.id ? l.fromPort : l.toPort;
+      const other = l.from === n.id ? endText(sch, l.to, l.toPort) : endText(sch, l.from, l.fromPort);
+      return `${mine || 'Cable'} ${l.from === n.id ? '→' : '←'} ${other} (${cableText(l)}${l.condition ? `, ${COND_LABEL[l.condition].toLowerCase()}` : ''})`;
+    });
+    const t = tracePath(sch, n.id);
+    out.push({ level: d.health === 'warning' ? 'warning' : 'critical', node: n.id, title: `${n.label} is ${HLABEL[d.health].toLowerCase()}${d.healthReason ? `: ${d.healthReason}` : ''}`, checks, affected: [...t.down].map((id) => nodeName(sch, id)) });
+  }
+  sch.links.forEach((l, i) => {
+    if (l.condition === 'faulty' || l.condition === 'suspect') out.push({ level: l.condition === 'faulty' ? 'critical' : 'warning', link: i, title: `${l.label ? `Cable ${l.label}` : `${l.cable} cable`} is marked ${COND_LABEL[l.condition].toLowerCase()}`, checks: [`${endText(sch, l.from, l.fromPort)} → ${endText(sch, l.to, l.toPort)}${l.note ? ` · ${l.note}` : ''}`], affected: [...tracePath(sch, l.to).down, l.to].map((id) => nodeName(sch, id)) });
+  });
+  const placed = new Set(sch.nodes.map((n) => n.deviceId).filter(Boolean));
+  const missing = devices.filter((d) => !placed.has(d.id));
+  if (sch.nodes.length && missing.length) out.push({ level: 'info', title: `${missing.length} device${missing.length > 1 ? 's' : ''} in this room ${missing.length > 1 ? 'are' : 'is'} not on the schematic`, checks: missing.slice(0, 6).map((d) => d.model), affected: [] });
+  return out;
+}
+
+function csvCell(v) { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; return `"${s.replace(/"/g, '""')}"`; }
+function download(name, text, type) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name.replace(/[^a-z0-9.-]+/gi, '_'); a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 async function mountSchematic(card, ctx) {
   const { customerId, site, room, devices } = ctx;
   const q = `customerId=${encodeURIComponent(customerId)}&site=${encodeURIComponent(site)}&room=${encodeURIComponent(room)}`;
-  const [saved, templates] = await Promise.all([api(`/api/rooms/schematic?${q}`), S.templates || api('/api/schematic-templates')]);
-  S.templates = templates;
-  let draft = saved ? structuredClone(saved) : { nodes: [], links: [] };
-  let editing = false;
+  const [saved, templates, lib] = await Promise.all([api(`/api/rooms/schematic?${q}`), S.templates || api('/api/schematic-templates'), S.blockLib || api('/api/schematic-blocks')]);
+  S.templates = templates; S.blockLib = lib;
+  const blank = () => ({ nodes: [], links: [] });
+  let draft = autoLayout(saved ? structuredClone(saved) : blank());
+  let editing = false; let sel = null; let pending = null; let zoom = 1; let undo = [];
+  const openGroups = new Set(['__dev', 'Video', 'Control']);
   S.schematicDirty = false;
+  const devById = new Map(devices.map((d) => [d.id, d]));
   const nid = () => { let i = draft.nodes.length + 1; while (draft.nodes.some((n) => n.id === `n${i}`)) i++; return `n${i}`; };
+  const nextTag = () => { let m = 0; for (const l of draft.links) { const x = /^C-?(\d+)$/i.exec(l.label || ''); if (x) m = Math.max(m, Number(x[1])); } return `C-${String(m + 1).padStart(2, '0')}`; };
+  const snap = () => { undo.push(JSON.stringify(draft)); if (undo.length > 40) undo.shift(); S.schematicDirty = true; };
+  const usedPort = (id, port, except = -1) => draft.links.findIndex((l, i) => i !== except && l.cable !== 'Wireless' && ((l.from === id && (l.fromPort || '').toLowerCase() === String(port).toLowerCase()) || (l.to === id && (l.toPort || '').toLowerCase() === String(port).toLowerCase())));
+  const say = (msg, kind = 'err') => { const m = $('#scMsg', card); if (m) m.innerHTML = msg ? `<div class="notice ${kind}">${esc(msg)}</div>` : ''; };
 
   const render = () => {
-    const nodeOpts = draft.nodes.map((n) => `<option value="${esc(n.id)}">${esc(n.label)}</option>`).join('');
-    card.innerHTML = `<div class="card-head"><div><h2>Room schematic</h2><div class="card-sub">How the room is cabled: which device plugs into which, and on which port${saved?.updatedAt ? ` · saved ${ago(saved.updatedAt)}` : ''}</div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${draft.nodes.length ? '<button class="btn btn-outline btn-sm" id="scExport">Export JSON</button>' : ''}${isAdmin() && !editing ? `<button class="btn btn-primary btn-sm" id="scEdit">${draft.nodes.length ? 'Edit schematic' : 'Create schematic'}</button>` : ''}</div></div>
-      <div class="schem-wrap">${schematicSVG(draft, devices)}</div>
-      ${editing ? `
-      <div class="schem-tools">
-        <div class="field"><label>Start from a template</label><div style="display:flex;gap:8px"><select id="scTpl"><option value="">Choose a room type…</option>${templates.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select><button class="btn btn-outline btn-sm" id="scTplGo">Apply</button></div></div>
-        <div class="field"><label>Or load a file</label><div style="display:flex;gap:8px;align-items:center"><input type="file" id="scFile" accept="application/json,.json"></div><div class="help">A JSON file exported from another room, or prepared during onboarding.</div></div>
-        <button class="btn btn-outline btn-sm" id="scAddDevs">Add this room's devices</button>
-      </div>
-      <div class="section-title">Items in the room</div>
-      <div class="table-wrap schem-table"><table><thead><tr><th>Name</th><th>Type</th><th>Model</th><th>Linked device</th><th></th></tr></thead><tbody>
-        ${draft.nodes.map((n, i) => `<tr><td><input data-n="${i}" data-f="label" value="${esc(n.label)}"></td>
-          <td><select data-n="${i}" data-f="kind">${NODE_KINDS.map(([k, l]) => `<option value="${k}" ${k === n.kind ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
-          <td><input data-n="${i}" data-f="model" value="${esc(n.model || '')}"></td>
-          <td><select data-n="${i}" data-f="deviceId"><option value="">None</option>${devices.map((d) => `<option value="${esc(d.id)}" ${d.id === n.deviceId ? 'selected' : ''}>${esc(d.model)}${d.serial ? ` (${esc(d.serial)})` : ''}</option>`).join('')}</select></td>
-          <td><button class="linkbtn" data-delnode="${i}">Remove</button></td></tr>`).join('')}
-      </tbody></table></div>
-      <button class="btn btn-outline btn-sm" id="scAddNode" style="margin-top:10px">Add item</button>
-      <div class="section-title">Connections</div>
-      <div class="table-wrap schem-table"><table><thead><tr><th>From</th><th>Port</th><th>Cable</th><th>To</th><th>Port</th><th>Note</th><th></th></tr></thead><tbody>
-        ${draft.links.map((l, i) => `<tr>
-          <td><select data-l="${i}" data-f="from">${draft.nodes.map((n) => `<option value="${esc(n.id)}" ${n.id === l.from ? 'selected' : ''}>${esc(n.label)}</option>`).join('')}</select></td>
-          <td><input data-l="${i}" data-f="fromPort" value="${esc(l.fromPort || '')}" placeholder="e.g. HDMI out 1"></td>
-          <td><select data-l="${i}" data-f="cable">${CABLES.map((c) => `<option ${c === l.cable ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
-          <td><select data-l="${i}" data-f="to">${draft.nodes.map((n) => `<option value="${esc(n.id)}" ${n.id === l.to ? 'selected' : ''}>${esc(n.label)}</option>`).join('')}</select></td>
-          <td><input data-l="${i}" data-f="toPort" value="${esc(l.toPort || '')}" placeholder="e.g. HDMI 1"></td>
-          <td><input data-l="${i}" data-f="note" value="${esc(l.note || '')}"></td>
-          <td><button class="linkbtn" data-dellink="${i}">Remove</button></td></tr>`).join('')}
-      </tbody></table></div>
-      ${draft.nodes.length >= 2 ? `<div class="add-link"><select id="lkFrom">${nodeOpts}</select><select id="lkCable">${CABLES.map((c) => `<option>${c}</option>`).join('')}</select><select id="lkTo">${nodeOpts}</select><button class="btn btn-outline btn-sm" id="scAddLink">Add connection</button></div>` : '<div class="muted">Add at least two items to connect them.</div>'}
+    // Keep scroll positions across re-renders.
+    const keep = ['#scCanvasWrap', '.palette', '#scInspector'].map((k) => { const el = $(k, card); return el ? [k, el.scrollLeft, el.scrollTop] : null; }).filter(Boolean);
+    paint();
+    for (const [k, l, t] of keep) { const el = $(k, card); if (el) { el.scrollLeft = l; el.scrollTop = t; } }
+  };
+  const paint = () => {
+    const { w, h } = canvasSize(draft);
+    const findings = editing ? [] : roomFindings(draft, devices);
+    const crit = findings.filter((f) => f.level !== 'info').length;
+    card.innerHTML = `<div class="card-head"><div><h2>Room schematic</h2><div class="card-sub">${editing ? 'Add building blocks, then drag from one port to another to connect a cable. Drag blocks to move them.' : `Port-to-port cabling for troubleshooting${saved?.updatedAt ? ` · saved ${ago(saved.updatedAt)}${saved.updatedBy ? ` by ${esc(saved.updatedBy)}` : ''}` : ''}`}</div></div>
+      <div class="schem-actions">${draft.nodes.length && !editing ? '<button class="btn btn-outline btn-sm" id="scCsv">Cable schedule (CSV)</button><button class="btn btn-outline btn-sm" id="scExport">Export JSON</button>' : ''}
+        ${isAdmin() && !editing ? `<button class="btn btn-primary btn-sm" id="scEdit">${draft.nodes.length ? 'Open designer' : 'Design schematic'}</button>` : ''}</div></div>
+      ${editing ? designerToolbar() : ''}
       <div id="scMsg"></div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap">
-        ${saved ? '<button class="btn btn-danger btn-sm" id="scDelete" style="margin-right:auto">Delete schematic</button>' : ''}
+      ${!draft.nodes.length && !editing ? `<div class="empty">No schematic for this room yet.${isAdmin() ? ' Open the designer to draw one from building blocks or a template, or upload an existing drawing below.' : ''}</div>` : `
+      <div class="designer${editing ? ' editing' : ''}">
+        ${editing ? `<div class="palette">${paletteHtml()}</div>` : ''}
+        <div class="canvas-wrap" id="scCanvasWrap"><svg class="schem-canvas" id="scSvg" width="${w * zoom}" height="${h * zoom}" viewBox="0 0 ${w} ${h}">${schematicBody(draft, devices, { sel, pending, trace: !editing && sel?.type === 'node' ? tracePath(draft, sel.id) : null })}</svg></div>
+        <div class="inspector" id="scInspector">${editing ? inspectorHtml() : troubleshootHtml(findings)}</div>
+      </div>
+      <div class="legend schem-legend">${[...new Set(draft.links.map((l) => l.cable))].map((c) => `<span><i style="background:${(CABLE_STYLE[c] || ['#7d849e'])[0]}"></i>${esc(c)}</span>`).join('')}<span><i style="background:#d03b3b"></i>Faulty cable</span><span class="muted">${editing ? 'Hollow ports are free' : 'Click an item to trace its signal path'}</span></div>
+      ${draft.links.length ? cableSchedule() : ''}`}
+      ${editing ? `<div class="schem-foot">${saved ? '<button class="btn btn-danger btn-sm" id="scDelete">Delete schematic</button>' : ''}<span class="grow"></span>
         <button class="btn btn-outline btn-sm" id="scCancel">Cancel</button><button class="btn btn-primary btn-sm" id="scSave">Save schematic</button></div>` : ''}`;
+    if (!editing && crit && !sel) card.querySelector('.inspector')?.classList.add('alerting');
     bind();
   };
-  const dirty = () => { S.schematicDirty = true; };
+
+  const designerToolbar = () => `<div class="schem-toolbar">
+    <select id="scTpl" aria-label="Template"><option value="">Start from a template…</option>${templates.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
+    <label class="btn btn-outline btn-sm file-btn">Load JSON<input type="file" id="scFile" accept="application/json,.json" hidden></label>
+    <span class="tb-sep"></span>
+    <button class="btn btn-outline btn-sm" id="scUndo" ${undo.length ? '' : 'disabled'}>Undo</button>
+    <button class="btn btn-outline btn-sm" id="scArrange">Auto-arrange</button>
+    <button class="btn btn-outline btn-sm" id="scZoomOut" aria-label="Zoom out">−</button><span class="muted zoom-lbl">${Math.round(zoom * 100)}%</span><button class="btn btn-outline btn-sm" id="scZoomIn" aria-label="Zoom in">+</button>
+  </div>`;
+
+  const paletteHtml = () => {
+    const groups = [...new Set(lib.blocks.map((b) => b.group))];
+    const unplaced = devices.filter((d) => !draft.nodes.some((n) => n.deviceId === d.id));
+    return `${unplaced.length ? `<details data-g="__dev" ${openGroups.has('__dev') ? 'open' : ''}><summary>This room's devices</summary>${unplaced.map((d) => `<button class="pal-item" data-dev="${esc(d.id)}"><i style="background:${HCOLOR[d.health]}"></i>${esc(d.model)}<small>${esc(d.deviceType)}</small></button>`).join('')}</details>` : ''}
+      ${groups.map((g) => `<details data-g="${esc(g)}" ${openGroups.has(g) ? 'open' : ''}><summary>${esc(g)}</summary>${lib.blocks.filter((b) => b.group === g).map((b) => `<button class="pal-item" data-block="${b.id}"><i style="background:${KIND_COLOR[b.kind]}"></i>${esc(b.name)}<small>${b.ports.length} ports</small></button>`).join('')}</details>`).join('')}`;
+  };
+
+  const portOptions = (id, cur) => {
+    const n = draft.nodes.find((x) => x.id === id);
+    return (n?.ports || []).map((p) => `<option value="${esc(p.name)}" ${p.name === cur ? 'selected' : ''}>${esc(p.name)} (${esc(p.type)})</option>`).join('') + (cur && !(n?.ports || []).some((p) => p.name === cur) ? `<option selected>${esc(cur)}</option>` : '');
+  };
+
+  const inspectorHtml = () => {
+    if (sel?.type === 'node') {
+      const n = draft.nodes.find((x) => x.id === sel.id); if (!n) return '';
+      const block = lib.blocks.find((b) => b.id === n.block);
+      return `<div class="insp-title">${esc(n.label)}<small>${esc(block?.name || KIND_LABEL[n.kind])}</small></div>
+        <div class="field"><label>Name</label><input data-nf="label" value="${esc(n.label)}" maxlength="80"></div>
+        <div class="field"><label>Type</label><select data-nf="kind">${lib.kinds.map((k) => `<option value="${k}" ${k === n.kind ? 'selected' : ''}>${KIND_LABEL[k]}</option>`).join('')}</select></div>
+        <div class="field"><label>Model</label><input data-nf="model" value="${esc(n.model || '')}" maxlength="80"></div>
+        <div class="field"><label>Monitored device</label><select data-nf="deviceId"><option value="">Not linked</option>${devices.map((d) => `<option value="${esc(d.id)}" ${d.id === n.deviceId ? 'selected' : ''}>${esc(d.model)}${d.serial ? ` (${esc(d.serial)})` : ''}</option>`).join('')}</select><div class="help">Linked items show live health and are traced when they fail.</div></div>
+        <div class="field"><label>Location</label><input data-nf="location" value="${esc(n.location || '')}" placeholder="e.g. Under table, rack, behind display" maxlength="60"></div>
+        <div class="field"><label>Notes</label><textarea data-nf="notes" rows="2" maxlength="300">${esc(n.notes || '')}</textarea></div>
+        <div class="section-title" style="margin-top:14px">Ports</div>
+        <div class="port-rows">${(n.ports || []).map((p, i) => `<div class="port-row"><input data-pf="name" data-pi="${i}" value="${esc(p.name)}" maxlength="40" aria-label="Port name">
+          <select data-pf="type" data-pi="${i}" aria-label="Port type">${lib.cables.map((c) => `<option ${c === p.type ? 'selected' : ''}>${c}</option>`).join('')}</select>
+          <select data-pf="dir" data-pi="${i}" aria-label="Direction">${['in', 'out', 'io'].map((d) => `<option value="${d}" ${d === p.dir ? 'selected' : ''}>${DIR_LABEL[d]}</option>`).join('')}</select>
+          <button class="linkbtn" data-delport="${i}" aria-label="Remove port">×</button></div>`).join('') || '<div class="muted">No ports yet.</div>'}</div>
+        <button class="btn btn-outline btn-sm" id="scAddPort">Add port</button>
+        <div class="insp-foot"><button class="btn btn-outline btn-sm" id="scDup">Duplicate</button><button class="btn btn-danger btn-sm" id="scDelSel">Remove item</button></div>`;
+    }
+    if (sel?.type === 'link') {
+      const l = draft.links[sel.i]; if (!l) return '';
+      const nodeOpts = (cur) => draft.nodes.map((n) => `<option value="${esc(n.id)}" ${n.id === cur ? 'selected' : ''}>${esc(n.label)}</option>`).join('');
+      const a = draft.nodes.find((n) => n.id === l.from)?.ports?.find((p) => p.name === l.fromPort);
+      const b = draft.nodes.find((n) => n.id === l.to)?.ports?.find((p) => p.name === l.toPort);
+      const mismatch = a && b && !portFits(a.type, b.type) ? `<div class="notice err">The ports don't match (${esc(a.type)} to ${esc(b.type)}). Check an adapter or converter is fitted, or add it as a block.</div>` : '';
+      return `<div class="insp-title">${esc(l.label ? `Cable ${l.label}` : `${l.cable} cable`)}<small>${esc(endText(draft, l.from, l.fromPort))} → ${esc(endText(draft, l.to, l.toPort))}</small></div>${mismatch}
+        <div class="grid cols-2" style="gap:8px"><div class="field"><label>From</label><select data-lf="from">${nodeOpts(l.from)}</select></div><div class="field"><label>Port</label><select data-lf="fromPort">${portOptions(l.from, l.fromPort)}</select></div>
+        <div class="field"><label>To</label><select data-lf="to">${nodeOpts(l.to)}</select></div><div class="field"><label>Port</label><select data-lf="toPort">${portOptions(l.to, l.toPort)}</select></div></div>
+        <div class="grid cols-2" style="gap:8px"><div class="field"><label>Cable type</label><select data-lf="cable">${lib.cables.map((c) => `<option ${c === l.cable ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+        <div class="field"><label>Cable tag</label><input data-lf="label" value="${esc(l.label || '')}" placeholder="e.g. C-03" maxlength="24"></div>
+        <div class="field"><label>Length (m)</label><input data-lf="length" type="number" min="0" step="0.5" value="${esc(l.length ?? '')}"></div>
+        <div class="field"><label>Condition</label><select data-lf="condition"><option value="">Not tested</option>${lib.conditions.map((c) => `<option value="${c}" ${c === l.condition ? 'selected' : ''}>${COND_LABEL[c]}</option>`).join('')}</select></div></div>
+        <div class="field"><label>Note</label><input data-lf="note" value="${esc(l.note || '')}" placeholder="e.g. Runs through floor box, EDID minder fitted" maxlength="200"></div>
+        <div class="insp-foot"><button class="btn btn-outline btn-sm" id="scSwap">Swap ends</button><button class="btn btn-danger btn-sm" id="scDelSel">Remove cable</button></div>`;
+    }
+    return `<div class="insp-title">Designer<small>${draft.nodes.length} items · ${draft.links.length} cables</small></div>
+      <ol class="tips"><li>Click a building block on the left to add it. Pick a template above to start faster.</li><li>Drag from a port square to another port to run a cable. Outputs (right side) feed inputs (left side).</li><li>Click a block or cable to edit its ports, tag, length or condition.</li><li>Link blocks to monitored devices so live health shows on the drawing.</li></ol>
+      <div class="field"><label>Room notes</label><textarea id="scNotes" rows="4" maxlength="1000" placeholder="e.g. Rack in comms cupboard B. HDMI runs are 4K-rated.">${esc(draft.notes || '')}</textarea></div>
+      <div class="muted" style="font-size:12px">Delete removes the selected item. Ctrl+Z undoes.</div>`;
+  };
+
+  const troubleshootHtml = (findings) => {
+    if (sel?.type === 'node') {
+      const n = draft.nodes.find((x) => x.id === sel.id); if (!n) return '';
+      const d = n.deviceId ? devById.get(n.deviceId) : null;
+      const t = tracePath(draft, n.id);
+      const conns = draft.links.map((l, i) => ({ l, i })).filter(({ l }) => l.from === n.id || l.to === n.id);
+      return `<div class="insp-title">${esc(n.label)}<small>${esc([n.model, KIND_LABEL[n.kind], n.location].filter(Boolean).join(' · '))}</small></div>
+        ${d ? `<div style="margin:6px 0 10px">${status(d.health)}${d.healthReason && d.health !== 'healthy' ? `<div class="muted" style="font-size:12.5px;margin-top:4px">${esc(d.healthReason)}</div>` : ''}<button class="linkbtn" data-opendev="${esc(d.id)}">Device details</button></div>` : '<div class="muted" style="margin-bottom:10px">Not linked to a monitored device.</div>'}
+        ${n.notes ? `<div class="notice info">${esc(n.notes)}</div>` : ''}
+        <div class="section-title" style="margin-top:8px">Cables (${conns.length})</div>
+        ${conns.map(({ l, i }) => { const out = l.from === n.id; return `<button class="conn-row" data-sellink="${i}"><b>${esc((out ? l.fromPort : l.toPort) || '—')}</b> ${out ? '→' : '←'} ${esc(out ? endText(draft, l.to, l.toPort) : endText(draft, l.from, l.fromPort))}<small>${esc(cableText(l))}${l.condition ? ` · ${COND_LABEL[l.condition]}` : ''}</small></button>`; }).join('') || '<div class="muted">No cables.</div>'}
+        ${(n.ports || []).filter((p) => usedPort(n.id, p.name) < 0).length ? `<div class="muted" style="font-size:12px;margin-top:6px">Free ports: ${esc(n.ports.filter((p) => usedPort(n.id, p.name) < 0).map((p) => p.name).join(', '))}</div>` : ''}
+        <div class="section-title">Depends on</div><div class="trace-list">${[...t.up].map((id) => `<span>${esc(nodeName(draft, id))}</span>`).join('') || '<span class="muted">Nothing upstream</span>'}</div>
+        <div class="section-title">Affected if it fails</div><div class="trace-list">${[...t.down].map((id) => `<span>${esc(nodeName(draft, id))}</span>`).join('') || '<span class="muted">Nothing downstream</span>'}</div>
+        <button class="btn btn-outline btn-sm" id="scClear" style="margin-top:14px">Back to room check</button>`;
+    }
+    if (sel?.type === 'link') {
+      const l = draft.links[sel.i]; if (!l) return '';
+      return `<div class="insp-title">${esc(l.label ? `Cable ${l.label}` : `${l.cable} cable`)}<small>${esc(cableText(l))}</small></div>
+        <dl class="kv"><dt>From</dt><dd>${esc(endText(draft, l.from, l.fromPort))}</dd><dt>To</dt><dd>${esc(endText(draft, l.to, l.toPort))}</dd><dt>Condition</dt><dd>${esc(COND_LABEL[l.condition] || 'Not tested')}</dd>${l.note ? `<dt>Note</dt><dd>${esc(l.note)}</dd>` : ''}</dl>
+        <button class="btn btn-outline btn-sm" id="scClear" style="margin-top:14px">Back to room check</button>`;
+    }
+    return `<div class="insp-title">Room check<small>${findings.filter((f) => f.level !== 'info').length ? 'Things to look at, with the cables involved' : 'Linked devices and flagged cables'}</small></div>
+      ${findings.map((f) => `<div class="finding ${f.level}" ${f.node ? `data-selnode="${esc(f.node)}"` : f.link !== undefined ? `data-sellink="${f.link}"` : ''}>
+        <b>${esc(f.title)}</b>${f.checks.length ? `<ul>${f.checks.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}${f.affected.length ? `<div class="muted">Affects: ${esc(f.affected.join(', '))}</div>` : ''}</div>`).join('') || `<div class="notice ok">All linked devices are healthy and no cables are flagged.</div>`}
+      ${draft.notes ? `<div class="section-title">Room notes</div><div class="muted" style="white-space:pre-wrap">${esc(draft.notes)}</div>` : ''}`;
+  };
+
+  const cableSchedule = () => `<div class="section-title">Cable schedule</div><div class="table-wrap"><table class="cable-table"><thead><tr><th>Tag</th><th>From</th><th>Cable</th><th>Length</th><th>To</th><th>Condition</th><th>Note</th></tr></thead><tbody>
+    ${draft.links.map((l, i) => ({ l, i })).sort((a, b) => (a.l.label || '~').localeCompare(b.l.label || '~', undefined, { numeric: true })).map(({ l, i }) => `<tr data-sellink="${i}" class="${sel?.type === 'link' && sel.i === i ? 'sel' : ''}"><td><b>${esc(l.label || '—')}</b></td><td>${esc(nodeName(draft, l.from))}<div class="muted">${esc(l.fromPort || '')}</div></td>
+      <td><span class="cable-chip" style="--c:${(CABLE_STYLE[l.cable] || ['#7d849e'])[0]}">${esc(l.cable)}</span></td><td>${l.length ? `${l.length} m` : '—'}</td>
+      <td>${esc(nodeName(draft, l.to))}<div class="muted">${esc(l.toPort || '')}</div></td><td>${l.condition ? `<span class="cond ${l.condition}">${COND_LABEL[l.condition]}</span>` : '<span class="muted">Not tested</span>'}</td><td>${esc(l.note || '')}</td></tr>`).join('')}</tbody></table></div>`;
+
+  const addNode = (node) => {
+    snap();
+    // First free spot in the visible part of the canvas, scanning left to right, top to bottom.
+    const wrap = $('#scCanvasWrap', card);
+    const vx = (wrap?.scrollLeft || 0) / zoom; const vy = (wrap?.scrollTop || 0) / zoom;
+    const vw = Math.max(600, (wrap?.clientWidth || 900) / zoom); const vh = Math.max(400, (wrap?.clientHeight || 600) / zoom);
+    const h = nodeGeom(node).h;
+    const free = (x, y) => draft.nodes.every((n) => { const g = nodeGeom(n); return x + BW + 20 <= n.x || x >= n.x + g.w + 20 || y + h + 20 <= n.y || y >= n.y + g.h + 20; });
+    let spot = null;
+    for (let y = Math.round(vy / 10) * 10 + 20; !spot && y < vy + vh * 2; y += 20) for (let x = Math.round(vx / 10) * 10 + 20; !spot && x + BW < vx + vw; x += 20) if (free(x, y)) spot = { x, y };
+    if (!spot) spot = { x: 24, y: Math.max(24, ...draft.nodes.map((n) => n.y + nodeGeom(n).h + 30)) };
+    const n = { id: nid(), ...node, ...spot };
+    draft.nodes.push(n); sel = { type: 'node', id: n.id }; render();
+  };
+  const fromBlock = (b, extra = {}) => ({ label: b.name, kind: b.kind, block: b.id, ports: structuredClone(b.ports), ...extra });
+
+  const connect = (a, b) => {
+    if (a.node === b.node) return;
+    const na = draft.nodes.find((n) => n.id === a.node); const nb = draft.nodes.find((n) => n.id === b.node);
+    const pa = na.ports.find((p) => p.name === a.port); const pb = nb.ports.find((p) => p.name === b.port);
+    if (pa.dir !== 'io' && pa.dir === pb.dir) { say(`Both ports are ${pa.dir === 'in' ? 'inputs' : 'outputs'}. Connect an output to an input.`); return; }
+    if (pa.type !== 'Wireless' && usedPort(na.id, pa.name) >= 0) { say(`${na.label} · ${pa.name} already has a cable. Remove it first.`); return; }
+    if (pb.type !== 'Wireless' && usedPort(nb.id, pb.name) >= 0) { say(`${nb.label} · ${pb.name} already has a cable. Remove it first.`); return; }
+    let [from, to] = [a, b]; let [pf, pt] = [pa, pb];
+    if (pa.dir === 'in' || pb.dir === 'out') { [from, to] = [b, a]; [pf, pt] = [pb, pa]; }
+    const cable = pf.type === 'PoE' || pt.type === 'PoE' ? (portFits(pf.type, pt.type) ? 'PoE' : pf.type) : pf.type;
+    snap();
+    draft.links.push({ from: from.node, fromPort: from.port, to: to.node, toPort: to.port, cable, label: nextTag() });
+    sel = { type: 'link', i: draft.links.length - 1 };
+    render();
+    if (!portFits(pf.type, pt.type)) say(`Connected, but the port types differ (${pf.type} to ${pt.type}). Note the adapter, or add a converter block.`, 'info');
+  };
+
+  const svgPoint = (svg, e) => { const p = svg.createSVGPoint(); p.x = e.clientX; p.y = e.clientY; return p.matrixTransform(svg.getScreenCTM().inverse()); };
+
   const bind = () => {
-    $('#scEdit', card)?.addEventListener('click', () => { editing = true; render(); });
-    $('#scExport', card)?.addEventListener('click', () => {
-      const { updatedAt, ...clean } = draft;
-      const blob = new Blob([JSON.stringify({ site, room, ...clean }, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${site}-${room}-schematic.json`.replace(/[^a-z0-9.-]+/gi, '_'); a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    bindFoot();
+    $('#scEdit', card)?.addEventListener('click', () => { editing = true; sel = null; undo = []; render(); });
+    $('#scExport', card)?.addEventListener('click', () => { const { updatedAt, updatedBy, ...clean } = draft; download(`${site}-${room}-schematic.json`, JSON.stringify({ site, room, ...clean }, null, 2), 'application/json'); });
+    $('#scCsv', card)?.addEventListener('click', () => {
+      const rows = [['Tag', 'From', 'From port', 'Cable', 'Length (m)', 'To', 'To port', 'Condition', 'Note'], ...draft.links.map((l) => [l.label, nodeName(draft, l.from), l.fromPort, l.cable, l.length, nodeName(draft, l.to), l.toPort, COND_LABEL[l.condition] || 'Not tested', l.note])];
+      download(`${site}-${room}-cable-schedule.csv`, rows.map((r) => r.map(csvCell).join(',')).join('\r\n'), 'text/csv');
     });
+    card.querySelectorAll('[data-sellink]').forEach((el) => el.addEventListener('click', () => { sel = { type: 'link', i: Number(el.dataset.sellink) }; render(); }));
+    card.querySelectorAll('[data-selnode]').forEach((el) => el.addEventListener('click', () => { sel = { type: 'node', id: el.dataset.selnode }; render(); }));
+    card.querySelectorAll('[data-opendev]').forEach((el) => el.addEventListener('click', () => openDevice(el.dataset.opendev)));
+    $('#scClear', card)?.addEventListener('click', () => { sel = null; render(); });
+    const svg = $('#scSvg', card);
+    if (svg && !editing) {
+      svg.addEventListener('click', (e) => {
+        const ln = e.target.closest('[data-link]'); const nd = e.target.closest('.sn');
+        sel = ln ? { type: 'link', i: Number(ln.dataset.link) } : nd ? { type: 'node', id: nd.dataset.node } : null;
+        render();
+      });
+    }
     if (!editing) return;
-    card.querySelectorAll('[data-n]').forEach((el) => el.addEventListener('change', () => {
-      const n = draft.nodes[Number(el.dataset.n)];
-      n[el.dataset.f] = el.value || undefined;
-      if (el.dataset.f === 'deviceId' && el.value) { const d = devices.find((x) => x.id === el.value); if (d && !n.model) n.model = d.model; }
-      dirty(); render();
+    // --- designer interactions
+    card.querySelectorAll('.palette details').forEach((d) => d.addEventListener('toggle', () => { if (d.open) openGroups.add(d.dataset.g); else openGroups.delete(d.dataset.g); }));
+    card.querySelectorAll('.pal-item[data-block]').forEach((b) => b.addEventListener('click', () => addNode(fromBlock(lib.blocks.find((x) => x.id === b.dataset.block)))));
+    card.querySelectorAll('.pal-item[data-dev]').forEach((b) => b.addEventListener('click', () => {
+      const d = devById.get(b.dataset.dev);
+      const blk = lib.blocks.find((x) => x.id === (DEVTYPE_BLOCK[d.deviceType] || 'generic'));
+      addNode(fromBlock(blk, { label: d.model, model: d.model, deviceId: d.id }));
     }));
-    card.querySelectorAll('[data-l]').forEach((el) => el.addEventListener('change', () => { draft.links[Number(el.dataset.l)][el.dataset.f] = el.value || undefined; dirty(); render(); }));
-    card.querySelectorAll('[data-delnode]').forEach((b) => b.addEventListener('click', () => {
-      const [n] = draft.nodes.splice(Number(b.dataset.delnode), 1);
-      draft.links = draft.links.filter((l) => l.from !== n.id && l.to !== n.id); dirty(); render();
-    }));
-    card.querySelectorAll('[data-dellink]').forEach((b) => b.addEventListener('click', () => { draft.links.splice(Number(b.dataset.dellink), 1); dirty(); render(); }));
-    $('#scAddNode', card).addEventListener('click', () => { draft.nodes.push({ id: nid(), label: 'New item', kind: 'peripheral' }); dirty(); render(); });
-    $('#scAddLink', card)?.addEventListener('click', () => {
-      const from = $('#lkFrom', card).value; const to = $('#lkTo', card).value;
-      if (from === to) { $('#scMsg', card).innerHTML = '<div class="notice err">Pick two different items.</div>'; return; }
-      draft.links.push({ from, to, cable: $('#lkCable', card).value }); dirty(); render();
-    });
-    $('#scAddDevs', card).addEventListener('click', () => {
-      for (const d of devices) {
-        if (draft.nodes.some((n) => n.deviceId === d.id)) continue;
-        const kind = { 'Video bar': 'core', 'Video system': 'core', 'Touch controller': 'controller', Camera: 'camera', 'Whiteboard camera': 'camera', 'Conference phone': 'audio', 'Room PC': 'source', 'Room sensor': 'peripheral', Display: 'display' }[d.deviceType] || 'peripheral';
-        draft.nodes.push({ id: nid(), label: d.model, kind, model: d.model, deviceId: d.id });
-      }
-      dirty(); render();
-    });
-    $('#scTplGo', card).addEventListener('click', () => {
-      const t = templates.find((x) => x.id === $('#scTpl', card).value);
-      if (!t) return;
-      draft = structuredClone(t.schematic);
-      // Link template items to devices in the room with a matching model.
+    $('#scTpl', card).addEventListener('change', (e) => {
+      const t = templates.find((x) => x.id === e.target.value); if (!t) return;
+      snap();
+      draft = autoLayout({ ...structuredClone(t.schematic), notes: draft.notes });
+      draft.links.forEach((l, i) => { l.label ||= `C-${String(i + 1).padStart(2, '0')}`; });
       for (const n of draft.nodes) { const d = devices.find((x) => n.model && x.model === n.model && !draft.nodes.some((m) => m.deviceId === x.id)); if (d) n.deviceId = d.id; }
-      dirty(); render();
+      sel = null; render(); say(`Applied "${t.name}". Rename ports and add cable tags to match the room as built.`, 'info');
     });
     $('#scFile', card).addEventListener('change', async (e) => {
       const f = e.target.files[0]; if (!f) return;
-      try { const j = JSON.parse(await f.text()); if (!Array.isArray(j.nodes)) throw new Error('The file has no "nodes" list'); draft = { nodes: j.nodes, links: j.links || [] }; dirty(); render(); } catch (err) { $('#scMsg', card).innerHTML = `<div class="notice err">Could not read that file: ${esc(err.message)}</div>`; }
+      try {
+        const j = JSON.parse(await f.text());
+        if (!Array.isArray(j.nodes)) throw new Error('The file has no "nodes" list');
+        const prepared = await api('/api/schematics/prepare', { method: 'POST', body: { nodes: j.nodes, links: j.links || [], notes: j.notes } });
+        snap(); draft = autoLayout(prepared); sel = null; render(); say('File loaded. Check it, then save.', 'info');
+      } catch (err) { say(`Could not read that file: ${err.message}`); }
     });
-    $('#scCancel', card).addEventListener('click', () => { draft = saved ? structuredClone(saved) : { nodes: [], links: [] }; editing = false; S.schematicDirty = false; render(); });
+    $('#scUndo', card).addEventListener('click', () => { if (!undo.length) return; draft = JSON.parse(undo.pop()); sel = null; render(); });
+    $('#scArrange', card).addEventListener('click', () => { snap(); autoLayout(draft, true); render(); });
+    $('#scZoomIn', card).addEventListener('click', () => { zoom = Math.min(1.6, Math.round((zoom + 0.1) * 10) / 10); render(); });
+    $('#scZoomOut', card).addEventListener('click', () => { zoom = Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10); render(); });
+    $('#scNotes', card)?.addEventListener('change', (e) => { snap(); draft.notes = e.target.value.trim() || undefined; });
+    // Inspector: item fields
+    card.querySelectorAll('[data-nf]').forEach((el) => el.addEventListener('change', () => {
+      const n = draft.nodes.find((x) => x.id === sel.id); snap();
+      n[el.dataset.nf] = el.value.trim() || undefined;
+      if (el.dataset.nf === 'label' && !n.label) n.label = 'Item';
+      if (el.dataset.nf === 'deviceId' && el.value) { const d = devById.get(el.value); if (d && !n.model) n.model = d.model; }
+      render();
+    }));
+    card.querySelectorAll('[data-pf]').forEach((el) => el.addEventListener('change', () => {
+      const n = draft.nodes.find((x) => x.id === sel.id); const p = n.ports[Number(el.dataset.pi)];
+      if (el.dataset.pf === 'name') {
+        const name = el.value.trim();
+        if (!name || n.ports.some((x) => x !== p && x.name.toLowerCase() === name.toLowerCase())) { say('Each port needs a different name.'); el.value = p.name; return; }
+        snap();
+        for (const l of draft.links) { if (l.from === n.id && l.fromPort === p.name) l.fromPort = name; if (l.to === n.id && l.toPort === p.name) l.toPort = name; }
+        p.name = name;
+      } else { snap(); p[el.dataset.pf] = el.value; }
+      render();
+    }));
+    card.querySelectorAll('[data-delport]').forEach((b) => b.addEventListener('click', () => {
+      const n = draft.nodes.find((x) => x.id === sel.id); const [p] = n.ports.splice(Number(b.dataset.delport), 1); snap();
+      draft.links = draft.links.filter((l) => !((l.from === n.id && l.fromPort === p.name) || (l.to === n.id && l.toPort === p.name)));
+      render();
+    }));
+    $('#scAddPort', card)?.addEventListener('click', () => {
+      const n = draft.nodes.find((x) => x.id === sel.id); snap();
+      let i = n.ports.length + 1; while (n.ports.some((p) => p.name === `Port ${i}`)) i++;
+      n.ports.push({ name: `Port ${i}`, type: 'HDMI', dir: 'in' }); render();
+    });
+    $('#scDup', card)?.addEventListener('click', () => {
+      const n = draft.nodes.find((x) => x.id === sel.id);
+      const { id, deviceId, x, y, ...rest } = structuredClone(n);
+      addNode({ ...rest, label: `${n.label} (copy)` });
+    });
+    // Inspector: cable fields
+    card.querySelectorAll('[data-lf]').forEach((el) => el.addEventListener('change', () => {
+      const l = draft.links[sel.i]; const f = el.dataset.lf; const v = el.value.trim();
+      if (['fromPort', 'toPort'].includes(f)) {
+        const end = f === 'fromPort' ? l.from : l.to;
+        if (usedPort(end, v, sel.i) >= 0) { say('That port already has a cable.'); render(); return; }
+      }
+      snap();
+      if (f === 'from' || f === 'to') {
+        if (v === (f === 'from' ? l.to : l.from)) { undo.pop(); say('A cable needs two different items.'); render(); return; }
+        l[f] = v;
+        const n = draft.nodes.find((x) => x.id === v);
+        const free = n.ports.find((p) => portFits(p.type, l.cable) && usedPort(v, p.name, sel.i) < 0) || n.ports.find((p) => usedPort(v, p.name, sel.i) < 0);
+        l[`${f}Port`] = free?.name;
+      } else if (f === 'length') l.length = v === '' ? undefined : Number(v);
+      else l[f] = v || undefined;
+      render();
+    }));
+    $('#scSwap', card)?.addEventListener('click', () => { const l = draft.links[sel.i]; snap(); [l.from, l.to, l.fromPort, l.toPort] = [l.to, l.from, l.toPort, l.fromPort]; render(); });
+    $('#scDelSel', card)?.addEventListener('click', removeSelected);
+    // Canvas: drag blocks, draw cables between ports, select.
+    let drag = null;
+    svg?.addEventListener('pointerdown', (e) => {
+      const pt = svgPoint(svg, e);
+      const port = e.target.closest('.sp');
+      if (port) {
+        drag = { kind: 'wire', from: { node: port.dataset.node, port: port.dataset.port }, start: portAnchor(draft.nodes.find((n) => n.id === port.dataset.node), port.dataset.port) };
+        svg.setPointerCapture(e.pointerId); e.preventDefault(); return;
+      }
+      const nd = e.target.closest('.sn');
+      if (nd) {
+        const n = draft.nodes.find((x) => x.id === nd.dataset.node);
+        drag = { kind: 'move', n, dx: pt.x - n.x, dy: pt.y - n.y, moved: false, before: JSON.stringify(draft) };
+        sel = { type: 'node', id: n.id };
+        svg.setPointerCapture(e.pointerId); e.preventDefault();
+        return;
+      }
+      const ln = e.target.closest('[data-link]');
+      sel = ln ? { type: 'link', i: Number(ln.dataset.link) } : null;
+      render();
+    });
+    svg?.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const pt = svgPoint(svg, e);
+      if (drag.kind === 'move') {
+        const x = Math.max(0, Math.round((pt.x - drag.dx) / 10) * 10); const y = Math.max(0, Math.round((pt.y - drag.dy) / 10) * 10);
+        if (x === drag.n.x && y === drag.n.y) return;
+        drag.n.x = x; drag.n.y = y; drag.moved = true;
+        svg.innerHTML = schematicBody(draft, devices, { sel });
+      } else {
+        const s = drag.start; const c = Math.max(46, Math.abs(pt.x - s.x) / 2);
+        $('#tmpWire', svg)?.setAttribute('d', `M${s.x},${s.y} C${s.x + s.dir * c},${s.y} ${pt.x - s.dir * c},${pt.y} ${pt.x},${pt.y}`);
+      }
+    });
+    svg?.addEventListener('pointerup', (e) => {
+      if (!drag) return;
+      const d = drag; drag = null;
+      if (d.kind === 'move') {
+        if (d.moved) { undo.push(d.before); S.schematicDirty = true; }
+        render();
+        return;
+      }
+      $('#tmpWire', svg)?.setAttribute('d', '');
+      const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('.sp');
+      const t = el ? { node: el.dataset.node, port: el.dataset.port } : null;
+      const same = t && t.node === d.from.node && t.port === d.from.port;
+      if (t && !same) { pending = null; connect(d.from, t); return; }
+      if (!same) return;
+      // A click (no drag) on a port: click-to-connect, for touch screens and trackpads.
+      if (pending && !(pending.node === t.node && pending.port === t.port)) { const p = pending; pending = null; connect(p, t); return; }
+      pending = pending ? null : t; render();
+      if (pending) say('Now click the port at the other end of the cable. Esc cancels.', 'info');
+    });
+  };
+  const removeSelected = () => {
+    if (!sel) return;
+    snap();
+    if (sel.type === 'node') { draft.nodes = draft.nodes.filter((n) => n.id !== sel.id); draft.links = draft.links.filter((l) => l.from !== sel.id && l.to !== sel.id); } else draft.links.splice(sel.i, 1);
+    sel = null; render();
+  };
+  const onKey = (e) => {
+    if (!card.isConnected) { document.removeEventListener('keydown', onKey); return; }
+    if (!editing || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); removeSelected(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && undo.length) { e.preventDefault(); draft = JSON.parse(undo.pop()); sel = null; render(); }
+    if (e.key === 'Escape' && pending) { pending = null; render(); }
+  };
+  document.addEventListener('keydown', onKey);
+  // Save / cancel / delete live in the footer, bound on every render.
+  const bindFoot = () => {
+    $('#scCancel', card)?.addEventListener('click', () => { draft = autoLayout(saved ? structuredClone(saved) : blank()); editing = false; sel = null; pending = null; S.schematicDirty = false; render(); });
     $('#scDelete', card)?.addEventListener('click', async (e) => {
       if (!e.target.dataset.confirm) { e.target.dataset.confirm = 1; e.target.textContent = 'Click again to delete'; return; }
       await api('/api/rooms/schematic', { method: 'PUT', body: { customerId, site, room, schematic: null } });
       S.schematicDirty = false; toast(ICONS.resolved, 'Schematic deleted'); mountSchematic(card, ctx);
     });
-    $('#scSave', card).addEventListener('click', async () => {
+    $('#scSave', card)?.addEventListener('click', async () => {
       try {
-        await api('/api/rooms/schematic', { method: 'PUT', body: { customerId, site, room, schematic: draft } });
+        const { updatedAt, updatedBy, ...body } = draft;
+        await api('/api/rooms/schematic', { method: 'PUT', body: { customerId, site, room, schematic: body } });
         S.schematicDirty = false; toast(ICONS.resolved, 'Schematic saved'); mountSchematic(card, ctx);
-      } catch (err) { $('#scMsg', card).innerHTML = `<div class="notice err">${esc(err.message)}</div>`; }
+      } catch (err) { say(err.message); card.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
     });
   };
   render();
+}
+
+// ------------------------------------------------------------------ room design documents (uploads)
+function fmtBytes(n) { return n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`; }
+async function mountDesigns(card, ctx) {
+  const { customerId, site, room } = ctx;
+  const q = `customerId=${encodeURIComponent(customerId)}&site=${encodeURIComponent(site)}&room=${encodeURIComponent(room)}`;
+  const [files, lib] = await Promise.all([api(`/api/rooms/designs?${q}`), S.blockLib || api('/api/schematic-blocks')]);
+  S.blockLib = lib;
+  const icon = (f) => `<div class="doc-ic ${f.ext}">${esc(f.ext.toUpperCase())}</div>`;
+  card.innerHTML = `<div class="card-head"><div><h2>Design documents</h2><div class="card-sub">As-built drawings, line diagrams and installer schematics for this room</div></div></div>
+    ${isAdmin() ? `<div class="upload-row"><input type="file" id="dsFile" accept="${esc(lib.designAccept)}"><input id="dsTitle" placeholder="Title (optional), e.g. As-built AV schematic rev B" maxlength="120"><button class="btn btn-primary btn-sm" id="dsUp">Upload</button></div>
+      <div class="help" style="margin:-4px 0 12px">PDF, PNG, JPEG, Visio (.vsdx) or AutoCAD (.dwg), up to 10 MB. Images and PDFs open in the browser; Visio and AutoCAD files download.</div><div id="dsMsg"></div>` : ''}
+    ${files.length ? `<div class="doc-grid">${files.map((f) => `<div class="doc">
+      <a class="doc-thumb" href="${f.url}" target="_blank" rel="noopener">${f.preview === 'image' ? `<img src="${f.url}" alt="${esc(f.title || f.name)}" loading="lazy">` : icon(f)}</a>
+      <div class="doc-meta"><b>${esc(f.title || f.name)}</b><small>${esc(f.label)} · ${fmtBytes(f.size)} · ${esc(f.uploadedBy || '')} · ${ago(f.uploadedAt)}</small>
+        <div class="doc-acts"><a class="linkbtn" href="${f.url}" target="_blank" rel="noopener">${f.preview === 'download' ? 'Download' : 'Open'}</a>${f.preview !== 'download' ? `<a class="linkbtn" href="${f.url}?download">Download</a>` : ''}${isAdmin() ? `<button class="linkbtn danger" data-deldoc="${f.id}">Remove</button>` : ''}</div></div></div>`).join('')}</div>`
+    : '<div class="empty">No documents uploaded for this room.</div>'}`;
+  $('#dsUp', card)?.addEventListener('click', async () => {
+    const f = $('#dsFile', card).files[0]; const msg = $('#dsMsg', card);
+    if (!f) { msg.innerHTML = '<div class="notice err">Choose a file first.</div>'; return; }
+    if (f.size > 10 * 1024 * 1024) { msg.innerHTML = '<div class="notice err">Files can be up to 10 MB.</div>'; return; }
+    const btn = $('#dsUp', card); btn.disabled = true; btn.textContent = 'Uploading…';
+    try {
+      const res = await fetch(`/api/rooms/designs?${q}&name=${encodeURIComponent(f.name)}&title=${encodeURIComponent($('#dsTitle', card).value.trim())}`, { method: 'POST', body: f, credentials: 'same-origin', headers: { 'content-type': 'application/octet-stream', 'x-requested-with': 'estate-monitor' } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast(ICONS.resolved, `Uploaded ${f.name}`); mountDesigns(card, ctx);
+    } catch (e) { msg.innerHTML = `<div class="notice err">${esc(e.message)}</div>`; btn.disabled = false; btn.textContent = 'Upload'; }
+  });
+  card.querySelectorAll('[data-deldoc]').forEach((b) => b.addEventListener('click', async () => {
+    if (!b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = 'Click again to remove'; return; }
+    await api(`/api/designs/${b.dataset.deldoc}`, { method: 'DELETE' });
+    toast(ICONS.resolved, 'Document removed'); mountDesigns(card, ctx);
+  }));
 }
 
 // ------------------------------------------------------------------ customers & onboarding (super admin)
@@ -1722,12 +2124,12 @@ function openModel(m, preset = {}) {
 }
 
 // ------------------------------------------------------------------ audit log
-const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 'Enter customer'], ['device.', 'Device edits'], ['room.', 'Rooms and schematics'], ['customer.', 'Customers'], ['user.', 'Users'], ['connection.', 'Connections and keys'], ['model.', 'Model master'], ['firmware.', 'New firmware seen'], ['audit.', 'Audit exports']];
+const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 'Enter customer'], ['device.', 'Device edits'], ['room.', 'Rooms and schematics'], ['customer.', 'Customers'], ['user.', 'Users'], ['connection.', 'Connections and keys'], ['model.', 'Model master'], ['firmware.', 'New firmware seen'], ['api.', 'API checks'], ['audit.', 'Audit exports']];
 const AUDIT_LABEL = {
   'auth.login': 'Signed in', 'auth.login_failed': 'Failed sign-in', 'auth.logout': 'Signed out',
   'session.enter_customer': 'Entered customer', 'session.exit_customer': 'Left customer',
   'device.bulk_update': 'Updated devices', 'device.manual_add': 'Added device manually', 'device.manual_update': 'Edited manual device', 'device.manual_delete': 'Removed manual device', 'device.reset': 'Reset devices to OEM values',
-  'room.schematic_saved': 'Saved room schematic', 'room.schematic_removed': 'Removed room schematic', 'room.platform': 'Changed room platform',
+  'room.schematic_saved': 'Saved room schematic', 'room.design_uploaded': 'Uploaded room design document', 'room.design_removed': 'Removed room design document', 'api.check': 'Ran API check', 'room.schematic_removed': 'Removed room schematic', 'room.platform': 'Changed room platform',
   'customer.onboard': 'Onboarded customer', 'customer.update': 'Updated customer', 'customer.delete': 'Deleted customer',
   'user.create': 'Added user', 'user.delete': 'Removed user',
   'connection.create': 'Added connection', 'connection.update': 'Changed connection', 'connection.test': 'Tested connection', 'connection.sync': 'Ran sync', 'connection.delete': 'Removed connection',
@@ -1774,6 +2176,67 @@ async function viewAudit() {
   for (const id of ['#aAction', '#aFrom', '#aTo']) $(id).addEventListener('change', go);
   let t;
   for (const id of ['#aActor', '#aQ']) $(id).addEventListener('input', () => { clearTimeout(t); t = setTimeout(go, 400); });
+}
+
+// ------------------------------------------------------------------ API tracker (admins; checks: super admin)
+const API_STATE = { up: ['Up', 'good'], slow: ['Slow', 'warn'], down: ['Down', 'crit'], unchecked: ['Not checked', 'mute'], retired: ['Retired by vendor', 'mute'], 'no-api': ['No public API', 'mute'] };
+function latencyBars(checks) {
+  const list = [...checks].reverse();
+  if (!list.length) return '<span class="muted">—</span>';
+  const max = Math.max(500, ...list.map((c) => c.ms));
+  return `<svg class="spark" viewBox="0 0 ${list.length * 6} 24" width="${list.length * 6}" height="24" aria-hidden="true">${list.map((c, i) => { const h = c.ok ? Math.max(2, (c.ms / max) * 22) : 22; return `<rect x="${i * 6}" y="${24 - h}" width="4" height="${h}" rx="1" fill="${c.ok ? (c.ms > 1500 ? '#fab219' : '#0ca30c') : '#d03b3b'}"><title>${esc(`${fmtDateTime(c.at)} · ${c.ok ? `${c.ms} ms` : 'failed'}${c.status ? ` · HTTP ${c.status}` : ''}`)}</title></rect>`; }).join('')}</svg>`;
+}
+async function viewApis(report) {
+  const r = report || await api('/api/admin/apis');
+  S.apiReport = r;
+  const s = r.summary;
+  hero('API tracker', `Every external API this tool depends on, which customers use it, and how it is performing.${r.intervalMinutes ? ` Checked automatically every ${r.intervalMinutes} minutes.` : ''}`);
+  const groups = [...new Set(r.apis.map((a) => a.group))];
+  $('#view').innerHTML = `
+    <div class="stats">
+      ${statTile('Up', s.up, `${s.total} APIs tracked`, s.up ? 'good' : '')}
+      ${statTile('Slow', s.slow, `Answer took over ${r.slowMs / 1000} s`, s.slow ? 'warn' : '')}
+      ${statTile('Down', s.down, s.down ? 'Not reachable at the last check' : 'None at the last check', s.down ? 'crit' : 'good')}
+      ${statTile('Not checked / no API', s.unchecked + s.unavailable, `${s.unavailable} have no live API from the vendor`, '')}
+    </div>
+    <div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Checks</h2><div class="card-sub">${r.lastRunAt ? `Last run ${ago(r.lastRunAt)} (${fmtDateTime(r.lastRunAt)})` : 'Not run yet'}. A check calls each API without credentials and times the answer. A 401 or 403 means it is up and asking for a token, as expected. It also tests each customer connection with its own credentials.</div></div>
+      ${isSuper() ? '<button class="btn btn-primary btn-sm" id="apiCheckAll">Check all APIs</button>' : '<span class="muted">Only the super admin can run checks</span>'}</div><div id="apiMsg"></div></div>
+    ${groups.map((g) => `<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>${esc(g)}</h2><div class="card-sub">${g === 'Map and browser' ? 'Called by the user\'s browser, not the server' : 'Called by the server when it syncs devices'}</div></div></div>
+      <div class="table-wrap flat"><table class="api-table"><thead><tr><th>Status</th><th>API</th><th>Used by</th><th>Last check</th><th>Response time (last 24 checks)</th><th>Live calls</th><th></th></tr></thead><tbody>
+      ${r.apis.filter((a) => a.group === g).map((a) => { const [lbl, tone] = API_STATE[a.state]; return `<tr data-api="${esc(a.id)}">
+        <td>${chip(lbl, tone)}</td>
+        <td><b>${esc(a.name)}</b><div class="muted">${esc(a.provider)}${a.method ? ` · <span class="mono">${esc(a.method)}</span>` : ''}</div>${a.url ? `<div class="mono api-url">${esc(a.url)}</div>` : ''}</td>
+        <td>${a.calledFrom === 'Browser' ? '<span class="muted">Every signed-in user</span>' : a.connections.length ? `${a.live ? chip(`${a.live} live`, 'good') : ''} ${a.mock ? chip(`${a.mock} demo`, 'mute') : ''}<div class="muted">${esc([...new Set(a.connections.map((c) => c.customerName))].slice(0, 3).join(', '))}${new Set(a.connections.map((c) => c.customerName)).size > 3 ? '…' : ''}</div>` : '<span class="muted">No connections</span>'}</td>
+        <td>${a.latest ? `<b>${a.latest.ok ? `${a.latest.ms} ms` : 'Failed'}</b>${a.latest.status ? ` <span class="muted">HTTP ${a.latest.status}</span>` : ''}<div class="muted">${esc(a.latest.note || '')}${a.latest.note ? ' · ' : ''}${ago(a.latest.at)}</div>` : '<span class="muted">—</span>'}</td>
+        <td>${latencyBars(a.checks)}${a.avgMs !== null ? `<div class="muted">avg ${a.avgMs} ms · p95 ${a.p95Ms} ms · ${a.uptime}% up</div>` : ''}</td>
+        <td>${a.calls ? `<b>${a.calls.calls}</b> calls<div class="muted">${a.calls.errors} errors · avg ${a.calls.avgMs} ms${a.calls.lastError ? ` · last: ${esc(a.calls.lastError)}` : ''}</div>` : `<span class="muted">${a.live ? 'None since restart' : 'Live mode only'}</span>`}</td>
+        <td style="white-space:nowrap">${isSuper() && a.probeUrl ? `<button class="btn btn-outline btn-sm" data-check="${esc(a.id)}">Check</button>` : ''}</td></tr>`; }).join('')}
+      </tbody></table></div></div>`).join('')}`;
+  const run = async (btn, id) => {
+    btn.disabled = true; const old = btn.textContent; btn.textContent = 'Checking…';
+    try { const rep = await api('/api/admin/apis/check', { method: 'POST', body: id ? { id } : {} }); toast(ICONS.resolved, id ? 'API checked' : `Checked ${rep.apis.filter((a) => a.latest).length} APIs`); viewApis(rep); } catch (e) { $('#apiMsg').innerHTML = `<div class="notice err">${esc(e.message)}</div>`; btn.disabled = false; btn.textContent = old; }
+  };
+  $('#apiCheckAll')?.addEventListener('click', (e) => run(e.target, null));
+  document.querySelectorAll('[data-check]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); run(b, b.dataset.check); }));
+  document.querySelectorAll('tr[data-api]').forEach((tr) => tr.addEventListener('click', () => openApi(r.apis.find((a) => a.id === tr.dataset.api))));
+}
+function openApi(a) {
+  const [lbl, tone] = API_STATE[a.state];
+  drawer(a.name, `${esc(a.provider)} · ${esc(a.group)}`, `
+    <div style="margin-bottom:12px">${chip(lbl, tone)}</div>
+    <dl class="kv"><dt>Purpose</dt><dd>${esc(a.purpose)}</dd>
+      ${a.url ? `<dt>Endpoint</dt><dd class="mono" style="word-break:break-all">${esc(a.method || '')} ${esc(a.url)}</dd>` : ''}
+      ${a.probeUrl && a.probeUrl !== a.url ? `<dt>Checked at</dt><dd class="mono" style="word-break:break-all">${esc(a.probeUrl)}</dd>` : ''}
+      <dt>Authentication</dt><dd>${esc(a.auth || '—')}</dd><dt>Called from</dt><dd>${esc(a.calledFrom)}</dd>
+      ${a.docsUrl ? `<dt>Documentation</dt><dd><a href="${esc(a.docsUrl)}" target="_blank" rel="noopener">Vendor docs</a></dd>` : ''}</dl>
+    ${a.connections.length ? `<div class="section-title">Customer connections using it</div>
+      <div class="table-wrap flat"><table><thead><tr><th>Connection</th><th>Mode</th><th>Last sync</th><th>Credential test</th></tr></thead><tbody>
+      ${a.connections.map((c) => `<tr><td><b>${esc(c.name)}</b><div class="muted">${esc(c.customerName)}</div></td><td><span class="pill ${c.mode}">${c.mode === 'live' ? 'Live' : 'Demo'}</span></td>
+        <td>${c.sync.state === 'error' ? chip('Failed', 'crit') : c.sync.state === 'ok' ? chip('OK', 'good') : chip(c.sync.state, 'mute')}<div class="muted">${c.sync.lastSuccessAt ? `${ago(c.sync.lastSuccessAt)} · ${c.sync.durationMs} ms` : ''}${c.sync.error ? esc(c.sync.error) : ''}</div></td>
+        <td>${c.test ? `${chip(c.test.ok ? 'Passed' : 'Failed', c.test.ok ? 'good' : 'crit')} <span class="muted">${c.test.ms} ms</span><div class="muted">${esc(c.test.message || '')}</div>` : '<span class="muted">Runs with the next check</span>'}</td></tr>`).join('')}</tbody></table></div>` : ''}
+    ${a.calls ? `<div class="section-title">Live calls since the server started</div><dl class="kv"><dt>Calls</dt><dd>${a.calls.calls} (${a.calls.errors} errors)</dd><dt>Average</dt><dd>${a.calls.avgMs} ms</dd><dt>Last call</dt><dd>${ago(a.calls.lastAt)}${a.calls.lastStatus ? ` · HTTP ${a.calls.lastStatus}` : ''}</dd>${a.calls.lastError ? `<dt>Last error</dt><dd>${esc(a.calls.lastError)}</dd>` : ''}</dl>` : ''}
+    ${a.checks.length ? `<div class="section-title">Recent checks</div><div class="table-wrap flat"><table><thead><tr><th>Time</th><th>Result</th><th>Time taken</th></tr></thead><tbody>
+      ${a.checks.map((c) => `<tr><td>${fmtDateTime(c.at)}</td><td>${c.ok ? chip('Up', 'good') : chip('Down', 'crit')}${c.status ? ` <span class="muted">HTTP ${c.status}</span>` : ''}</td><td>${c.ms} ms</td></tr>`).join('')}</tbody></table></div>` : ''}`);
 }
 
 // ------------------------------------------------------------------ add a device by hand

@@ -15,6 +15,7 @@
 
 import https from 'node:https';
 import { BaseConnector } from '../base.js';
+import { recordCall } from '../../lib/api-calls.js';
 import { makeDevice, classifyDeviceType, splitPath } from '../../lib/device-model.js';
 import { LogitechSyncMockTransport } from './mock.js';
 
@@ -32,6 +33,8 @@ export class LogitechSyncHttpTransport {
   get(path, query = {}, attempt = 0) {
     const url = new URL(this.baseUrl + path);
     for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+    const started = Date.now();
+    const track = (status, error) => { if (this.requestImpl === https.request) recordCall(url.href, { status, ms: Date.now() - started, error }); };
     return new Promise((resolve, reject) => {
       const req = this.requestImpl(url, {
         method: 'GET',
@@ -45,6 +48,7 @@ export class LogitechSyncHttpTransport {
         res.setEncoding('utf8');
         res.on('data', (c) => { body += c; });
         res.on('end', () => {
+          track(res.statusCode);
           if (res.statusCode === 429 && attempt < 3) {
             const wait = Math.min(Number(res.headers['retry-after'] || 2 ** attempt) * 1000, 30_000);
             setTimeout(() => this.get(path, query, attempt + 1).then(resolve, reject), wait);
@@ -57,7 +61,7 @@ export class LogitechSyncHttpTransport {
         });
       });
       req.on('timeout', () => req.destroy(new Error('Logitech Sync request timed out')));
-      req.on('error', reject);
+      req.on('error', (e) => { track(null, e.message); reject(e); });
       req.end();
     });
   }
@@ -69,6 +73,9 @@ export class LogitechSyncConnector extends BaseConnector {
   static make = 'Logitech';
   static nativeHealth = true;
   static docsUrl = 'https://hub.sync.logitech.com/syncguides/post/1-8-getting-started---api-quick-start-guide-QOU16rRoLmzBP9F';
+  static apis = [
+    { id: 'logitech-sync-places', name: 'Logitech Sync places', method: 'GET', url: `${LOGI_DEFAULT_BASE}/org/{orgId}/place`, probe: LOGI_DEFAULT_BASE, purpose: 'Rooms, devices, status, firmware and warranty', auth: 'mTLS client certificate' },
+  ];
   static settingFields = [
     { key: 'orgId', label: 'Organization ID', required: true, help: 'Sync Portal > Settings > Sync Cloud API' },
     { key: 'baseUrl', label: 'API server', default: LOGI_DEFAULT_BASE, help: 'The API Server value shown in your Sync portal' },

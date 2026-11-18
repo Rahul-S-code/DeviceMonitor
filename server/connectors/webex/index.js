@@ -17,13 +17,14 @@
 //          GET /v1/locations  -> { items: [{ id, name }] }
 
 import { BaseConnector } from '../base.js';
+import { trackedFetch } from '../../lib/api-calls.js';
 import { makeDevice, classifyDeviceType } from '../../lib/device-model.js';
 import { WebexMockTransport } from './mock.js';
 
 export const WEBEX_DEFAULT_BASE = 'https://webexapis.com/v1';
 
 export class WebexHttpTransport {
-  constructor({ baseUrl, accessToken, fetchImpl = fetch }) {
+  constructor({ baseUrl, accessToken, fetchImpl = trackedFetch }) {
     Object.assign(this, { baseUrl: baseUrl.replace(/\/$/, ''), accessToken, fetchImpl });
   }
 
@@ -66,6 +67,11 @@ export class WebexConnector extends BaseConnector {
   static platform = 'Cisco Webex';
   static nativeHealth = true;
   static docsUrl = 'https://developer.webex.com/docs/api/v1/devices';
+  static apis = [
+    { id: 'webex-devices', name: 'Webex List Devices', method: 'GET', url: `${WEBEX_DEFAULT_BASE}/devices`, purpose: 'Devices, software version and connection status', auth: 'Bearer token (spark-admin:devices_read)' },
+    { id: 'webex-workspaces', name: 'Webex List Workspaces', method: 'GET', url: `${WEBEX_DEFAULT_BASE}/workspaces`, purpose: 'Room (workspace) names', auth: 'Bearer token (spark-admin:workspaces_read)' },
+    { id: 'webex-locations', name: 'Webex List Locations', method: 'GET', url: `${WEBEX_DEFAULT_BASE}/locations`, purpose: 'Site names (optional)', auth: 'Bearer token (spark-admin:locations_read)' },
+  ];
   static setupSteps = [
     'In developer.webex.com create a Service App (or an admin Integration) for the customer org.',
     'Request the scopes spark-admin:devices_read, spark-admin:workspaces_read and spark-admin:locations_read.',

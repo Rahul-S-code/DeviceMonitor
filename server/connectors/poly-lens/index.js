@@ -17,6 +17,7 @@
 // warning for connectors that do not report native health.
 
 import { BaseConnector } from '../base.js';
+import { trackedFetch } from '../../lib/api-calls.js';
 import { makeDevice, classifyDeviceType, normalisePlatform } from '../../lib/device-model.js';
 import { PolyLensMockTransport } from './mock.js';
 
@@ -59,7 +60,7 @@ export const INVENTORY_QUERY = `query Inventory($params: DeviceFindArgs, $tenant
 
 /** Live HTTP transport: OAuth client-credentials + GraphQL over fetch. */
 export class PolyLensHttpTransport {
-  constructor({ clientId, clientSecret, authUrl, apiUrl, fetchImpl = fetch }) {
+  constructor({ clientId, clientSecret, authUrl, apiUrl, fetchImpl = trackedFetch }) {
     Object.assign(this, { clientId, clientSecret, authUrl, apiUrl, fetchImpl });
     this.token = null;
     this.tokenExpires = 0;
@@ -100,6 +101,10 @@ export class PolyLensConnector extends BaseConnector {
   static make = 'Poly';
   static nativeHealth = false;
   static docsUrl = 'https://lensapidocsdev.z19.web.core.windows.net/docs/graphql/how-to-get-started';
+  static apis = [
+    { id: 'poly-lens-auth', name: 'Poly Lens token', method: 'POST', url: POLY_DEFAULTS.authUrl, purpose: 'Gets an access token (OAuth client credentials)', auth: 'Client ID and secret' },
+    { id: 'poly-lens-graphql', name: 'Poly Lens GraphQL', method: 'POST', url: POLY_DEFAULTS.apiUrl, purpose: 'Tenants, sites, rooms, devices, firmware and connection state', auth: 'Bearer token' },
+  ];
   static settingFields = [
     { key: 'tenantId', label: 'Tenant ID', placeholder: 'Leave blank to sync every tenant the API client can access', help: 'Optional. Found in Poly Lens under Account > Tenant.' },
     { key: 'authUrl', label: 'Token URL', default: POLY_DEFAULTS.authUrl },

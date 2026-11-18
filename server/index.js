@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './lib/store.js';
 import { Vault, maskSecrets } from './lib/vault.js';
 import { Sessions, COOKIE, parseCookies, verifyPassword, allowedCustomers, isAdminRole, isSuperAdmin, hashPassword } from './lib/auth.js';
-import { validateSchematic, SCHEMATIC_TEMPLATES } from './lib/schematic.js';
+import { validateSchematic, withBlockPorts, SCHEMATIC_TEMPLATES, BLOCKS, CABLES, NODE_KINDS, CONDITIONS } from './lib/schematic.js';
+import { detectDesignType, cleanFileName, DESIGN_ACCEPT, MAX_DESIGNS_PER_ROOM } from './lib/designs.js';
+import { ApiTracker } from './services/api-tracker.js';
 import { Inventory } from './services/inventory.js';
 import { SyncService } from './services/sync.js';
 import { History, slaReport, WINDOWS } from './services/history.js';
@@ -50,6 +52,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const history = new History(dataDir);
   const sync = new SyncService({ store, vault, inventory, history, intervalMs: intervalMs ?? Number(process.env.SYNC_INTERVAL_SECONDS || 30) * 1000 });
   const sessions = new Sessions();
+  const apiTracker = new ApiTracker({ store, sync, mapLayers, intervalMinutes: Number(process.env.API_CHECK_MINUTES ?? 30) });
 
   const app = express();
   app.disable('x-powered-by');
@@ -233,19 +236,86 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
 
   // Room schematics (cabling diagrams).
   app.get('/api/schematic-templates', requireUser, (_req, res) => res.json(SCHEMATIC_TEMPLATES));
+  app.get('/api/schematic-blocks', requireUser, (_req, res) => res.json({ blocks: BLOCKS, cables: CABLES, kinds: NODE_KINDS, conditions: CONDITIONS, designAccept: DESIGN_ACCEPT }));
+  // Normalise a schematic loaded from a file so it opens port to port in the designer.
+  app.post('/api/schematics/prepare', requireUser, requireJson, (req, res) => {
+    try { res.json(withBlockPorts(validateSchematic(req.body))); } catch (e) { res.status(400).json({ error: e.message }); }
+  });
   app.get('/api/rooms/schematic', requireUser, (req, res) => {
     const { customerId, site, room } = req.query;
     if (!inScope(req, customerId)) return res.status(404).json({ error: 'Not found' });
-    res.json(store.schematic(customerId, site, room));
+    const saved = store.schematic(customerId, site, room);
+    // Schematics saved before the designer existed get ports from their building blocks.
+    res.json(saved && saved.nodes.some((n) => !Array.isArray(n.ports)) ? withBlockPorts(saved) : saved);
   });
   app.put('/api/rooms/schematic', requireAdmin, requireJson, (req, res) => {
     const { customerId, site, room, schematic } = req.body || {};
     if (!inScope(req, customerId) || !site || !room) return res.status(400).json({ error: 'Unknown room' });
     try {
-      store.setSchematic(customerId, site, room, schematic ? validateSchematic(schematic) : null);
+      store.setSchematic(customerId, site, room, schematic ? { ...validateSchematic(schematic), updatedBy: req.user.name || req.user.email } : null);
       sync.refresh();
       audit(req, schematic ? 'room.schematic_saved' : 'room.schematic_removed', { customerId, target: `${room}, ${site}`, details: schematic ? { nodes: schematic.nodes?.length || 0, links: schematic.links?.length || 0 } : undefined });
       res.json({ ok: true, schematic: store.schematic(customerId, site, room) });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  // Room design documents: uploaded drawings (PDF, image, Visio, AutoCAD).
+  const roomArgs = (q) => ({ customerId: String(q.customerId || ''), site: String(q.site || '').slice(0, 120), room: String(q.room || '').slice(0, 120) });
+  const designOut = (d) => ({ id: d.id, name: d.name, title: d.title || null, ext: d.ext, mime: d.mime, label: d.label, preview: d.preview, size: d.size, uploadedAt: d.uploadedAt, uploadedBy: d.uploadedBy, url: `/api/designs/${d.id}/file` });
+  app.get('/api/rooms/designs', requireUser, (req, res) => {
+    const { customerId, site, room } = roomArgs(req.query);
+    if (!inScope(req, customerId)) return res.status(404).json({ error: 'Not found' });
+    res.json(store.designsFor(customerId, site, room).map(designOut));
+  });
+  app.post('/api/rooms/designs', requireAdmin, (req, res, next) => {
+    // Uploads are raw bytes, not JSON. A custom header can't be sent cross-site without CORS, so it stands in for requireJson.
+    if (req.get('x-requested-with') !== 'estate-monitor') return res.status(415).json({ error: 'Upload from the app' });
+    next();
+  }, express.raw({ type: () => true, limit: '10mb' }), (req, res) => {
+    const { customerId, site, room } = roomArgs(req.query);
+    if (!inScope(req, customerId) || !site || !room) return res.status(400).json({ error: 'Unknown room' });
+    try {
+      if (store.designsFor(customerId, site, room).length >= MAX_DESIGNS_PER_ROOM) throw new Error(`A room can hold up to ${MAX_DESIGNS_PER_ROOM} files. Remove one first.`);
+      const name = cleanFileName(req.query.name);
+      const type = detectDesignType(req.body, name);
+      const title = req.query.title ? String(req.query.title).trim().slice(0, 120) || null : null;
+      const d = store.addDesign({ customerId, site, room, name, title, ...type, uploadedBy: req.user.name || req.user.email }, req.body);
+      audit(req, 'room.design_uploaded', { customerId, target: `${room}, ${site}`, details: { file: name, type: type.label, size: d.size } });
+      res.json(designOut(d));
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  const findDesign = (req, res) => {
+    const d = store.data.designs.find((x) => x.id === req.params.id);
+    if (!d || !inScope(req, d.customerId)) { res.status(404).json({ error: 'Not found' }); return null; }
+    return d;
+  };
+  app.get('/api/designs/:id/file', requireUser, (req, res) => {
+    const d = findDesign(req, res); if (!d) return;
+    const inline = d.preview !== 'download' && req.query.download === undefined;
+    const ascii = d.name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+    res.set({
+      'Content-Type': d.mime,
+      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(d.name)}`,
+      'Cache-Control': 'private, max-age=300',
+    });
+    res.sendFile(store.designPath(d), (err) => { if (err && !res.headersSent) res.status(404).json({ error: 'The file is missing. It may have been lost when the server restarted.' }); });
+  });
+  app.delete('/api/designs/:id', requireAdmin, (req, res) => {
+    const d = findDesign(req, res); if (!d) return;
+    store.removeDesign(d.id);
+    audit(req, 'room.design_removed', { customerId: d.customerId, target: `${d.room}, ${d.site}`, details: { file: d.name } });
+    res.json({ ok: true });
+  });
+
+  // --- API tracker (admins; checks are super admin only) ---------------------
+  app.get('/api/admin/apis', requireAdmin, (_req, res) => res.json(apiTracker.report()));
+  app.post('/api/admin/apis/check', requireSuper, requireJson, async (req, res) => {
+    const id = req.body?.id ? String(req.body.id) : null;
+    try {
+      const report = await apiTracker.check({ id, actor: req.user.email });
+      const checked = report.apis.filter((a) => a.latest && (!id || a.id === id));
+      audit(req, 'api.check', { target: id ? checked[0]?.name : 'All APIs', details: { checked: checked.length, down: checked.filter((a) => a.state === 'down').length } });
+      res.json(report);
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
@@ -566,8 +636,8 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   app.use(express.static(path.join(ROOT, 'public'), { index: 'index.html' }));
   app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 
-  if (autoStart) sync.start();
-  return { app, store, sync, inventory, vault, history };
+  if (autoStart) { sync.start(); apiTracker.start(); }
+  return { app, store, sync, inventory, vault, history, apiTracker };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -24,6 +24,9 @@ export class GoogleMeetConnector extends BaseConnector {
   static liveSupported = false;
   static liveNote = 'Google shows Meet hardware status only in the Admin console and has no public API for it, so this connection runs on mock data. Meet devices made by Logitech or Poly are still monitored live through their OEM cloud.';
   static docsUrl = 'https://knowledge.workspace.google.com/admin/meet-hardware/check-for-offline-meet-hardware';
+  static apis = [
+    { id: 'google-meet-hardware', name: 'Google Meet hardware status', method: null, url: null, availability: 'none', purpose: 'No public API: status is only in the Google Admin console', auth: null },
+  ];
 
   async testConnection() {
     if (this.isLive) return { ok: false, message: this.constructor.liveNote };

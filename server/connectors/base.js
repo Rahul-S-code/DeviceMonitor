@@ -19,6 +19,12 @@ export class BaseConnector {
   static liveSupported = true;
   /** Shown in the UI to explain the live-mode situation (e.g. a retired API). */
   static liveNote = '';
+  /**
+   * External API endpoints this connector calls, for the API tracker.
+   * availability: 'retired' | 'none' when there is nothing live to call.
+   * @type {Array<{id:string,name:string,method:string|null,url:string|null,probe?:string,purpose:string,auth:string|null,availability?:string}>}
+   */
+  static apis = [];
   /** Steps shown when linking credentials. */
   static setupSteps = [];
   /**

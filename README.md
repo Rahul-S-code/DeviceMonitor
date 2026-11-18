@@ -17,7 +17,7 @@ Needs Node.js 20 or newer.
 npm install
 cp .env.example .env      # optional; set MASTER_KEY for anything beyond a demo
 npm start                 # http://localhost:8080
-npm test                  # 31 tests: connectors, dedupe, tenancy, encryption, mTLS, onboarding, schematics, models, SLA, audit
+npm test                  # 41 tests: connectors, dedupe, tenancy, encryption, mTLS, onboarding, schematics, designs, API tracker, models, SLA, audit
 ```
 
 Demo sign-ins (password `demo1234`, or whatever `DEMO_PASSWORD` is set to on first run):
@@ -59,6 +59,23 @@ The three customers, their sites and devices are fictional mock data.
 - **SLA tab**: availability over 24 hours, 7 days or 30 days by customer, site, room and device, against a per-customer target (default 99.5%, set under Customers › Sites & users), plus incidents, mean time to restore and a trend chart. A device is unavailable while offline or critical. Health is recorded at every sync into `data/history.json` (35 days kept); devices from mock connections use a simulated history so the demo has 30 days of data.
 - **Audit log tab** (admins): sign-ins and failed sign-ins, entering customers, device edits, room platform and schematic changes, onboarding, users, connection changes, tests and syncs (only the names of changed credential fields, never values), model master changes, new firmware seen, and audit exports. Filter by activity, user, date and text; export to CSV.
 
+## Schematic designer and room documents
+
+Each room page has a **Room schematic** card. Admins open the **designer**:
+
+- **Building blocks** in the left palette: video bars, codecs, cameras, room PCs, controllers, displays, projectors, microphones, DSPs, amplifiers, HDMI switchers and splitters, HDBaseT transmitters and receivers, USB extenders and hubs, wireless presentation, table boxes, wall plates, network switches, PoE injectors and power strips. The room's own monitored devices are listed first and are added already linked.
+- Every block has **typed ports** (HDMI in/out, DisplayPort, HDBaseT, USB, USB-C, LAN/PoE, audio, speaker, fibre, power). Ports can be renamed, added or removed per item.
+- **Drag from one port to another** to run a cable (or click one port, then the other). Outputs feed inputs; a port takes one cable. Each cable gets a tag (C-01, C-02...) and can carry a length, a condition (tested OK, suspect, faulty) and a note.
+- Templates, JSON import and export, auto-arrange, zoom and undo are on the toolbar.
+
+Outside the designer the same drawing is the **troubleshooting view**: linked devices show live health, the **Room check** panel lists unhealthy devices with every cable and port they depend on and what they affect downstream, flags faulty or suspect cables, and notes devices missing from the drawing. Clicking an item traces its signal path. The **cable schedule** below the drawing exports to CSV.
+
+The **Design documents** card holds uploaded drawings for the room (PDF, PNG, JPEG, Visio .vsdx, AutoCAD .dwg, up to 10 MB each, 20 per room). The file type is checked from the file's content. Images and PDFs open in the browser; Visio and AutoCAD files download. Files are stored under `data/designs/`.
+
+## API tracker
+
+**Configure › API tracker** (admins) lists every external API the tool uses: each OEM and platform endpoint, the map tile servers and Google Fonts, with the customers and connections that use it. The super admin's **Check all APIs** (or **Check** on one row) calls each endpoint without credentials and times the answer (a 401 or 403 counts as up, since it means the service answered), and tests every customer connection with its own credentials. Results keep the last 48 checks per API (response time chart, average, p95, uptime). Live connector traffic is also counted per endpoint (calls, errors, average time) since the server started. Checks run automatically every `API_CHECK_MINUTES` (default 30, 0 turns it off).
+
 ## Adding devices by hand
 
 Admins can add devices that no API reports (Devices › **+ Add device**, or **+ Add device** on a room page). Make and model are picked from the model master; for kit the master doesn't list, choose **Other** and type the manufacturer, model and device type. Devices with no API connector for their model (including everything entered under Other) are tagged **Not monitored**, and typed-in models appear on the Models tab for the super admin to catalogue. All manual devices show health **Not monitored**: they count in the inventory, lifecycle and warranty views but not in health alerts or SLA. If a connected API later reports the same serial number or MAC address, the records merge: live health and the OEM's location take over, and the asset tag, notes and warranty you entered are kept. Bulk upload from a CSV or Excel template is planned next.
@@ -72,7 +89,7 @@ GitHub stores the code but cannot run a Node server, so the app is hosted on Ren
 3. Render reads `render.yaml`. Enter a `SUPERADMIN_PASSWORD` and a `DEMO_PASSWORD` when asked (use strong ones: the site is public).
 4. Press **Apply**. After the build you get a public `https://estate-monitor-….onrender.com` address. Every push to `main` redeploys it.
 
-On the free plan the service sleeps after 15 minutes without visitors (the first visit then takes about a minute), and its disk is temporary, so onboarded customers, schematics and saved API keys are reset when it restarts. For real use, add a Render persistent disk mounted at `/opt/render/project/src/data` (paid plan) or move the store to a database.
+On the free plan the service sleeps after 15 minutes without visitors (the first visit then takes about a minute), and its disk is temporary, so onboarded customers, schematics, uploaded design documents and saved API keys are reset when it restarts. For real use, add a Render persistent disk mounted at `/opt/render/project/src/data` (paid plan) or move the store to a database.
 
 ## Architecture
 
@@ -87,7 +104,10 @@ server/
   lib/vault.js              AES-256-GCM encryption for credentials
   lib/store.js              JSON-file config store (data/store.json): customers, users, connections,
                             site directory (with map coordinates), device overrides, room schematics
-  lib/schematic.js          Room schematic validation and templates
+  lib/schematic.js          Room schematic building blocks, validation and templates
+  lib/designs.js            Uploaded room design documents (type checks)
+  lib/api-calls.js          Counts live connector API calls per endpoint
+  services/api-tracker.js   API catalogue, reachability checks and performance
   lib/auth.js               scrypt passwords, HttpOnly sessions, customer scoping
   services/dedupe.js        Merge devices reported by several sources
   services/inventory.js     Enrichment, filtering, aggregates, drill-down tree

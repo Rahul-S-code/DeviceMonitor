@@ -20,13 +20,14 @@
 // Zoom reports online/offline only, so health is healthy or offline here.
 
 import { BaseConnector } from '../base.js';
+import { trackedFetch } from '../../lib/api-calls.js';
 import { makeDevice, classifyDeviceType } from '../../lib/device-model.js';
 import { ZoomRoomsMockTransport } from './mock.js';
 
 export const ZOOM_DEFAULTS = { authUrl: 'https://zoom.us/oauth/token', apiUrl: 'https://api.zoom.us/v2' };
 
 export class ZoomHttpTransport {
-  constructor({ accountId, clientId, clientSecret, authUrl, apiUrl, fetchImpl = fetch }) {
+  constructor({ accountId, clientId, clientSecret, authUrl, apiUrl, fetchImpl = trackedFetch }) {
     Object.assign(this, { accountId, clientId, clientSecret, authUrl, apiUrl: apiUrl.replace(/\/$/, ''), fetchImpl });
     this.token = null;
     this.tokenExpires = 0;
@@ -65,6 +66,12 @@ export class ZoomRoomsConnector extends BaseConnector {
   static platform = 'Zoom';
   static nativeHealth = false;
   static docsUrl = 'https://developers.zoom.us/docs/api/rooms/';
+  static apis = [
+    { id: 'zoom-auth', name: 'Zoom OAuth token', method: 'POST', url: ZOOM_DEFAULTS.authUrl, purpose: 'Gets an access token (Server-to-Server OAuth)', auth: 'Account ID, client ID and secret' },
+    { id: 'zoom-rooms-list', name: 'List Zoom Rooms', method: 'GET', url: `${ZOOM_DEFAULTS.apiUrl}/rooms`, purpose: 'Rooms and their online status', auth: 'Bearer token (room:read:admin)' },
+    { id: 'zoom-room-devices', name: 'List Zoom Room devices', method: 'GET', url: `${ZOOM_DEFAULTS.apiUrl}/rooms/{roomId}/devices`, probe: `${ZOOM_DEFAULTS.apiUrl}/rooms/0/devices`, purpose: 'Devices in each room, with app version and status', auth: 'Bearer token (room:read:admin)' },
+    { id: 'zoom-room-locations', name: 'List Zoom Room locations', method: 'GET', url: `${ZOOM_DEFAULTS.apiUrl}/rooms/locations`, purpose: 'Location names for sites (optional)', auth: 'Bearer token' },
+  ];
   static setupSteps = [
     'In the Zoom App Marketplace, choose Develop › Build App › Server-to-Server OAuth.',
     'Add the scope room:read:admin (List Zoom Rooms and List Zoom Room devices) and activate the app.',
