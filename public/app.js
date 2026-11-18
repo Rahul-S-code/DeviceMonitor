@@ -1791,85 +1791,85 @@ async function openManualDevice(rec, preset = {}) {
   const startMake = curModel?.make || (customMake && makes.includes(customMake) ? customMake : customMake ? OTHER : preset.make);
   const v = (k) => esc(rec?.[k] ?? preset[k] ?? '');
   const w = drawer(editing ? 'Edit manual device' : 'Add device', editing ? 'Changes apply to the manual record' : 'For kit with no API, or not connected yet', `
-    <div id="adMsg"></div>
+    <div id="mdvMsg"></div>
     <div class="notice info">Devices added here show as <b>Not monitored</b>. If a connected API later reports the same serial number or MAC address, the two records merge and live health takes over.</div>
-    ${custs.length > 1 && !editing ? `<div class="field"><label>Customer *</label><select id="adCust">${custs.map((c) => `<option value="${esc(c.id)}" ${c.id === customerId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>` : ''}
+    ${custs.length > 1 && !editing ? `<div class="field"><label>Customer *</label><select id="mdvCust">${custs.map((c) => `<option value="${esc(c.id)}" ${c.id === customerId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>` : ''}
     <div class="grid cols-2" style="gap:10px">
-      <div class="field"><label>Make *</label><select id="adMake"><option value="">Choose make…</option>${makes.map((m) => `<option ${m === startMake ? 'selected' : ''}>${esc(m)}</option>`).join('')}<option value="${OTHER}" ${startMake === OTHER ? 'selected' : ''}>Other (type it in)…</option></select></div>
-      <div class="field"><label>Model *</label><select id="adModel"></select></div>
+      <div class="field"><label>Make *</label><select id="mdvMake"><option value="">Choose make…</option>${makes.map((m) => `<option ${m === startMake ? 'selected' : ''}>${esc(m)}</option>`).join('')}<option value="${OTHER}" ${startMake === OTHER ? 'selected' : ''}>Other (type it in)…</option></select></div>
+      <div class="field"><label>Model *</label><select id="mdvModel"></select></div>
     </div>
-    <div id="adOther" class="grid cols-2 other-box hidden" style="gap:10px">
-      <div class="field" id="adMakeTxtF"><label>Manufacturer *</label><input id="adMakeTxt" value="${esc(customMake || '')}" placeholder="e.g. Neat, Yealink, Crestron"></div>
-      <div class="field"><label>Model *</label><input id="adModelTxt" value="${esc(rec && !rec.modelId ? rec.model || '' : '')}" placeholder="e.g. Bar Pro"></div>
-      <div class="field"><label>Device type</label><select id="adType">${DEVICE_TYPES.map((t) => `<option ${t === (rec?.deviceType || 'Peripheral') ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+    <div id="mdvOther" class="grid cols-2 other-box hidden" style="gap:10px">
+      <div class="field" id="mdvMakeTxtF"><label>Manufacturer *</label><input id="mdvMakeTxt" value="${esc(customMake || '')}" placeholder="e.g. Neat, Yealink, Crestron"></div>
+      <div class="field"><label>Model *</label><input id="mdvModelTxt" value="${esc(rec && !rec.modelId ? rec.model || '' : '')}" placeholder="e.g. Bar Pro"></div>
+      <div class="field"><label>Device type</label><select id="mdvType">${DEVICE_TYPES.map((t) => `<option ${t === (rec?.deviceType || 'Peripheral') ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
       <div class="help" style="align-self:center">Not in the model master, so no API connector can monitor it. It will be tagged <b>Not monitored</b>.${isSuper() ? ' You can add it to the master later from the Models tab.' : ''}</div>
     </div>
-    <div class="help" id="adModelInfo" style="margin:-6px 0 12px"></div>
+    <div class="help" id="mdvModelInfo" style="margin:-6px 0 12px"></div>
     <div class="grid cols-2" style="gap:10px">
-      <div class="field"><label>Site *</label><input id="adSite" list="adSites" value="${v('site')}" placeholder="Pick or type a site"><datalist id="adSites"></datalist></div>
-      <div class="field"><label>Room *</label><input id="adRoom" list="adRooms" value="${v('room')}" placeholder="Pick or type a room"><datalist id="adRooms"></datalist></div>
-      <div class="field"><label>Serial number</label><input id="adSerial" value="${v('serial')}" class="mono"></div>
-      <div class="field"><label>MAC address</label><input id="adMac" value="${v('mac')}" class="mono" placeholder="00:e0:db:12:34:56"></div>
-      <div class="field"><label>Firmware version</label><input id="adFw" value="${v('firmware')}" class="mono"></div>
-      <div class="field"><label>Meeting platform</label><select id="adPlat">${PLATFORM_LIST.map((p) => `<option ${p === (rec?.platform || 'Unassigned') ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
-      <div class="field"><label>Asset tag</label><input id="adAsset" value="${v('assetTag')}"></div>
-      <div class="field"><label>Warranty end</label><input id="adWarr" type="date" value="${v('warrantyExpires')}"></div>
+      <div class="field"><label>Site *</label><input id="mdvSite" list="mdvSites" value="${v('site')}" placeholder="Pick or type a site"><datalist id="mdvSites"></datalist></div>
+      <div class="field"><label>Room *</label><input id="mdvRoom" list="mdvRooms" value="${v('room')}" placeholder="Pick or type a room"><datalist id="mdvRooms"></datalist></div>
+      <div class="field"><label>Serial number</label><input id="mdvSerial" value="${v('serial')}" class="mono"></div>
+      <div class="field"><label>MAC address</label><input id="mdvMac" value="${v('mac')}" class="mono" placeholder="00:e0:db:12:34:56"></div>
+      <div class="field"><label>Firmware version</label><input id="mdvFw" value="${v('firmware')}" class="mono"></div>
+      <div class="field"><label>Meeting platform</label><select id="mdvPlat">${PLATFORM_LIST.map((p) => `<option ${p === (rec?.platform || 'Unassigned') ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
+      <div class="field"><label>Asset tag</label><input id="mdvAsset" value="${v('assetTag')}"></div>
+      <div class="field"><label>Warranty end</label><input id="mdvWarr" type="date" value="${v('warrantyExpires')}"></div>
     </div>
-    <div class="field"><label>Notes</label><input id="adNotes" value="${v('notes')}"></div>
+    <div class="field"><label>Notes</label><input id="mdvNotes" value="${v('notes')}"></div>
     <div class="help">Add the serial or MAC whenever you can: that is how the device is matched if it is connected to an API later.</div>`,
-  `${editing ? '' : '<button class="btn btn-outline" id="adMore">Save and add another</button>'}<button class="btn btn-primary" id="adSave">${editing ? 'Save' : 'Add device'}</button>`);
+  `${editing ? '' : '<button class="btn btn-outline" id="mdvMore">Save and add another</button>'}<button class="btn btn-primary" id="mdvSave">${editing ? 'Save' : 'Add device'}</button>`);
   const fillModels = () => {
-    const make = $('#adMake', w).value;
+    const make = $('#mdvMake', w).value;
     const list = models.filter((m) => m.make === make);
     const wantOther = customMake && make === customMake && !curModel;
-    $('#adModel', w).disabled = make === OTHER;
-    $('#adModel', w).innerHTML = make === OTHER ? '<option value="">Type it in below</option>'
+    $('#mdvModel', w).disabled = make === OTHER;
+    $('#mdvModel', w).innerHTML = make === OTHER ? '<option value="">Type it in below</option>'
       : make ? `${list.map((m) => `<option value="${esc(m.id)}" ${m.id === (curModel?.id || preset.modelId) ? 'selected' : ''}>${esc(shortModel(m.make, m.model))}</option>`).join('')}<option value="${OTHER}" ${wantOther ? 'selected' : ''}>Other (type it in)…</option>` : '<option value="">Choose a make first</option>';
     showInfo();
   };
   const showInfo = () => {
-    const make = $('#adMake', w).value;
-    const other = make === OTHER || $('#adModel', w).value === OTHER;
-    $('#adOther', w).classList.toggle('hidden', !other);
-    $('#adMakeTxtF', w).classList.toggle('hidden', make !== OTHER);
-    const m = models.find((x) => x.id === $('#adModel', w).value);
-    $('#adModelInfo', w).innerHTML = other ? ''
+    const make = $('#mdvMake', w).value;
+    const other = make === OTHER || $('#mdvModel', w).value === OTHER;
+    $('#mdvOther', w).classList.toggle('hidden', !other);
+    $('#mdvMakeTxtF', w).classList.toggle('hidden', make !== OTHER);
+    const m = models.find((x) => x.id === $('#mdvModel', w).value);
+    $('#mdvModelInfo', w).innerHTML = other ? ''
       : m ? `${esc(m.deviceType)}${m.baseline ? ` · approved firmware ${esc(m.baseline)}` : ''}${m.monitoredBy?.length ? ` · can be monitored by ${m.monitoredBy.map((o) => esc(OEM_NAME[o] || o)).join(', ')}` : ' · <b>no API connector</b>, so it will be tagged Not monitored'}`
         : 'Not in the list? Choose <b>Other</b> to type the manufacturer and model in.';
-    if (m?.baseline && !$('#adFw', w).value && !editing) $('#adFw', w).placeholder = m.baseline;
+    if (m?.baseline && !$('#mdvFw', w).value && !editing) $('#mdvFw', w).placeholder = m.baseline;
   };
   const fillPlaces = async () => {
     try {
       const tree = await api(`/api/tree?customer=${encodeURIComponent(customerId)}`);
       const rooms = new Map(tree.map((s) => [s.site, s.rooms.map((r) => r.room)]));
-      $('#adSites', w).innerHTML = [...rooms.keys()].map((x) => `<option value="${esc(x)}">`).join('');
-      const fillRooms = () => { $('#adRooms', w).innerHTML = (rooms.get($('#adSite', w).value) || []).map((x) => `<option value="${esc(x)}">`).join(''); };
-      $('#adSite', w).oninput = fillRooms; fillRooms();
+      $('#mdvSites', w).innerHTML = [...rooms.keys()].map((x) => `<option value="${esc(x)}">`).join('');
+      const fillRooms = () => { $('#mdvRooms', w).innerHTML = (rooms.get($('#mdvSite', w).value) || []).map((x) => `<option value="${esc(x)}">`).join(''); };
+      $('#mdvSite', w).oninput = fillRooms; fillRooms();
     } catch { /* free text still works */ }
   };
-  $('#adMake', w).addEventListener('change', fillModels);
-  $('#adModel', w).addEventListener('change', showInfo);
-  $('#adCust', w)?.addEventListener('change', (e) => { customerId = e.target.value; fillPlaces(); });
+  $('#mdvMake', w).addEventListener('change', fillModels);
+  $('#mdvModel', w).addEventListener('change', showInfo);
+  $('#mdvCust', w)?.addEventListener('change', (e) => { customerId = e.target.value; fillPlaces(); });
   fillModels(); fillPlaces();
   const save = async (again) => {
     const body = {
       customerId, ...(() => {
-        const make = $('#adMake', w).value; const model = $('#adModel', w).value;
-        if (make === OTHER || model === OTHER) return { modelId: null, make: make === OTHER ? $('#adMakeTxt', w).value.trim() : make, model: $('#adModelTxt', w).value.trim(), deviceType: $('#adType', w).value };
+        const make = $('#mdvMake', w).value; const model = $('#mdvModel', w).value;
+        if (make === OTHER || model === OTHER) return { modelId: null, make: make === OTHER ? $('#mdvMakeTxt', w).value.trim() : make, model: $('#mdvModelTxt', w).value.trim(), deviceType: $('#mdvType', w).value };
         return { modelId: model };
-      })(), site: $('#adSite', w).value.trim(), room: $('#adRoom', w).value.trim(),
-      serial: $('#adSerial', w).value.trim() || null, mac: $('#adMac', w).value.trim() || null, firmware: $('#adFw', w).value.trim() || null,
-      platform: $('#adPlat', w).value, assetTag: $('#adAsset', w).value.trim() || null, warrantyExpires: $('#adWarr', w).value || null, notes: $('#adNotes', w).value.trim() || null,
+      })(), site: $('#mdvSite', w).value.trim(), room: $('#mdvRoom', w).value.trim(),
+      serial: $('#mdvSerial', w).value.trim() || null, mac: $('#mdvMac', w).value.trim() || null, firmware: $('#mdvFw', w).value.trim() || null,
+      platform: $('#mdvPlat', w).value, assetTag: $('#mdvAsset', w).value.trim() || null, warrantyExpires: $('#mdvWarr', w).value || null, notes: $('#mdvNotes', w).value.trim() || null,
     };
     try {
       await api(editing ? `/api/manual-devices/${encodeURIComponent(rec.id)}` : '/api/manual-devices', { method: editing ? 'PUT' : 'POST', body });
       toast(ICONS.resolved, editing ? 'Device saved' : 'Device added');
-      if (again) openManualDevice(null, { customerId, site: body.site, room: body.room, make: body.modelId ? $('#adMake', w).value : undefined, modelId: body.modelId });
+      if (again) openManualDevice(null, { customerId, site: body.site, room: body.room, make: body.modelId ? $('#mdvMake', w).value : undefined, modelId: body.modelId });
       else closeDrawer();
       S.options = await api('/api/filters').catch(() => S.options);
       refreshView();
-    } catch (e) { $('#adMsg', w).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; w.querySelector('.drawer-body').scrollTop = 0; }
+    } catch (e) { $('#mdvMsg', w).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; w.querySelector('.drawer-body').scrollTop = 0; }
   };
-  $('#adSave', w).addEventListener('click', () => save(false));
-  $('#adMore', w)?.addEventListener('click', () => save(true));
+  $('#mdvSave', w).addEventListener('click', () => save(false));
+  $('#mdvMore', w)?.addEventListener('click', () => save(true));
 }
