@@ -59,8 +59,9 @@ export function dedupeDevices(devices) {
 function mergeGroup(group) {
   if (group.length === 1) return { ...group[0], duplicateOf: [] };
   // Manufacturer clouds know site and room layout; platform portals often don't.
-  const fromOem = (d) => d.sources.some((s) => getConnectorClass(s.oem).kind !== 'platform');
-  const score = (d) => (d.sources.some((s) => OEM_MAKE[s.oem] === d.make) ? 4 : 0) + (fromOem(d) ? 3 : 0) + (d.weakIdentity ? 0 : 2) + (d.serial ? 1 : 0);
+  const fromOem = (d) => d.sources.some((s) => getConnectorClass(s.oem).kind === 'oem');
+  const manualOnly = (d) => d.sources.every((s) => s.oem === 'manual');
+  const score = (d) => (manualOnly(d) ? -10 : 0) + (d.sources.some((s) => OEM_MAKE[s.oem] === d.make) ? 4 : 0) + (fromOem(d) ? 3 : 0) + (d.weakIdentity ? 0 : 2) + (d.serial ? 1 : 0);
   const gap = (v) => v === null || v === undefined || v === 'Unassigned' || v === 'Unassigned site' || v === 'Unassigned room';
   const sorted = [...group].sort((a, b) => score(b) - score(a));
   const primary = sorted[0];

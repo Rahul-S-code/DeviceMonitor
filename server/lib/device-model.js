@@ -7,12 +7,14 @@ export const HEALTH = Object.freeze({
   WARNING: 'warning',
   CRITICAL: 'critical',
   OFFLINE: 'offline',
+  UNMONITORED: 'unmonitored',
 });
 
-export const HEALTH_ORDER = [HEALTH.HEALTHY, HEALTH.WARNING, HEALTH.CRITICAL, HEALTH.OFFLINE];
+export const HEALTH_ORDER = [HEALTH.HEALTHY, HEALTH.WARNING, HEALTH.CRITICAL, HEALTH.OFFLINE, HEALTH.UNMONITORED];
 
 // Severity rank used when two sources disagree about one device.
-export const HEALTH_RANK = { healthy: 0, warning: 1, offline: 2, critical: 3 };
+// "unmonitored" (a manually added device) ranks lowest, so live health from any connector wins.
+export const HEALTH_RANK = { unmonitored: -1, healthy: 0, warning: 1, offline: 2, critical: 3 };
 
 export const PLATFORMS = Object.freeze(['Microsoft Teams', 'Zoom', 'Cisco Webex', 'Google Meet', 'Unassigned']);
 

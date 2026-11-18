@@ -11,7 +11,7 @@ import { hashPassword } from './auth.js';
 
 const EMPTY = {
   customers: [], users: [], connections: [], siteDirectory: {}, roomDirectory: {},
-  schematics: {}, deviceOverrides: {}, alerts: [], models: [], audit: [],
+  schematics: {}, deviceOverrides: {}, alerts: [], models: [], audit: [], manualDevices: [],
 };
 const MAX_AUDIT = 5000;
 export const DEFAULT_SLA_TARGET = 99.5;
@@ -181,6 +181,65 @@ export class Store {
     return true;
   }
 
+  // --- devices added by hand (kit with no API, or not yet connected) ------
+  get manualDevices() { return this.data.manualDevices; }
+
+  /** Validate a manual device. Make and model must come from the model master. */
+  cleanManualDevice(input, existing = null) {
+    const v = { ...existing, ...input };
+    const customerId = String(v.customerId || '');
+    if (!this.customers.some((c) => c.id === customerId)) throw new Error('Pick a customer');
+    const model = this.models.find((m) => m.id === v.modelId);
+    if (!model) throw new Error('Pick a make and model from the model master. Ask the super admin to add a missing model.');
+    const text = (x, n) => (x === undefined || x === null ? null : String(x).trim().slice(0, n) || null);
+    const site = text(v.site, 60);
+    const room = text(v.room, 80);
+    if (!site || !room) throw new Error('Site and room are required');
+    const serial = text(v.serial, 60);
+    const mac = text(v.mac, 30);
+    if (mac && String(mac).replace(/[^a-f0-9]/gi, '').length !== 12) throw new Error('MAC address must have 12 hex digits, e.g. 00:e0:db:12:34:56');
+    const norm = (x) => String(x || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+    if (serial && this.manualDevices.some((d) => d.id !== existing?.id && d.customerId === customerId && norm(d.serial) === norm(serial))) throw new Error(`A device with serial ${serial} has already been added for this customer`);
+    const date = (x, label) => {
+      if (!x) return null;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(x)) || Number.isNaN(Date.parse(x))) throw new Error(`${label} must be a date (YYYY-MM-DD)`);
+      return String(x);
+    };
+    return {
+      id: existing?.id || `manual:${crypto.randomUUID()}`,
+      customerId, site, room, modelId: model.id, serial, mac,
+      firmware: text(v.firmware, 40), platform: text(v.platform, 30), assetTag: text(v.assetTag, 60), notes: text(v.notes, 500),
+      warrantyExpires: date(v.warrantyExpires, 'Warranty end'), warrantyType: text(v.warrantyType, 40),
+      createdAt: existing?.createdAt || new Date().toISOString(), createdBy: existing?.createdBy || v.createdBy || null,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  addManualDevice(input) {
+    const d = this.cleanManualDevice(input);
+    this.manualDevices.push(d);
+    this.save();
+    return d;
+  }
+
+  updateManualDevice(id, input) {
+    const i = this.manualDevices.findIndex((d) => d.id === id);
+    if (i < 0) throw new Error('Device not found');
+    const { customerId, ...rest } = input; // a device cannot move between customers
+    this.manualDevices[i] = this.cleanManualDevice(rest, this.manualDevices[i]);
+    this.save();
+    return this.manualDevices[i];
+  }
+
+  deleteManualDevice(id) {
+    const i = this.manualDevices.findIndex((d) => d.id === id);
+    if (i < 0) throw new Error('Device not found');
+    const [d] = this.manualDevices.splice(i, 1);
+    this.clearOverride(d.id);
+    this.save();
+    return d;
+  }
+
   slaTarget(customerId) {
     const t = this.customers.find((c) => c.id === customerId)?.slaTarget;
     return typeof t === 'number' ? t : DEFAULT_SLA_TARGET;
@@ -271,6 +330,7 @@ export class Store {
     delete this.data.siteDirectory[id];
     for (const map of [this.data.roomDirectory, this.data.schematics]) for (const k of Object.keys(map)) if (k.startsWith(`${id}|`)) delete map[k];
     this.data.alerts = this.data.alerts.filter((a) => a.customerId !== id);
+    this.data.manualDevices = this.manualDevices.filter((d) => d.customerId !== id);
     unregisterMockCustomer(id);
     this.save();
   }

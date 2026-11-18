@@ -194,6 +194,43 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.json({ ok: true, updated: targets.length });
   });
 
+  // Devices added by hand (kit with no API). Make and model come from the model master;
+  // they show as "Not monitored" until a connector reports the same serial or MAC.
+  const manualLabel = (m) => { const mod = store.models.find((x) => x.id === m.modelId); return `${mod ? `${mod.make} ${mod.model}` : 'Device'} (${m.room}, ${m.site})`; };
+  const manualOf = (req) => store.manualDevices.find((d) => d.id === req.params.id && inScope(req, d.customerId));
+  app.post('/api/manual-devices', requireAdmin, requireJson, (req, res) => {
+    const b = req.body || {};
+    if (!inScope(req, b.customerId)) return res.status(400).json({ error: 'Pick a customer' });
+    try {
+      const d = store.addManualDevice({ ...b, createdBy: req.user.email });
+      sync.refresh();
+      audit(req, 'device.manual_add', { customerId: d.customerId, target: manualLabel(d), details: { serial: d.serial, mac: d.mac } });
+      res.status(201).json(inventory.devices.find((x) => x.manualId === d.id || x.id === d.id) || d);
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  app.put('/api/manual-devices/:id', requireAdmin, requireJson, (req, res) => {
+    const cur = manualOf(req);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    try {
+      const d = store.updateManualDevice(cur.id, req.body || {});
+      sync.refresh();
+      audit(req, 'device.manual_update', { customerId: d.customerId, target: manualLabel(d), details: { fields: Object.keys(req.body || {}) } });
+      res.json(d);
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  app.get('/api/manual-devices/:id', requireUser, (req, res) => {
+    const d = manualOf(req);
+    return d ? res.json(d) : res.status(404).json({ error: 'Not found' });
+  });
+  app.delete('/api/manual-devices/:id', requireAdmin, (req, res) => {
+    const cur = manualOf(req);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    store.deleteManualDevice(cur.id);
+    sync.refresh();
+    audit(req, 'device.manual_delete', { customerId: cur.customerId, target: manualLabel(cur), details: { serial: cur.serial } });
+    res.json({ ok: true });
+  });
+
   // Room schematics (cabling diagrams).
   app.get('/api/schematic-templates', requireUser, (_req, res) => res.json(SCHEMATIC_TEMPLATES));
   app.get('/api/rooms/schematic', requireUser, (req, res) => {

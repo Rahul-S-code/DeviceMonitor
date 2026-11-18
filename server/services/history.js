@@ -140,6 +140,7 @@ export function slaReport(history, devices, { window = '7d', now = Date.now(), t
   const incidents = [];
   let simulated = false;
   for (const d of devices) {
+    if (d.health === 'unmonitored') continue; // manual devices have no health history
     const st = history.stats(d.id, from, now);
     if (!st.measured) continue;
     simulated ||= st.simulated;

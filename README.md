@@ -59,6 +59,10 @@ The three customers, their sites and devices are fictional mock data.
 - **SLA tab**: availability over 24 hours, 7 days or 30 days by customer, site, room and device, against a per-customer target (default 99.5%, set under Customers › Sites & users), plus incidents, mean time to restore and a trend chart. A device is unavailable while offline or critical. Health is recorded at every sync into `data/history.json` (35 days kept); devices from mock connections use a simulated history so the demo has 30 days of data.
 - **Audit log tab** (admins): sign-ins and failed sign-ins, entering customers, device edits, room platform and schematic changes, onboarding, users, connection changes, tests and syncs (only the names of changed credential fields, never values), model master changes, new firmware seen, and audit exports. Filter by activity, user, date and text; export to CSV.
 
+## Adding devices by hand
+
+Admins can add devices that no API reports (Devices › **+ Add device**, or **+ Add device** on a room page). Make and model are picked from the model master, so unknown models can't be entered. These devices show as **Not monitored**: they count in the inventory, lifecycle and warranty views but not in health alerts or SLA. If a connected API later reports the same serial number or MAC address, the records merge: live health and the OEM's location take over, and the asset tag, notes and warranty you entered are kept. Bulk upload from a CSV or Excel template is planned next.
+
 ## Publish it online (Render)
 
 GitHub stores the code but cannot run a Node server, so the app is hosted on Render, which deploys straight from this repository:

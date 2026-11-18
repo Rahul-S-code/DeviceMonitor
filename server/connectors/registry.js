@@ -11,7 +11,11 @@ export const CONNECTORS = [PolyLensConnector, LogitechSyncConnector, ZoomRoomsCo
 /** Which platform connector covers each meeting platform. */
 export const PLATFORM_CONNECTOR = Object.fromEntries(CONNECTORS.filter((C) => C.kind === 'platform').map((C) => [C.platform, C.oem]));
 
+/** Pseudo-source for devices added by hand (no API, so no live health). */
+export const MANUAL_SOURCE = Object.freeze({ oem: 'manual', displayName: 'Manual entry', make: null, kind: 'manual', nativeHealth: true, liveSupported: false });
+
 export function getConnectorClass(oem) {
+  if (oem === 'manual') return MANUAL_SOURCE;
   const C = CONNECTORS.find((c) => c.oem === oem);
   if (!C) throw new Error(`Unknown connector "${oem}"`);
   return C;

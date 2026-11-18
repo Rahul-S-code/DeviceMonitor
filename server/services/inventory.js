@@ -4,6 +4,7 @@ import { dedupeDevices } from './dedupe.js';
 import { HEALTH_ORDER } from '../lib/device-model.js';
 import { getConnectorClass } from '../connectors/registry.js';
 import { compareVersions, modelKey, lifecycleStage, warrantyStatus } from '../lib/models.js';
+import { makeDevice, PLATFORMS } from '../lib/device-model.js';
 
 export { compareVersions };
 
@@ -26,11 +27,30 @@ export class Inventory {
   rebuild() {
     const live = new Set(this.store.connections.map((c) => c.id));
     for (const id of this.byConnection.keys()) if (!live.has(id)) this.byConnection.delete(id);
-    const merged = dedupeDevices([...this.byConnection.values()].flat());
+    const merged = dedupeDevices([...[...this.byConnection.values()].flat(), ...this.manualRecords()]);
     this.enrich(merged);
     this.devices = merged.sort((a, b) => (a.customerId + a.site + a.room + a.model).localeCompare(b.customerId + b.site + b.room + b.model));
     this.builtAt = new Date().toISOString();
     return this.devices;
+  }
+
+  /** Devices added by hand, as common device records with health "unmonitored". */
+  manualRecords() {
+    return this.store.manualDevices.flatMap((m) => {
+      const model = this.store.models.find((x) => x.id === m.modelId);
+      if (!model) return [];
+      return [makeDevice({
+        id: m.id, customerId: m.customerId, site: m.site, room: m.room,
+        deviceType: model.deviceType, make: model.make, model: model.model,
+        serial: m.serial, mac: m.mac, firmware: m.firmware,
+        health: 'unmonitored', healthReason: 'Added manually. Not reported by any connected API.',
+        platform: PLATFORMS.includes(m.platform) ? m.platform : 'Unassigned', platformSource: PLATFORMS.includes(m.platform) && m.platform !== 'Unassigned' ? 'manual' : null,
+        assetTag: m.assetTag, notes: m.notes,
+        warrantyExpires: m.warrantyExpires, warrantyType: m.warrantyType, warrantySource: m.warrantyExpires ? 'manual' : null,
+        manualId: m.id,
+        sources: [{ oem: 'manual', connectionId: null, sourceId: m.id }],
+      })];
+    });
   }
 
   enrich(devices) {
@@ -264,5 +284,7 @@ export class Inventory {
 const RANK = { healthy: 0, warning: 1, offline: 2, critical: 3 };
 function worst(devs) {
   if (!devs.length) return 'none';
+  devs = devs.filter((d) => d.health !== 'unmonitored');
+  if (!devs.length) return 'unmonitored';
   return devs.reduce((w, d) => (RANK[d.health] > RANK[w] ? d.health : w), 'healthy');
 }

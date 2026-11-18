@@ -68,7 +68,7 @@ export class SyncService extends EventEmitter {
     const devices = this.inventory.rebuild();
     // SLA history: devices fed only by mock connections get simulated history before recording began.
     const modeOf = new Map(this.store.connections.map((c) => [c.id, c.mode]));
-    this.history?.record(devices, (d) => d.sources.every((x) => modeOf.get(x.connectionId) !== 'live'));
+    this.history?.record(devices.filter((d) => d.health !== 'unmonitored'), (d) => d.sources.every((x) => modeOf.get(x.connectionId) !== 'live'));
     // OEM release tracking: firmware versions seen for the first time on catalogued models.
     for (const { model, version } of this.store.recordFleetFirmware(devices)) {
       this.store.audit({ actor: { id: 'system', email: 'system', name: 'Sync', role: 'system' }, action: 'firmware.detected', target: `${model.make} ${model.model}`, details: { version, note: 'First seen in the fleet' } });
@@ -79,6 +79,7 @@ export class SyncService extends EventEmitter {
       const before = this.lastHealth.get(d.id);
       this.lastHealth.set(d.id, d.health);
       if (before === d.health) continue;
+      if (d.health === 'unmonitored' || (before === 'unmonitored' && d.health === 'healthy')) continue; // manual devices raise no alerts
       if (before === undefined && d.health === 'healthy') continue;
       if (before === undefined && this.primed === false && d.health !== 'healthy') {
         this.raise(deviceAlert(d, null, { initial: true }));

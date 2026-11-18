@@ -3,9 +3,11 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const HEALTH = ['healthy', 'warning', 'critical', 'offline'];
-const HLABEL = { healthy: 'Healthy', warning: 'Warning', critical: 'Critical', offline: 'Offline' };
-const OEM_SHORT = { 'poly-lens': 'PL', 'logitech-sync': 'LS', 'zoom-rooms': 'ZR', 'webex-control-hub': 'WX', 'teams-rooms': 'TR', 'google-meet-hardware': 'GM' };
-const OEM_NAME = { 'poly-lens': 'Poly Lens', 'logitech-sync': 'Logitech Sync', 'zoom-rooms': 'Zoom Rooms', 'webex-control-hub': 'Webex Control Hub', 'teams-rooms': 'Teams Rooms', 'google-meet-hardware': 'Google Meet hardware' };
+// Includes devices added by hand, which have no live health.
+const HEALTH_BARS = [...HEALTH, 'unmonitored'];
+const HLABEL = { healthy: 'Healthy', warning: 'Warning', critical: 'Critical', offline: 'Offline', unmonitored: 'Not monitored' };
+const OEM_SHORT = { manual: 'MN', 'poly-lens': 'PL', 'logitech-sync': 'LS', 'zoom-rooms': 'ZR', 'webex-control-hub': 'WX', 'teams-rooms': 'TR', 'google-meet-hardware': 'GM' };
+const OEM_NAME = { manual: 'Manual entry', 'poly-lens': 'Poly Lens', 'logitech-sync': 'Logitech Sync', 'zoom-rooms': 'Zoom Rooms', 'webex-control-hub': 'Webex Control Hub', 'teams-rooms': 'Teams Rooms', 'google-meet-hardware': 'Google Meet hardware' };
 const FILTER_KEYS = [
   ['customer', 'Customer'], ['region', 'Region'], ['site', 'Site'], ['platform', 'Platform'],
   ['oem', 'Source'], ['deviceType', 'Device type'], ['health', 'Health'],
@@ -16,6 +18,7 @@ const ICONS = {
   healthy: '<svg class="ic" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0ca30c"/><path d="M4.8 8.2l2.1 2.1 4.3-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   warning: '<svg class="ic" viewBox="0 0 16 16"><path d="M8 1.5l7 12.5H1z" fill="#fab219" stroke="#fab219" stroke-linejoin="round"/><path d="M8 6v3.6" stroke="#0b0b0b" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.8" r="1" fill="#0b0b0b"/></svg>',
   critical: '<svg class="ic" viewBox="0 0 16 16"><path d="M5.1 1h5.8L15 5.1v5.8L10.9 15H5.1L1 10.9V5.1z" fill="#d03b3b"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  unmonitored: '<svg class="ic" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="#9aa1b8" stroke-width="1.6" stroke-dasharray="2.4 2"/></svg>',
   offline: '<svg class="ic" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#7d8399"/><path d="M4.5 8h7" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>',
   resolved: '<svg class="ic" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="#0ca30c" stroke-width="1.6"/><path d="M4.8 8.2l2.1 2.1 4.3-4.6" stroke="#0ca30c" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   sync: '<svg class="ic" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#1a5cff"/><path d="M5 6.5a3.3 3.3 0 0 1 6-.6M11 9.5a3.3 3.3 0 0 1-6 .6" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>',
@@ -309,15 +312,16 @@ async function viewOverview() {
   updateAlertBadge(summary);
   const t = summary.totals;
   const pct = (n) => (t.total ? `${Math.round((n / t.total) * 100)}%` : '0%');
-  const availability = t.total ? (((t.total - t.offline) / t.total) * 100).toFixed(1) : '0.0';
+  const monitored = t.total - (t.unmonitored || 0);
+  const availability = monitored ? (((monitored - t.offline) / monitored) * 100).toFixed(1) : '0.0';
   hero(isAdmin() && !acting() ? 'Global estate overview' : `${S.me.customerName || S.me.actingCustomerName} estate`, `${t.total} devices across ${summary.rooms} rooms and ${summary.sites} sites. Updated ${ago(summary.builtAt)}.`);
   const fourth = isAdmin() && S.options.customer.length > 1
     ? breakdownCard('By customer', 'Each customer only sees its own estate', summary.byCustomer, (k) => ({ k: 'customer', v: S.options.customer.find((c) => c.label === k)?.value }))
     : breakdownCard('By device type', 'Classified from the model name', summary.byType, (k) => ({ k: 'deviceType', v: k }));
   $('#view').innerHTML = `
     <div class="kpis">
-      <div class="kpi total" data-h=""><div class="lbl">Devices monitored</div><div class="val">${t.total}</div>
-        <div class="meta"><span>${availability}% online</span><span>${summary.mergedDuplicates} merged duplicates</span></div></div>
+      <div class="kpi total" data-h=""><div class="lbl">Devices</div><div class="val">${t.total}</div>
+        <div class="meta"><span>${availability}% online</span><span>${summary.mergedDuplicates} merged duplicates</span>${t.unmonitored ? `<span>${t.unmonitored} not monitored</span>` : ''}</div></div>
       ${HEALTH.map((h) => `<div class="kpi" data-h="${h}"><div class="lbl">${ICONS[h]}${HLABEL[h]}</div><div class="val">${t[h]}</div><div class="pct">${pct(t[h])} of estate</div><div class="bar f-${h}" style="width:${t.total ? (t[h] / t.total) * 100 : 0}%"></div></div>`).join('')}
     </div>
     ${serviceStrip(sla, life)}
@@ -379,12 +383,12 @@ function breakdownCard(title, sub, rows, action, wide) {
   const body = rows.length ? rows.map((r, i) => `
     <div class="brk-row" data-b="${id}" data-i="${i}" ${action ? '' : 'style="cursor:default"'}>
       <div class="brk-name" title="${esc(r.label || r.key)}">${esc(r.label || r.key)}${r.sub ? `<small>${esc(r.sub)}</small>` : ''}</div>
-      <div class="brk-bar">${HEALTH.filter((h) => r[h]).map((h) => `<span class="f-${h}" style="flex:${r[h]}"></span>`).join('')}</div>
+      <div class="brk-bar">${HEALTH_BARS.filter((h) => r[h]).map((h) => `<span class="f-${h}" style="flex:${r[h]}"></span>`).join('')}</div>
       <div class="brk-tot">${r.total}<small>${r.total ? Math.round((r.healthy / r.total) * 100) : 0}% ok</small></div>
     </div>`).join('') : '<div class="empty">No devices match the filters</div>';
   return `<div class="card" ${wide ? '' : ''}>
     <div class="card-head"><div><h2>${esc(title)}</h2><div class="card-sub">${esc(sub)}</div></div></div>
-    <div class="legend" style="margin-bottom:12px">${HEALTH.map((h) => `<span><i class="f-${h}"></i>${HLABEL[h]}</span>`).join('')}</div>
+    <div class="legend" style="margin-bottom:12px">${HEALTH_BARS.map((h) => `<span><i class="f-${h}"></i>${HLABEL[h]}</span>`).join('')}</div>
     <div class="brk">${body}</div></div>`;
 }
 
@@ -403,7 +407,7 @@ function bindBreakdowns() {
   document.querySelectorAll('.brk-row[data-b]').forEach((el) => {
     const { rows, action } = ROW_ACTIONS.get(el.dataset.b);
     const r = rows[Number(el.dataset.i)];
-    el.addEventListener('mousemove', (e) => showTip(e, `<b>${esc(r.label || r.key)}</b>${HEALTH.map((h) => `<div><span><i class="f-${h}"></i>${HLABEL[h]}</span><span>${r[h]}</span></div>`).join('')}<div style="margin-top:4px;opacity:.8"><span>Total</span><span>${r.total}</span></div>`));
+    el.addEventListener('mousemove', (e) => showTip(e, `<b>${esc(r.label || r.key)}</b>${HEALTH_BARS.filter((h) => h !== 'unmonitored' || r[h]).map((h) => `<div><span><i class="f-${h}"></i>${HLABEL[h]}</span><span>${r[h]}</span></div>`).join('')}<div style="margin-top:4px;opacity:.8"><span>Total</span><span>${r.total}</span></div>`));
     el.addEventListener('mouseleave', hideTip);
     if (action) el.addEventListener('click', () => { hideTip(); const a = action(r.key); if (a.v) setFilter(a.k, a.v, a.go); });
   });
@@ -482,15 +486,15 @@ async function viewEstate(args) {
   const platSrc = r.devices.find((d) => d.platformSource)?.platformSource;
   $('#view').innerHTML = `
     <div class="grid cols-main">
-      <div class="card"><div class="card-head"><div><h2>Devices in this room</h2><div class="card-sub">Click a device for full details and source data</div></div>${status(r.worst)}</div>
-        ${r.devices.length ? deviceTable(r.devices, ['health', 'device', 'deviceType', 'serial', 'firmware', 'lastSeen', 'sources'], true) : '<div class="empty">No devices are assigned to this room yet. Use Devices › Group into room to move devices here.</div>'}</div>
+      <div class="card"><div class="card-head"><div><h2>Devices in this room</h2><div class="card-sub">Click a device for full details and source data</div></div><div style="display:flex;gap:10px;align-items:center">${isAdmin() ? '<button class="btn btn-outline btn-sm" id="roomAddDev">+ Add device</button>' : ''}${status(r.worst)}</div></div>
+        ${r.devices.length ? deviceTable(r.devices, ['health', 'device', 'deviceType', 'serial', 'firmware', 'lastSeen', 'sources'], true) : '<div class="empty">No devices are assigned to this room yet. Add one by hand, or use Devices › Group into room to move devices here.</div>'}</div>
       <div class="grid">
         <div class="card"><h2>Room</h2>
           <dl class="kv" style="margin-top:12px">
             <dt>Platform</dt><dd>${esc(r.platform)} <span class="muted">${platSrc ? `(${esc(platSrc)})` : ''}</span></dd>
             <dt>Site</dt><dd>${esc(s.site)}</dd><dt>Region</dt><dd>${esc(s.region)}</dd>
             ${isAdmin() ? `<dt>Customer</dt><dd>${esc(s.customerName)}</dd>` : ''}
-            <dt>Health</dt><dd>${HEALTH.filter((h) => r.health[h]).map((h) => `${r.health[h]} ${HLABEL[h].toLowerCase()}`).join(', ') || 'No devices'}</dd>
+            <dt>Health</dt><dd>${HEALTH_BARS.filter((h) => r.health[h]).map((h) => `${r.health[h]} ${HLABEL[h].toLowerCase()}`).join(', ') || 'No devices'}</dd>
           </dl>
           ${isAdmin() ? `<div class="section-title">Set room platform</div>
             <div class="field"><select id="roomPlat">${['Unassigned', 'Microsoft Teams', 'Zoom', 'Cisco Webex', 'Google Meet'].map((p) => `<option ${p === r.platform ? 'selected' : ''}>${p}</option>`).join('')}</select>
@@ -500,6 +504,7 @@ async function viewEstate(args) {
       </div>
     </div>`;
   bindDeviceTable();
+  $('#roomAddDev')?.addEventListener('click', () => openManualDevice(null, { customerId: s.customerId, site: s.site, room: r.room }));
   const schemCard = document.createElement('div');
   schemCard.className = 'card';
   schemCard.style.marginTop = '18px';
@@ -513,12 +518,12 @@ async function viewEstate(args) {
 }
 
 function healthCounts(h) {
-  return HEALTH.filter((k) => h[k]).map((k) => `<span class="st ${k}">${ICONS[k]}${h[k]}</span>`).join('');
+  return HEALTH_BARS.filter((k) => h[k]).map((k) => `<span class="st ${k}">${ICONS[k]}${h[k]}</span>`).join('');
 }
 function siteTile(s) {
   return `<div class="tile w-${s.worst}" data-href="#/estate/${encodeURIComponent(s.customerId)}/${encodeURIComponent(s.site)}">
     <h3>${esc(s.site)}</h3><div class="sub">${isAdmin() ? `${esc(s.customerName)} · ` : ''}${esc(s.region || '')}${s.country ? ` · ${esc(s.country)}` : ''} · ${s.rooms.length} rooms</div>
-    <div class="brk-bar">${HEALTH.filter((h) => s.health[h]).map((h) => `<span class="f-${h}" style="flex:${s.health[h]}"></span>`).join('')}</div>
+    <div class="brk-bar">${HEALTH_BARS.filter((h) => s.health[h]).map((h) => `<span class="f-${h}" style="flex:${s.health[h]}"></span>`).join('')}</div>
     <div class="counts">${healthCounts(s.health)}</div></div>`;
 }
 function roomTile(r, href) {
@@ -530,7 +535,7 @@ function roomTile(r, href) {
 
 // ------------------------------------------------------------------ devices table
 const COLS = {
-  health: ['Health', (d) => status(d.health), (d) => ['healthy', 'warning', 'offline', 'critical'].indexOf(d.health)],
+  health: ['Health', (d) => status(d.health), (d) => ['unmonitored', 'healthy', 'warning', 'offline', 'critical'].indexOf(d.health)],
   device: ['Device', (d) => `<b>${esc(d.make)}</b> ${esc(d.model.replace(new RegExp(`^${d.make}\\s+`), ''))}`, (d) => `${d.make} ${d.model}`],
   deviceType: ['Type', (d) => esc(d.deviceType), (d) => d.deviceType],
   customer: ['Customer', (d) => esc(d.customerName), (d) => d.customerName],
@@ -581,8 +586,9 @@ async function viewDevices() {
   const cols = ['health', 'device', 'deviceType', ...(isAdmin() && !acting() ? ['customer'] : []), 'site', 'room', 'platform', 'serial', 'firmware', 'warranty', 'lastSeen', 'sources'];
   const known = new Set(devices.map((d) => d.id));
   for (const id of [...S.selected]) if (!known.has(id)) S.selected.delete(id);
-  $('#view').innerHTML = `${isAdmin() ? '<div class="bulk-hint muted">Tick devices to group them into a room or update them in bulk.</div>' : ''}<div class="card">${deviceTable(devices, cols, true)}</div>`;
+  $('#view').innerHTML = `${isAdmin() ? `<div class="toolbar"><span class="muted">Tick devices to group them into a room or update them in bulk.</span><button class="btn btn-grad btn-sm" id="addDev">+ Add device</button></div>` : ''}<div class="card">${deviceTable(devices, cols, true)}</div>`;
   bindDeviceTable();
+  $('#addDev')?.addEventListener('click', () => openManualDevice(null));
 }
 
 // ------------------------------------------------------------------ device drawer
@@ -592,7 +598,7 @@ async function openDevice(id) {
   const roomHref = `#/estate/${encodeURIComponent(d.customerId)}/${encodeURIComponent(d.site)}/${encodeURIComponent(d.room)}`;
   drawer(`${d.make} ${d.model.replace(new RegExp(`^${d.make}\\s+`), '')}`, `${esc(d.deviceType)} · ${esc(d.room)}, ${esc(d.site)}`, `
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">${status(d.health)}${d.inUse ? '<span class="pill blue">In a meeting</span>' : ''}</div>
-    ${d.healthReason ? `<div class="notice ${d.health === 'healthy' ? 'ok' : d.health === 'warning' ? 'info' : 'err'}">${esc(d.healthReason)}</div>` : ''}
+    ${d.healthReason && d.health !== 'unmonitored' ? `<div class="notice ${d.health === 'healthy' ? 'ok' : d.health === 'warning' ? 'info' : 'err'}">${esc(d.healthReason)}</div>` : ''}
     <div class="section-title">Common device record</div>
     <dl class="kv">
       ${isAdmin() ? `<dt>Customer</dt><dd>${esc(d.customerName)}</dd>` : ''}
@@ -610,6 +616,8 @@ async function openDevice(id) {
       ${d.tags?.length ? `<dt>Tags</dt><dd>${d.tags.map((t) => `<span class="pill blue">${esc(t)}</span>`).join(' ')}</dd>` : ''}
       ${d.notes ? `<dt>Notes</dt><dd>${esc(d.notes)}</dd>` : ''}
     </dl>
+    ${d.manualId ? `<div class="notice ${d.health === 'unmonitored' ? 'info' : 'ok'}" style="margin-top:14px">${d.health === 'unmonitored' ? 'Added manually. No connected API reports this device, so it has no live health.' : 'Added manually and now also reported by a connected API, which provides its live health.'}
+      ${isAdmin() ? `<div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mEdit">Edit manual record</button><button class="btn btn-danger btn-sm" id="mDel">Remove manual record</button></div>` : ''}</div>` : ''}
     ${lifecycleSection(d)}
     ${d.overridden?.length ? `<div class="notice info" style="margin-top:14px">Manually changed: ${d.overridden.map(esc).join(', ')}. The OEM reports this device in <b>${esc(d.reportedRoom)}</b>, ${esc(d.reportedSite)}.</div>` : ''}
     ${isAdmin() ? `<div class="section-title">Edit this device</div>
@@ -647,6 +655,13 @@ async function openDevice(id) {
     if (set.site === d.reportedSite) set.site = null;
     if (set.room === d.reportedRoom) set.room = null;
     try { await api('/api/devices/bulk', { method: 'POST', body: { ids: [d.id], set } }); toast(ICONS.resolved, 'Device updated'); closeDrawer(); refreshView(); } catch (e) { toast(ICONS.critical, e.message); }
+  });
+  $('#mEdit')?.addEventListener('click', async () => {
+    try { openManualDevice(await api(`/api/manual-devices/${encodeURIComponent(d.manualId)}`)); } catch (e) { toast(ICONS.critical, e.message); }
+  });
+  $('#mDel')?.addEventListener('click', async (e) => {
+    if (!e.target.dataset.confirm) { e.target.dataset.confirm = 1; e.target.textContent = 'Click again to remove'; return; }
+    try { await api(`/api/manual-devices/${encodeURIComponent(d.manualId)}`, { method: 'DELETE' }); toast(ICONS.resolved, 'Manual device removed'); closeDrawer(); refreshView(); } catch (err) { toast(ICONS.critical, err.message); }
   });
   $('#eReset')?.addEventListener('click', async () => {
     await api('/api/devices/bulk', { method: 'POST', body: { ids: [d.id], reset: true } });
@@ -977,7 +992,7 @@ async function bulkAction(act) {
 // ------------------------------------------------------------------ map
 let MAP = null;
 function destroyMap() { if (MAP) { MAP.map.remove(); MAP = null; } }
-const HCOLOR = { healthy: '#0ca30c', warning: '#fab219', critical: '#d03b3b', offline: '#7d8399', none: '#b8bdcc' };
+const HCOLOR = { healthy: '#0ca30c', warning: '#fab219', critical: '#d03b3b', offline: '#7d8399', unmonitored: '#9aa1b8', none: '#b8bdcc' };
 
 async function viewMap(args, isRefresh) {
   const sites = await api(`/api/map${qs()}`);
@@ -1059,7 +1074,7 @@ async function viewMap(args, isRefresh) {
     if (fly && s.lat !== null) map.flyTo([s.lat, s.lng], Math.max(map.getZoom(), 11), { duration: 0.8 });
     side.innerHTML = `${crumbs([{ label: 'All regions', act: 1 }, { label: s.site }])}
       <h2>${esc(s.site)}</h2><div class="card-sub">${isAdmin() && !acting() ? `${esc(s.customerName)} · ` : ''}${esc([s.city, s.country].filter(Boolean).join(', ') || s.region)}${s.address ? `<br>${esc(s.address)}` : ''}</div>
-      <div class="counts" style="display:flex;gap:12px;margin:12px 0">${HEALTH.filter((h) => s.health[h]).map((h) => `<span class="st ${h}">${ICONS[h]}${s.health[h]}</span>`).join('')}</div>
+      <div class="counts" style="display:flex;gap:12px;margin:12px 0">${HEALTH_BARS.filter((h) => s.health[h]).map((h) => `<span class="st ${h}">${ICONS[h]}${s.health[h]}</span>`).join('')}</div>
       <div class="side-title">${s.rooms.length} rooms</div>
       ${s.rooms.map((r) => `<button class="side-row" data-room="${esc(r.room)}">${status(r.worst)}<span class="grow">${esc(r.room)}<small>${esc(r.platform)} · ${r.devices.length} devices${r.hasSchematic ? ' · schematic' : ''}</small></span></button>`).join('') || '<div class="empty">No rooms yet</div>'}
       <a class="btn btn-outline btn-sm" style="margin-top:12px" href="#/estate/${encodeURIComponent(s.customerId)}/${encodeURIComponent(s.site)}">Open site page</a>`;
@@ -1301,7 +1316,7 @@ async function viewCustomers() {
         <div class="conn-top"><div class="oem-logo" style="background:var(--grad)">${esc(c.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join(''))}</div>
           <div><div class="sync-name">${esc(c.name)}</div><div class="sync-meta">${c.sites.length} sites · ${c.users.length} users · ${c.connections.length} connections</div></div>
           ${status(c.health.total ? ['critical', 'offline', 'warning', 'healthy'].find((h) => c.health[h]) : 'none')}</div>
-        <div class="brk-bar" style="height:8px">${HEALTH.filter((h) => c.health[h]).map((h) => `<span class="f-${h}" style="flex:${c.health[h]}"></span>`).join('')}</div>
+        <div class="brk-bar" style="height:8px">${HEALTH_BARS.filter((h) => c.health[h]).map((h) => `<span class="f-${h}" style="flex:${c.health[h]}"></span>`).join('')}</div>
         <div class="conn-stats"><div><span class="muted">Devices</span><b>${c.deviceCount}</b></div><div><span class="muted">Sites</span><b>${c.sites.length}</b></div><div><span class="muted">Platforms</span><b style="font-size:12px">${esc((c.platforms || []).join(', ') || '—')}</b></div></div>
         <div class="conn-actions"><button class="btn btn-primary btn-sm" data-enter="${esc(c.id)}">Enter customer</button><button class="btn btn-outline btn-sm" data-edit="${esc(c.id)}">Sites &amp; users</button></div>
       </div>`).join('')}</div>`;
@@ -1711,7 +1726,7 @@ const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 
 const AUDIT_LABEL = {
   'auth.login': 'Signed in', 'auth.login_failed': 'Failed sign-in', 'auth.logout': 'Signed out',
   'session.enter_customer': 'Entered customer', 'session.exit_customer': 'Left customer',
-  'device.bulk_update': 'Updated devices', 'device.reset': 'Reset devices to OEM values',
+  'device.bulk_update': 'Updated devices', 'device.manual_add': 'Added device manually', 'device.manual_update': 'Edited manual device', 'device.manual_delete': 'Removed manual device', 'device.reset': 'Reset devices to OEM values',
   'room.schematic_saved': 'Saved room schematic', 'room.schematic_removed': 'Removed room schematic', 'room.platform': 'Changed room platform',
   'customer.onboard': 'Onboarded customer', 'customer.update': 'Updated customer', 'customer.delete': 'Deleted customer',
   'user.create': 'Added user', 'user.delete': 'Removed user',
@@ -1759,4 +1774,80 @@ async function viewAudit() {
   for (const id of ['#aAction', '#aFrom', '#aTo']) $(id).addEventListener('change', go);
   let t;
   for (const id of ['#aActor', '#aQ']) $(id).addEventListener('input', () => { clearTimeout(t); t = setTimeout(go, 400); });
+}
+
+// ------------------------------------------------------------------ add a device by hand
+async function openManualDevice(rec, preset = {}) {
+  const editing = !!rec;
+  const [modelsRes] = await Promise.all([api('/api/models')]);
+  const models = modelsRes.models;
+  if (!models.length) { toast(ICONS.warning, 'The model master is empty. The super admin needs to add models first.'); return; }
+  const custs = S.customers;
+  let customerId = rec?.customerId || preset.customerId || acting() || (S.filters.customer?.length === 1 ? S.filters.customer[0] : custs[0]?.id);
+  const makes = [...new Set(models.map((m) => m.make))].sort();
+  const curModel = models.find((m) => m.id === rec?.modelId);
+  const v = (k) => esc(rec?.[k] ?? preset[k] ?? '');
+  const w = drawer(editing ? 'Edit manual device' : 'Add device', editing ? 'Changes apply to the manual record' : 'For kit with no API, or not connected yet', `
+    <div id="adMsg"></div>
+    <div class="notice info">Devices added here show as <b>Not monitored</b>. If a connected API later reports the same serial number or MAC address, the two records merge and live health takes over.</div>
+    ${custs.length > 1 && !editing ? `<div class="field"><label>Customer *</label><select id="adCust">${custs.map((c) => `<option value="${esc(c.id)}" ${c.id === customerId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>` : ''}
+    <div class="grid cols-2" style="gap:10px">
+      <div class="field"><label>Make *</label><select id="adMake"><option value="">Choose make…</option>${makes.map((m) => `<option ${m === (curModel?.make || preset.make) ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+      <div class="field"><label>Model *</label><select id="adModel"></select></div>
+    </div>
+    <div class="help" id="adModelInfo" style="margin:-6px 0 12px"></div>
+    <div class="grid cols-2" style="gap:10px">
+      <div class="field"><label>Site *</label><input id="adSite" list="adSites" value="${v('site')}" placeholder="Pick or type a site"><datalist id="adSites"></datalist></div>
+      <div class="field"><label>Room *</label><input id="adRoom" list="adRooms" value="${v('room')}" placeholder="Pick or type a room"><datalist id="adRooms"></datalist></div>
+      <div class="field"><label>Serial number</label><input id="adSerial" value="${v('serial')}" class="mono"></div>
+      <div class="field"><label>MAC address</label><input id="adMac" value="${v('mac')}" class="mono" placeholder="00:e0:db:12:34:56"></div>
+      <div class="field"><label>Firmware version</label><input id="adFw" value="${v('firmware')}" class="mono"></div>
+      <div class="field"><label>Meeting platform</label><select id="adPlat">${PLATFORM_LIST.map((p) => `<option ${p === (rec?.platform || 'Unassigned') ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
+      <div class="field"><label>Asset tag</label><input id="adAsset" value="${v('assetTag')}"></div>
+      <div class="field"><label>Warranty end</label><input id="adWarr" type="date" value="${v('warrantyExpires')}"></div>
+    </div>
+    <div class="field"><label>Notes</label><input id="adNotes" value="${v('notes')}"></div>
+    <div class="help">Add the serial or MAC whenever you can: that is how the device is matched if it is connected to an API later.</div>`,
+  `${editing ? '' : '<button class="btn btn-outline" id="adMore">Save and add another</button>'}<button class="btn btn-primary" id="adSave">${editing ? 'Save' : 'Add device'}</button>`);
+  const fillModels = () => {
+    const make = $('#adMake', w).value;
+    const list = models.filter((m) => m.make === make);
+    $('#adModel', w).innerHTML = make ? list.map((m) => `<option value="${esc(m.id)}" ${m.id === (curModel?.id || preset.modelId) ? 'selected' : ''}>${esc(shortModel(m.make, m.model))}</option>`).join('') : '<option value="">Choose a make first</option>';
+    showInfo();
+  };
+  const showInfo = () => {
+    const m = models.find((x) => x.id === $('#adModel', w).value);
+    $('#adModelInfo', w).innerHTML = m ? `${esc(m.deviceType)}${m.baseline ? ` · approved firmware ${esc(m.baseline)}` : ''}${m.monitoredBy?.length ? ` · can be monitored by ${m.monitoredBy.map((o) => esc(OEM_NAME[o] || o)).join(', ')}` : ' · no API connector'}` : (isSuper() ? 'Missing a model? Add it in <a href="#/models">the model master</a>.' : 'Missing a model? Ask the super admin to add it to the model master.');
+    if (m?.baseline && !$('#adFw', w).value && !editing) $('#adFw', w).placeholder = m.baseline;
+  };
+  const fillPlaces = async () => {
+    try {
+      const tree = await api(`/api/tree?customer=${encodeURIComponent(customerId)}`);
+      const rooms = new Map(tree.map((s) => [s.site, s.rooms.map((r) => r.room)]));
+      $('#adSites', w).innerHTML = [...rooms.keys()].map((x) => `<option value="${esc(x)}">`).join('');
+      const fillRooms = () => { $('#adRooms', w).innerHTML = (rooms.get($('#adSite', w).value) || []).map((x) => `<option value="${esc(x)}">`).join(''); };
+      $('#adSite', w).oninput = fillRooms; fillRooms();
+    } catch { /* free text still works */ }
+  };
+  $('#adMake', w).addEventListener('change', fillModels);
+  $('#adModel', w).addEventListener('change', showInfo);
+  $('#adCust', w)?.addEventListener('change', (e) => { customerId = e.target.value; fillPlaces(); });
+  fillModels(); fillPlaces();
+  const save = async (again) => {
+    const body = {
+      customerId, modelId: $('#adModel', w).value, site: $('#adSite', w).value.trim(), room: $('#adRoom', w).value.trim(),
+      serial: $('#adSerial', w).value.trim() || null, mac: $('#adMac', w).value.trim() || null, firmware: $('#adFw', w).value.trim() || null,
+      platform: $('#adPlat', w).value, assetTag: $('#adAsset', w).value.trim() || null, warrantyExpires: $('#adWarr', w).value || null, notes: $('#adNotes', w).value.trim() || null,
+    };
+    try {
+      await api(editing ? `/api/manual-devices/${encodeURIComponent(rec.id)}` : '/api/manual-devices', { method: editing ? 'PUT' : 'POST', body });
+      toast(ICONS.resolved, editing ? 'Device saved' : 'Device added');
+      if (again) openManualDevice(null, { customerId, site: body.site, room: body.room, make: $('#adMake', w).value, modelId: body.modelId });
+      else closeDrawer();
+      S.options = await api('/api/filters').catch(() => S.options);
+      refreshView();
+    } catch (e) { $('#adMsg', w).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; w.querySelector('.drawer-body').scrollTop = 0; }
+  };
+  $('#adSave', w).addEventListener('click', () => save(false));
+  $('#adMore', w)?.addEventListener('click', () => save(true));
 }
