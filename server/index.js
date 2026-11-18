@@ -196,7 +196,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
 
   // Devices added by hand (kit with no API). Make and model come from the model master;
   // they show as "Not monitored" until a connector reports the same serial or MAC.
-  const manualLabel = (m) => { const mod = store.models.find((x) => x.id === m.modelId); return `${mod ? `${mod.make} ${mod.model}` : 'Device'} (${m.room}, ${m.site})`; };
+  const manualLabel = (m) => { const mod = store.models.find((x) => x.id === m.modelId); return `${mod ? `${mod.make} ${mod.model}` : `${m.make || ''} ${m.model || 'Device'}`.trim()} (${m.room}, ${m.site})`; };
   const manualOf = (req) => store.manualDevices.find((d) => d.id === req.params.id && inScope(req, d.customerId));
   app.post('/api/manual-devices', requireAdmin, requireJson, (req, res) => {
     const b = req.body || {};

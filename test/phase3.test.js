@@ -226,3 +226,31 @@ test('manual devices: model master only, Not monitored, merge with live data by 
   assert.equal((await admin(`/api/manual-devices/${encodeURIComponent(mine.manualId)}`, { method: 'DELETE' })).status, 200);
   assert.ok(!(await (await admin('/api/devices')).json()).some((d) => d.serial === 'MANUAL-001'));
 });
+
+test('manual devices: "Other" make and model, tagged Not monitored when no API connector', async (t) => {
+  const { login } = await startApp(t);
+  const admin = await login('admin@provider.example');
+  const r = await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', make: 'Neat', model: 'Bar Pro', deviceType: 'Video bar', site: 'London HQ', room: 'Lab', serial: 'NEAT-1' }) });
+  assert.equal(r.status, 201);
+  assert.equal((await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', make: 'Neat', site: 'London HQ', room: 'Lab' }) })).status, 400);
+  const devs = await (await admin('/api/devices?q=NEAT-1')).json();
+  assert.equal(devs.length, 1);
+  assert.equal(devs[0].make, 'Neat');
+  assert.equal(devs[0].deviceType, 'Video bar');
+  assert.deepEqual(devs[0].tags, ['Not monitored']);
+  assert.match(devs[0].healthReason, /no API connector/);
+  // Shows up as uncatalogued so the super admin can add it to the master.
+  const { uncatalogued } = await (await admin('/api/models')).json();
+  assert.ok(uncatalogued.some((u) => u.make === 'Neat' && u.model === 'Bar Pro'));
+  // A model the master knows, with a connector, is not tagged.
+  const { models } = await (await admin('/api/models')).json();
+  const rally = models.find((m) => m.model === 'Rally Bar');
+  await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', modelId: rally.id, site: 'London HQ', room: 'Lab', serial: 'RB-NEW-1' }) });
+  const rb = (await (await admin('/api/devices?q=RB-NEW-1')).json())[0];
+  assert.equal(rb.health, 'unmonitored');
+  assert.ok(!rb.tags?.includes('Not monitored'));
+  assert.match(rb.healthReason, /Waiting for Logitech Sync/);
+  // Typing a make/model that is in the master links to it.
+  await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', make: 'logitech', model: 'Rally Bar', site: 'London HQ', room: 'Lab', serial: 'RB-NEW-2' }) });
+  assert.equal((await (await admin('/api/devices?q=RB-NEW-2')).json())[0].modelId, rally.id);
+});

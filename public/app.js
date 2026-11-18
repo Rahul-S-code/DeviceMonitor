@@ -616,7 +616,7 @@ async function openDevice(id) {
       ${d.tags?.length ? `<dt>Tags</dt><dd>${d.tags.map((t) => `<span class="pill blue">${esc(t)}</span>`).join(' ')}</dd>` : ''}
       ${d.notes ? `<dt>Notes</dt><dd>${esc(d.notes)}</dd>` : ''}
     </dl>
-    ${d.manualId ? `<div class="notice ${d.health === 'unmonitored' ? 'info' : 'ok'}" style="margin-top:14px">${d.health === 'unmonitored' ? 'Added manually. No connected API reports this device, so it has no live health.' : 'Added manually and now also reported by a connected API, which provides its live health.'}
+    ${d.manualId ? `<div class="notice ${d.health === 'unmonitored' ? 'info' : 'ok'}" style="margin-top:14px">${d.health === 'unmonitored' ? `${esc(d.healthReason || 'Added manually.')} It has no live health.` : 'Added manually and now also reported by a connected API, which provides its live health.'}
       ${isAdmin() ? `<div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mEdit">Edit manual record</button><button class="btn btn-danger btn-sm" id="mDel">Remove manual record</button></div>` : ''}</div>` : ''}
     ${lifecycleSection(d)}
     ${d.overridden?.length ? `<div class="notice info" style="margin-top:14px">Manually changed: ${d.overridden.map(esc).join(', ')}. The OEM reports this device in <b>${esc(d.reportedRoom)}</b>, ${esc(d.reportedSite)}.</div>` : ''}
@@ -1781,19 +1781,28 @@ async function openManualDevice(rec, preset = {}) {
   const editing = !!rec;
   const [modelsRes] = await Promise.all([api('/api/models')]);
   const models = modelsRes.models;
-  if (!models.length) { toast(ICONS.warning, 'The model master is empty. The super admin needs to add models first.'); return; }
   const custs = S.customers;
   let customerId = rec?.customerId || preset.customerId || acting() || (S.filters.customer?.length === 1 ? S.filters.customer[0] : custs[0]?.id);
   const makes = [...new Set(models.map((m) => m.make))].sort();
   const curModel = models.find((m) => m.id === rec?.modelId);
+  const OTHER = '__other';
+  // A record typed in under "Other": its make may or may not be in the master.
+  const customMake = rec && !rec.modelId ? rec.make : null;
+  const startMake = curModel?.make || (customMake && makes.includes(customMake) ? customMake : customMake ? OTHER : preset.make);
   const v = (k) => esc(rec?.[k] ?? preset[k] ?? '');
   const w = drawer(editing ? 'Edit manual device' : 'Add device', editing ? 'Changes apply to the manual record' : 'For kit with no API, or not connected yet', `
     <div id="adMsg"></div>
     <div class="notice info">Devices added here show as <b>Not monitored</b>. If a connected API later reports the same serial number or MAC address, the two records merge and live health takes over.</div>
     ${custs.length > 1 && !editing ? `<div class="field"><label>Customer *</label><select id="adCust">${custs.map((c) => `<option value="${esc(c.id)}" ${c.id === customerId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>` : ''}
     <div class="grid cols-2" style="gap:10px">
-      <div class="field"><label>Make *</label><select id="adMake"><option value="">Choose make…</option>${makes.map((m) => `<option ${m === (curModel?.make || preset.make) ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+      <div class="field"><label>Make *</label><select id="adMake"><option value="">Choose make…</option>${makes.map((m) => `<option ${m === startMake ? 'selected' : ''}>${esc(m)}</option>`).join('')}<option value="${OTHER}" ${startMake === OTHER ? 'selected' : ''}>Other (type it in)…</option></select></div>
       <div class="field"><label>Model *</label><select id="adModel"></select></div>
+    </div>
+    <div id="adOther" class="grid cols-2 other-box hidden" style="gap:10px">
+      <div class="field" id="adMakeTxtF"><label>Manufacturer *</label><input id="adMakeTxt" value="${esc(customMake || '')}" placeholder="e.g. Neat, Yealink, Crestron"></div>
+      <div class="field"><label>Model *</label><input id="adModelTxt" value="${esc(rec && !rec.modelId ? rec.model || '' : '')}" placeholder="e.g. Bar Pro"></div>
+      <div class="field"><label>Device type</label><select id="adType">${DEVICE_TYPES.map((t) => `<option ${t === (rec?.deviceType || 'Peripheral') ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="help" style="align-self:center">Not in the model master, so no API connector can monitor it. It will be tagged <b>Not monitored</b>.${isSuper() ? ' You can add it to the master later from the Models tab.' : ''}</div>
     </div>
     <div class="help" id="adModelInfo" style="margin:-6px 0 12px"></div>
     <div class="grid cols-2" style="gap:10px">
@@ -1812,12 +1821,21 @@ async function openManualDevice(rec, preset = {}) {
   const fillModels = () => {
     const make = $('#adMake', w).value;
     const list = models.filter((m) => m.make === make);
-    $('#adModel', w).innerHTML = make ? list.map((m) => `<option value="${esc(m.id)}" ${m.id === (curModel?.id || preset.modelId) ? 'selected' : ''}>${esc(shortModel(m.make, m.model))}</option>`).join('') : '<option value="">Choose a make first</option>';
+    const wantOther = customMake && make === customMake && !curModel;
+    $('#adModel', w).disabled = make === OTHER;
+    $('#adModel', w).innerHTML = make === OTHER ? '<option value="">Type it in below</option>'
+      : make ? `${list.map((m) => `<option value="${esc(m.id)}" ${m.id === (curModel?.id || preset.modelId) ? 'selected' : ''}>${esc(shortModel(m.make, m.model))}</option>`).join('')}<option value="${OTHER}" ${wantOther ? 'selected' : ''}>Other (type it in)…</option>` : '<option value="">Choose a make first</option>';
     showInfo();
   };
   const showInfo = () => {
+    const make = $('#adMake', w).value;
+    const other = make === OTHER || $('#adModel', w).value === OTHER;
+    $('#adOther', w).classList.toggle('hidden', !other);
+    $('#adMakeTxtF', w).classList.toggle('hidden', make !== OTHER);
     const m = models.find((x) => x.id === $('#adModel', w).value);
-    $('#adModelInfo', w).innerHTML = m ? `${esc(m.deviceType)}${m.baseline ? ` · approved firmware ${esc(m.baseline)}` : ''}${m.monitoredBy?.length ? ` · can be monitored by ${m.monitoredBy.map((o) => esc(OEM_NAME[o] || o)).join(', ')}` : ' · no API connector'}` : (isSuper() ? 'Missing a model? Add it in <a href="#/models">the model master</a>.' : 'Missing a model? Ask the super admin to add it to the model master.');
+    $('#adModelInfo', w).innerHTML = other ? ''
+      : m ? `${esc(m.deviceType)}${m.baseline ? ` · approved firmware ${esc(m.baseline)}` : ''}${m.monitoredBy?.length ? ` · can be monitored by ${m.monitoredBy.map((o) => esc(OEM_NAME[o] || o)).join(', ')}` : ' · <b>no API connector</b>, so it will be tagged Not monitored'}`
+        : 'Not in the list? Choose <b>Other</b> to type the manufacturer and model in.';
     if (m?.baseline && !$('#adFw', w).value && !editing) $('#adFw', w).placeholder = m.baseline;
   };
   const fillPlaces = async () => {
@@ -1835,14 +1853,18 @@ async function openManualDevice(rec, preset = {}) {
   fillModels(); fillPlaces();
   const save = async (again) => {
     const body = {
-      customerId, modelId: $('#adModel', w).value, site: $('#adSite', w).value.trim(), room: $('#adRoom', w).value.trim(),
+      customerId, ...(() => {
+        const make = $('#adMake', w).value; const model = $('#adModel', w).value;
+        if (make === OTHER || model === OTHER) return { modelId: null, make: make === OTHER ? $('#adMakeTxt', w).value.trim() : make, model: $('#adModelTxt', w).value.trim(), deviceType: $('#adType', w).value };
+        return { modelId: model };
+      })(), site: $('#adSite', w).value.trim(), room: $('#adRoom', w).value.trim(),
       serial: $('#adSerial', w).value.trim() || null, mac: $('#adMac', w).value.trim() || null, firmware: $('#adFw', w).value.trim() || null,
       platform: $('#adPlat', w).value, assetTag: $('#adAsset', w).value.trim() || null, warrantyExpires: $('#adWarr', w).value || null, notes: $('#adNotes', w).value.trim() || null,
     };
     try {
       await api(editing ? `/api/manual-devices/${encodeURIComponent(rec.id)}` : '/api/manual-devices', { method: editing ? 'PUT' : 'POST', body });
       toast(ICONS.resolved, editing ? 'Device saved' : 'Device added');
-      if (again) openManualDevice(null, { customerId, site: body.site, room: body.room, make: $('#adMake', w).value, modelId: body.modelId });
+      if (again) openManualDevice(null, { customerId, site: body.site, room: body.room, make: body.modelId ? $('#adMake', w).value : undefined, modelId: body.modelId });
       else closeDrawer();
       S.options = await api('/api/filters').catch(() => S.options);
       refreshView();

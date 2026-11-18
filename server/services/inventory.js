@@ -37,13 +37,18 @@ export class Inventory {
   /** Devices added by hand, as common device records with health "unmonitored". */
   manualRecords() {
     return this.store.manualDevices.flatMap((m) => {
-      const model = this.store.models.find((x) => x.id === m.modelId);
-      if (!model) return [];
+      const model = m.modelId ? this.store.models.find((x) => x.id === m.modelId) : null;
+      const make = model?.make ?? m.make;
+      if (!make) return [];
+      // No API connector can report this model (or it was typed in under "Other").
+      const noApi = !model?.monitoredBy?.length;
       return [makeDevice({
         id: m.id, customerId: m.customerId, site: m.site, room: m.room,
-        deviceType: model.deviceType, make: model.make, model: model.model,
+        deviceType: model?.deviceType ?? m.deviceType ?? 'Peripheral', make, model: model?.model ?? m.model,
         serial: m.serial, mac: m.mac, firmware: m.firmware,
-        health: 'unmonitored', healthReason: 'Added manually. Not reported by any connected API.',
+        health: 'unmonitored',
+        healthReason: noApi ? 'Added manually. There is no API connector for this model.' : `Added manually. Waiting for ${model.monitoredBy.map((o) => getConnectorClass(o).displayName).join(' or ')} to report it.`,
+        noApi, autoTags: noApi ? ['Not monitored'] : [], tags: noApi ? ['Not monitored'] : undefined,
         platform: PLATFORMS.includes(m.platform) ? m.platform : 'Unassigned', platformSource: PLATFORMS.includes(m.platform) && m.platform !== 'Unassigned' ? 'manual' : null,
         assetTag: m.assetTag, notes: m.notes,
         warrantyExpires: m.warrantyExpires, warrantyType: m.warrantyType, warrantySource: m.warrantyExpires ? 'manual' : null,
@@ -55,6 +60,14 @@ export class Inventory {
 
   enrich(devices) {
     const s = this.store;
+    // A manual record merged with a live source is monitored after all.
+    for (const d of devices) {
+      if (d.autoTags?.length && d.sources.some((x) => x.oem !== 'manual')) {
+        d.tags = (d.tags || []).filter((t) => !d.autoTags.includes(t));
+        if (!d.tags.length) delete d.tags;
+        d.autoTags = []; d.noApi = false;
+      }
+    }
     // Manual overrides (room grouping and bulk edits) win over OEM data.
     for (const d of devices) {
       const o = s.override(d.id);
@@ -65,7 +78,7 @@ export class Inventory {
       if (o.site) d.site = o.site;
       if (o.room) d.room = o.room;
       if (o.platform) { d.platform = o.platform; d.platformSource = 'manual'; }
-      if (o.tags) d.tags = o.tags;
+      if (o.tags) d.tags = [...new Set([...(d.autoTags || []), ...o.tags])];
       if (o.notes) d.notes = o.notes;
       if (o.assetTag) d.assetTag = o.assetTag;
       if (o.warrantyExpires) { d.warrantyExpires = o.warrantyExpires; d.warrantySource = 'manual'; }

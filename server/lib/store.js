@@ -184,14 +184,27 @@ export class Store {
   // --- devices added by hand (kit with no API, or not yet connected) ------
   get manualDevices() { return this.data.manualDevices; }
 
-  /** Validate a manual device. Make and model must come from the model master. */
+  /**
+   * Validate a manual device. Make and model come from the model master, or
+   * are typed in under "Other" for kit the master doesn't list yet.
+   */
   cleanManualDevice(input, existing = null) {
     const v = { ...existing, ...input };
     const customerId = String(v.customerId || '');
     if (!this.customers.some((c) => c.id === customerId)) throw new Error('Pick a customer');
-    const model = this.models.find((m) => m.id === v.modelId);
-    if (!model) throw new Error('Pick a make and model from the model master. Ask the super admin to add a missing model.');
     const text = (x, n) => (x === undefined || x === null ? null : String(x).trim().slice(0, n) || null);
+    let model = null;
+    let custom = null;
+    if (v.modelId) {
+      model = this.models.find((m) => m.id === v.modelId);
+      if (!model) throw new Error('That model is no longer in the model master. Pick another or choose Other.');
+    } else {
+      custom = { make: text(v.make, 40), model: text(v.model, 80), deviceType: text(v.deviceType, 40) || 'Peripheral' };
+      if (!custom.make || !custom.model) throw new Error('Enter the manufacturer and model, or pick them from the lists');
+      // If the typed make and model are actually in the master, link to it.
+      const known = this.findModel(custom.make, custom.model);
+      if (known) { model = known; custom = null; }
+    }
     const site = text(v.site, 60);
     const room = text(v.room, 80);
     if (!site || !room) throw new Error('Site and room are required');
@@ -207,7 +220,9 @@ export class Store {
     };
     return {
       id: existing?.id || `manual:${crypto.randomUUID()}`,
-      customerId, site, room, modelId: model.id, serial, mac,
+      customerId, site, room, modelId: model?.id ?? null,
+      make: custom?.make ?? null, model: custom?.model ?? null, deviceType: custom?.deviceType ?? null,
+      serial, mac,
       firmware: text(v.firmware, 40), platform: text(v.platform, 30), assetTag: text(v.assetTag, 60), notes: text(v.notes, 500),
       warrantyExpires: date(v.warrantyExpires, 'Warranty end'), warrantyType: text(v.warrantyType, 40),
       createdAt: existing?.createdAt || new Date().toISOString(), createdBy: existing?.createdBy || v.createdBy || null,
