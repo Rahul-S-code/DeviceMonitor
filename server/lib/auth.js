@@ -40,9 +40,19 @@ export function parseCookies(header = '') {
   return Object.fromEntries(header.split(';').map((p) => p.trim().split('=')).filter((p) => p[0]).map(([k, ...v]) => [k, decodeURIComponent(v.join('='))]));
 }
 
-/** Customer ids a user may see. Provider admins see all; customer users see only their own. */
-export function allowedCustomers(user, store) {
+export const isAdminRole = (user) => user?.role === 'super_admin' || user?.role === 'provider_admin';
+export const isSuperAdmin = (user) => user?.role === 'super_admin';
+
+/**
+ * Customer ids a user may see. Admins see all customers, unless they have
+ * "entered" one customer, in which case they see only that one.
+ * Customer users only ever see their own.
+ */
+export function allowedCustomers(user, store, session) {
   if (!user) return [];
-  if (user.role === 'provider_admin') return store.customers.map((c) => c.id);
+  if (isAdminRole(user)) {
+    if (session?.actingCustomerId && store.customers.some((c) => c.id === session.actingCustomerId)) return [session.actingCustomerId];
+    return store.customers.map((c) => c.id);
+  }
   return user.customerId ? [user.customerId] : [];
 }

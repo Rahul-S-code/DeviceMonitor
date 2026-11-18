@@ -9,28 +9,28 @@ export const MOCK_CUSTOMERS = [
   {
     id: 'cust-helix', name: 'Helix Financial',
     sites: [
-      { name: 'London HQ', region: 'EMEA', country: 'United Kingdom', rooms: 7 },
-      { name: 'Frankfurt', region: 'EMEA', country: 'Germany', rooms: 4 },
-      { name: 'New York', region: 'AMER', country: 'United States', rooms: 6 },
-      { name: 'Singapore', region: 'APAC', country: 'Singapore', rooms: 4 },
+      { name: 'London HQ', region: 'EMEA', country: 'United Kingdom', lat: 51.5154, lng: -0.0922, city: 'London', rooms: 7 },
+      { name: 'Frankfurt', region: 'EMEA', country: 'Germany', lat: 50.1109, lng: 8.6821, city: 'Frankfurt', rooms: 4 },
+      { name: 'New York', region: 'AMER', country: 'United States', lat: 40.7549, lng: -73.984, city: 'New York', rooms: 6 },
+      { name: 'Singapore', region: 'APAC', country: 'Singapore', lat: 1.2834, lng: 103.8607, city: 'Singapore', rooms: 4 },
     ],
     platforms: ['Microsoft Teams', 'Microsoft Teams', 'Microsoft Teams', 'Zoom'],
   },
   {
     id: 'cust-northwind', name: 'Northwind Retail',
     sites: [
-      { name: 'Chicago', region: 'AMER', country: 'United States', rooms: 6 },
-      { name: 'Toronto', region: 'AMER', country: 'Canada', rooms: 4 },
-      { name: 'Manchester', region: 'EMEA', country: 'United Kingdom', rooms: 5 },
+      { name: 'Chicago', region: 'AMER', country: 'United States', lat: 41.8826, lng: -87.6233, city: 'Chicago', rooms: 6 },
+      { name: 'Toronto', region: 'AMER', country: 'Canada', lat: 43.6481, lng: -79.3815, city: 'Toronto', rooms: 4 },
+      { name: 'Manchester', region: 'EMEA', country: 'United Kingdom', lat: 53.4794, lng: -2.2453, city: 'Manchester', rooms: 5 },
     ],
     platforms: ['Zoom', 'Zoom', 'Google Meet'],
   },
   {
     id: 'cust-meridian', name: 'Meridian Health',
     sites: [
-      { name: 'Mumbai', region: 'APAC', country: 'India', rooms: 6 },
-      { name: 'Sydney', region: 'APAC', country: 'Australia', rooms: 4 },
-      { name: 'Boston', region: 'AMER', country: 'United States', rooms: 5 },
+      { name: 'Mumbai', region: 'APAC', country: 'India', lat: 19.0596, lng: 72.8656, city: 'Mumbai', rooms: 6 },
+      { name: 'Sydney', region: 'APAC', country: 'Australia', lat: -33.8651, lng: 151.2099, city: 'Sydney', rooms: 4 },
+      { name: 'Boston', region: 'AMER', country: 'United States', lat: 42.3554, lng: -71.0605, city: 'Boston', rooms: 5 },
     ],
     platforms: ['Cisco Webex', 'Cisco Webex', 'Microsoft Teams'],
   },
@@ -95,8 +95,24 @@ function macFor(seed, oui) {
 }
 
 /** Build the static estate (rooms + kits) for one customer. */
+const EXTRA = new Map();
+/**
+ * Let customers onboarded through the UI get mock devices too, generated from
+ * the sites entered during onboarding. Called by the store on load and on change.
+ */
+export function registerMockCustomer(def) {
+  if (MOCK_CUSTOMERS.some((c) => c.id === def.id)) return;
+  EXTRA.set(def.id, {
+    id: def.id,
+    name: def.name,
+    platforms: def.platforms?.length ? def.platforms : ['Microsoft Teams', 'Zoom', 'Google Meet', 'Cisco Webex'],
+    sites: (def.sites || []).map((s) => ({ ...s, rooms: Math.max(1, Math.min(Number(s.mockRooms) || 4, 30)) })),
+  });
+}
+export function unregisterMockCustomer(id) { EXTRA.delete(id); }
+
 export function buildEstate(customerId) {
-  const c = MOCK_CUSTOMERS.find((x) => x.id === customerId);
+  const c = MOCK_CUSTOMERS.find((x) => x.id === customerId) || EXTRA.get(customerId);
   if (!c) return { rooms: [] };
   const rooms = [];
   for (const site of c.sites) {
@@ -121,12 +137,12 @@ export function buildEstate(customerId) {
           serial: d.type === 'Generic' ? null : serialFor(sseed, oemKey === 'poly' || shared ? '8L' : '26'),
           mac: d.type === 'Generic' ? null : macFor(sseed, oemKey === 'poly' || shared ? '00:e0:db' : '44:73:d6'),
           firmware: firmwareFor(d.model, dseed),
-          ip: `10.${20 + MOCK_CUSTOMERS.indexOf(c)}.${floor}.${10 + rooms.length + i}`,
+          ip: `10.${20 + Math.floor(hash(c.id) * 200)}.${floor}.${10 + rooms.length + i}`,
         });
       };
       polyKit.forEach((d, i) => add('poly', d, i));
       logiKit.forEach((d, i) => add('logitech', d, i));
-      rooms.push({ id: roomId, site: site.name, region: site.region, country: site.country, room: roomName, floor, platform, oem, devices });
+      rooms.push({ id: roomId, site: site.name, region: site.region || 'Unassigned', country: site.country, room: roomName, floor, platform, oem, devices });
     }
   }
   return { customer: c, rooms };

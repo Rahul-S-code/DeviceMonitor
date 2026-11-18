@@ -13,9 +13,12 @@ export class Vault {
 
   static fromEnv(dataDir, env = process.env) {
     if (env.MASTER_KEY) {
-      const k = Buffer.from(env.MASTER_KEY.trim(), 'hex');
-      if (k.length !== 32) throw new Error('MASTER_KEY must be 64 hex characters (32 bytes)');
-      return new Vault(k);
+      const raw = env.MASTER_KEY.trim();
+      if (/^[0-9a-f]{64}$/i.test(raw)) return new Vault(Buffer.from(raw, 'hex'));
+      // Any other value (for example a hosting provider's generated secret) is
+      // stretched to 32 bytes. It should be long and random.
+      if (raw.length < 32) throw new Error('MASTER_KEY must be 64 hex characters or a random string of at least 32 characters');
+      return new Vault(crypto.createHash('sha256').update(raw).digest());
     }
     const file = path.join(dataDir, 'master.key');
     if (fs.existsSync(file)) return new Vault(Buffer.from(fs.readFileSync(file, 'utf8').trim(), 'hex'));

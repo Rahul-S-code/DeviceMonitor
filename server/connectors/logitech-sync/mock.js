@@ -20,7 +20,7 @@ export class LogitechSyncMockTransport {
         id: `${this.orgId}-${room.id}`,
         type: 'Room',
         name: room.room,
-        group: `/${room.region}/${room.country}/${room.site}/`,
+        group: `/${[room.region, room.country, room.site].filter((x) => x && x !== 'Unassigned').join('/')}/`,
         location: `/Building A/Floor ${room.floor}/`,
         seatCount: 4 + Math.floor(hash(room.id + 'seats') * 12),
         occupancy: 0,

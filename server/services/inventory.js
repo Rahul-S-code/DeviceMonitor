@@ -42,6 +42,20 @@ export class Inventory {
 
   enrich(devices) {
     const s = this.store;
+    // Manual overrides (room grouping and bulk edits) win over OEM data.
+    for (const d of devices) {
+      const o = s.override(d.id);
+      d.reportedSite = d.site;
+      d.reportedRoom = d.room;
+      if (!o) continue;
+      d.overridden = Object.keys(o);
+      if (o.site) d.site = o.site;
+      if (o.room) d.room = o.room;
+      if (o.platform) { d.platform = o.platform; d.platformSource = 'manual'; }
+      if (o.tags) d.tags = o.tags;
+      if (o.notes) d.notes = o.notes;
+      if (o.assetTag) d.assetTag = o.assetTag;
+    }
     // Region and customer name from the site directory.
     for (const d of devices) {
       const info = s.siteInfo(d.customerId, d.site);
@@ -59,7 +73,7 @@ export class Inventory {
       }
     }
     for (const d of devices) {
-      if (d.platformSource === 'device' && d.platform !== 'Unassigned') continue;
+      if ((d.platformSource === 'device' || d.platformSource === 'manual') && d.platform !== 'Unassigned') continue;
       const dir = s.roomPlatform(d.customerId, d.site, d.room);
       const inferred = roomPlatforms.get(`${d.customerId}|${d.site}|${d.room}`);
       if (dir) { d.platform = dir; d.platformSource = 'room directory'; }
@@ -100,7 +114,7 @@ export class Inventory {
       for (const [k, vals] of Object.entries(filters)) if (vals && !vals.includes(d[k])) return false;
       if (oems && !d.oems.some((o) => oems.includes(o))) return false;
       if (f.room && d.room !== f.room) return false;
-      if (q && ![d.model, d.room, d.site, d.serial, d.make, d.customerName, d.hostName].some((x) => x && String(x).toLowerCase().includes(q))) return false;
+      if (q && ![d.model, d.room, d.site, d.serial, d.make, d.customerName, d.hostName, d.assetTag, ...(d.tags || [])].some((x) => x && String(x).toLowerCase().includes(q))) return false;
       return true;
     });
   }
@@ -138,20 +152,55 @@ export class Inventory {
   }
 
   /** Site -> room -> devices hierarchy for drill-down. */
-  tree(devs) {
+  /**
+   * Site -> room -> devices hierarchy for drill-down.
+   * `configured` adds sites and rooms set up during onboarding that have no devices yet.
+   */
+  tree(devs, configured = null) {
     const sites = new Map();
-    for (const d of devs) {
-      const sk = `${d.customerId}|${d.site}`;
-      if (!sites.has(sk)) sites.set(sk, { customerId: d.customerId, customerName: d.customerName, site: d.site, region: d.region, country: d.country, rooms: new Map() });
-      const s = sites.get(sk);
-      if (!s.rooms.has(d.room)) s.rooms.set(d.room, { room: d.room, platform: d.platform, devices: [] });
-      s.rooms.get(d.room).devices.push(d);
+    const site = (customerId, name, region, country) => {
+      const sk = `${customerId}|${name}`;
+      if (!sites.has(sk)) sites.set(sk, { customerId, customerName: this.store.customerName(customerId), site: name, region, country, rooms: new Map() });
+      return sites.get(sk);
+    };
+    const room = (s, name, platform) => {
+      if (!s.rooms.has(name)) s.rooms.set(name, { room: name, platform, devices: [], hasSchematic: !!this.store.schematic(s.customerId, s.site, name) });
+      return s.rooms.get(name);
+    };
+    for (const d of devs) room(site(d.customerId, d.site, d.region, d.country), d.room, d.platform).devices.push(d);
+    if (configured) {
+      const allowed = new Set(configured.allowed);
+      const want = (k, v) => !configured.f?.[k] || String(configured.f[k]).split(',').includes(v);
+      for (const customerId of allowed) {
+        if (!want('customer', customerId)) continue;
+        for (const [name, info] of Object.entries(this.store.sitesFor(customerId))) {
+          if (want('region', info.region) && want('site', name)) site(customerId, name, info.region, info.country);
+        }
+      }
+      for (const k of new Set([...Object.keys(this.store.data.schematics), ...Object.keys(this.store.data.roomDirectory)])) {
+        const [customerId, siteName, roomName] = k.split('|');
+        const s = sites.get(`${customerId}|${siteName}`);
+        if (s && allowed.has(customerId)) room(s, roomName, this.store.roomPlatform(customerId, siteName, roomName) || 'Unassigned');
+      }
     }
     return [...sites.values()].map((s) => {
       const rooms = [...s.rooms.values()].map((r) => ({ ...r, health: Inventory.healthCounts(r.devices), worst: worst(r.devices) }));
       const all = rooms.flatMap((r) => r.devices);
       return { ...s, rooms: rooms.sort((a, b) => a.room.localeCompare(b.room)), health: Inventory.healthCounts(all), worst: worst(all) };
     }).sort((a, b) => (a.customerName + a.site).localeCompare(b.customerName + b.site));
+  }
+
+  /** Sites with coordinates and health, for the map. */
+  map(devs, configured) {
+    return this.tree(devs, configured).map((s) => {
+      const info = this.store.siteInfo(s.customerId, s.site) || {};
+      return {
+        customerId: s.customerId, customerName: s.customerName, site: s.site, region: s.region, country: s.country,
+        city: info.city, address: info.address, lat: info.lat ?? null, lng: info.lng ?? null,
+        health: s.health, worst: s.worst,
+        rooms: s.rooms.map((r) => ({ room: r.room, platform: r.platform, health: r.health, worst: r.worst, hasSchematic: r.hasSchematic, devices: r.devices.map((d) => ({ id: d.id, make: d.make, model: d.model, deviceType: d.deviceType, health: d.health })) })),
+      };
+    });
   }
 
   filterOptions(allowed) {
@@ -171,5 +220,6 @@ export class Inventory {
 
 const RANK = { healthy: 0, warning: 1, offline: 2, critical: 3 };
 function worst(devs) {
+  if (!devs.length) return 'none';
   return devs.reduce((w, d) => (RANK[d.health] > RANK[w] ? d.health : w), 'healthy');
 }
