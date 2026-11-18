@@ -2300,8 +2300,8 @@ async function openManualDevice(rec, preset = {}) {
     </div>
     <div class="help" id="mdvModelInfo" style="margin:-6px 0 12px"></div>
     <div class="grid cols-2" style="gap:10px">
-      <div class="field"><label>Site *</label><input id="mdvSite" list="mdvSites" value="${v('site')}" placeholder="Pick or type a site"><datalist id="mdvSites"></datalist></div>
-      <div class="field"><label>Room *</label><input id="mdvRoom" list="mdvRooms" value="${v('room')}" placeholder="Pick or type a room"><datalist id="mdvRooms"></datalist></div>
+      <div class="field"><label for="mdvSiteSel">Site *</label><select id="mdvSiteSel"><option value="">Loading sites…</option></select><input id="mdvSiteNew" class="hidden" style="margin-top:6px" placeholder="New site name" maxlength="80"></div>
+      <div class="field"><label for="mdvRoomSel">Room *</label><select id="mdvRoomSel"><option value="">Choose a site first</option></select><input id="mdvRoomNew" class="hidden" style="margin-top:6px" placeholder="New room name" maxlength="80"></div>
       <div class="field"><label>Serial number</label><input id="mdvSerial" value="${v('serial')}" class="mono"></div>
       <div class="field"><label>MAC address</label><input id="mdvMac" value="${v('mac')}" class="mono" placeholder="00:e0:db:12:34:56"></div>
       <div class="field"><label>Firmware version</label><input id="mdvFw" value="${v('firmware')}" class="mono"></div>
@@ -2332,15 +2332,39 @@ async function openManualDevice(rec, preset = {}) {
         : 'Not in the list? Choose <b>Other</b> to type the manufacturer and model in.';
     if (m?.baseline && !$('#mdvFw', w).value && !editing) $('#mdvFw', w).placeholder = m.baseline;
   };
+  // Site and room are dropdowns of the customer's existing places, with "New…" to type one in.
+  const NEW = '__new';
+  let places = new Map();
+  const pickOrNew = (sel, input, list, cur, noun) => {
+    const opts = [...list];
+    if (cur && !opts.includes(cur)) opts.push(cur);
+    sel.innerHTML = `<option value="">Choose ${noun}…</option>${opts.sort((a, b) => a.localeCompare(b)).map((x) => `<option ${x === cur ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="${NEW}">New ${noun}…</option>`;
+    input.classList.toggle('hidden', sel.value !== NEW);
+  };
+  const fillRooms = (cur) => {
+    const site = siteVal();
+    pickOrNew($('#mdvRoomSel', w), $('#mdvRoomNew', w), places.get(site) || [], cur, 'room');
+    if (!site) $('#mdvRoomSel', w).innerHTML = '<option value="">Choose a site first</option>';
+    $('#mdvRoomSel', w).disabled = !site;
+  };
+  const siteVal = () => ($('#mdvSiteSel', w).value === NEW ? $('#mdvSiteNew', w).value.trim() : $('#mdvSiteSel', w).value);
+  const roomVal = () => ($('#mdvRoomSel', w).value === NEW ? $('#mdvRoomNew', w).value.trim() : $('#mdvRoomSel', w).value);
   const fillPlaces = async () => {
+    const curSite = rec?.site ?? preset.site ?? ''; const curRoom = rec?.room ?? preset.room ?? '';
     try {
       const tree = await api(`/api/tree?customer=${encodeURIComponent(customerId)}`);
-      const rooms = new Map(tree.map((s) => [s.site, s.rooms.map((r) => r.room)]));
-      $('#mdvSites', w).innerHTML = [...rooms.keys()].map((x) => `<option value="${esc(x)}">`).join('');
-      const fillRooms = () => { $('#mdvRooms', w).innerHTML = (rooms.get($('#mdvSite', w).value) || []).map((x) => `<option value="${esc(x)}">`).join(''); };
-      $('#mdvSite', w).oninput = fillRooms; fillRooms();
-    } catch { /* free text still works */ }
+      places = new Map(tree.map((x) => [x.site, x.rooms.map((r) => r.room)]));
+    } catch { places = new Map(); }
+    pickOrNew($('#mdvSiteSel', w), $('#mdvSiteNew', w), [...places.keys()], curSite, 'site');
+    fillRooms(curRoom);
   };
+  $('#mdvSiteSel', w).addEventListener('change', (e) => {
+    $('#mdvSiteNew', w).classList.toggle('hidden', e.target.value !== NEW);
+    if (e.target.value === NEW) $('#mdvSiteNew', w).focus();
+    fillRooms('');
+    if (e.target.value === NEW) { pickOrNew($('#mdvRoomSel', w), $('#mdvRoomNew', w), [], '', 'room'); $('#mdvRoomSel', w).value = NEW; $('#mdvRoomSel', w).disabled = false; $('#mdvRoomNew', w).classList.remove('hidden'); }
+  });
+  $('#mdvRoomSel', w).addEventListener('change', (e) => { $('#mdvRoomNew', w).classList.toggle('hidden', e.target.value !== NEW); if (e.target.value === NEW) $('#mdvRoomNew', w).focus(); });
   $('#mdvMake', w).addEventListener('change', fillModels);
   $('#mdvModel', w).addEventListener('change', showInfo);
   $('#mdvCust', w)?.addEventListener('change', (e) => { customerId = e.target.value; fillPlaces(); });
@@ -2351,7 +2375,7 @@ async function openManualDevice(rec, preset = {}) {
         const make = $('#mdvMake', w).value; const model = $('#mdvModel', w).value;
         if (make === OTHER || model === OTHER) return { modelId: null, make: make === OTHER ? $('#mdvMakeTxt', w).value.trim() : make, model: $('#mdvModelTxt', w).value.trim(), deviceType: $('#mdvType', w).value };
         return { modelId: model };
-      })(), site: $('#mdvSite', w).value.trim(), room: $('#mdvRoom', w).value.trim(),
+      })(), site: siteVal(), room: roomVal(),
       serial: $('#mdvSerial', w).value.trim() || null, mac: $('#mdvMac', w).value.trim() || null, firmware: $('#mdvFw', w).value.trim() || null,
       platform: $('#mdvPlat', w).value, assetTag: $('#mdvAsset', w).value.trim() || null, warrantyExpires: $('#mdvWarr', w).value || null, notes: $('#mdvNotes', w).value.trim() || null,
     };
