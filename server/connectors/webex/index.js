@@ -17,6 +17,7 @@
 //          GET /v1/locations  -> { items: [{ id, name }] }
 
 import { BaseConnector } from '../base.js';
+import { issue, classifyFault } from '../../lib/issues.js';
 import { trackedFetch } from '../../lib/api-calls.js';
 import { makeDevice, classifyDeviceType } from '../../lib/device-model.js';
 import { WebexMockTransport } from './mock.js';
@@ -72,6 +73,15 @@ const STATUS = {
   pending: ['warning', 'Pending activation'],
   unknown: ['warning', 'Webex does not know the connection status'],
 };
+
+const STATUS_CODE = { disconnected: 'EM-NET-001', offline_expired: 'EM-NET-002', offline_deep_sleep: 'EM-PWR-001', activating: 'EM-REG-001', pending: 'EM-REG-001', unknown: 'EM-GEN-003' };
+function webexIssues(d, source) {
+  const st = d.connectionStatus || 'unknown';
+  if (st === 'connected' && !d.errorCodes?.length) return [];
+  if (STATUS_CODE[st] || !STATUS[st]) return [issue(STATUS_CODE[st] || 'EM-GEN-003', source, `connectionStatus: ${st}`)];
+  if (!d.errorCodes?.length) return [issue('EM-GEN-002', source, `connectionStatus: ${st}`)];
+  return d.errorCodes.map((c) => issue(classifyFault(c, 'EM-GEN-002'), source, `errorCode: ${c}`));
+}
 
 export class WebexConnector extends BaseConnector {
   static oem = 'webex-control-hub';
@@ -183,6 +193,7 @@ export class WebexConnector extends BaseConnector {
         firmware: d.software || null,
         health,
         healthReason: d.errorCodes?.length ? `${reason || 'Issues'}: ${d.errorCodes.join(', ')}` : reason,
+        issues: webexIssues(d, C.displayName),
         lastSeen: d.lastSeen ? new Date(d.lastSeen).toISOString() : null,
         platform: C.platform,
         platformSource: 'device',

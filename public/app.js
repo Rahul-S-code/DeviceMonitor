@@ -25,6 +25,8 @@ const ICONS = {
   chevron: '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>',
   search: '<svg width="15" height="15" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5" stroke="#7d849e" stroke-width="1.6" fill="none"/><path d="M11 11l3.5 3.5" stroke="#7d849e" stroke-width="1.6" stroke-linecap="round"/></svg>',
 };
+// Devices that come only from demo (mock) connections, not a live API or manual entry.
+const mockTag = (d) => (d.mock ? ' <span class="mock-tag" title="Demo data from a mock connection, not a live API">Mock</span>' : '');
 const status = (h) => (h === 'none' ? '<span class="st offline">No devices</span>' : `<span class="st ${h}">${ICONS[h]}${HLABEL[h]}</span>`);
 
 const S = {
@@ -139,14 +141,15 @@ const NAV_ICON = {
   customers: '<circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 14a4.5 4.5 0 0 1 9 0M11 3.5a2.3 2.3 0 0 1 0 4.5M12.5 10a3.8 3.8 0 0 1 2 4"/>',
   audit: '<path d="M4 1.5h6l3 3V14.5H4z"/><path d="M6.5 8h4M6.5 10.5h4M6.5 5.5h2"/>',
   apis: '<path d="M1.5 8h3l2-5 3 10 2-5h3"/>',
+  errors: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 10.8v.4"/>',
 };
 const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
-const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker' };
+const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes' };
 
 function navGroups() {
   return [
     ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts']],
-    ['Service', ['sla', 'lifecycle']],
+    ['Service', ['sla', 'lifecycle', 'errors']],
     ['Configure', ['connections', ...(isAdmin() ? ['models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['apis', 'audit'] : [])]],
   ];
 }
@@ -228,6 +231,7 @@ async function navigate() {
     else if (r.name === 'models' && isAdmin()) await viewModels();
     else if (r.name === 'audit' && isAdmin()) await viewAudit();
     else if (r.name === 'apis' && isAdmin()) await viewApis();
+    else if (r.name === 'errors') await viewErrorCodes();
     else location.hash = '#/overview';
   } catch (e) {
     if (e.message !== 'Signed out') $('#view').innerHTML = `<div class="card"><div class="notice err">${esc(e.message)}</div></div>`;
@@ -421,7 +425,7 @@ function feedItem(a, fresh) {
   const cust = S.options?.customer.find((c) => c.value === a.customerId)?.label;
   return `<div class="feed-item ${fresh ? 'new' : ''}" data-dev="${esc(a.deviceId || '')}" data-conn="${esc(a.connectionId || '')}">
     <div class="sev-dot">${alertIcon(a)}</div>
-    <div><div class="feed-msg">${esc(a.message)}</div>
+    <div><div class="feed-msg">${esc(a.message)}${(a.errorCodes || []).map((c) => ` <span class="code-chip">${esc(c)}</span>`).join('')}</div>
       <div class="feed-meta"><span>${ago(a.at)}</span>${a.site ? `<span>${esc(a.site)}</span>` : ''}${isAdmin() && cust ? `<span>${esc(cust)}</span>` : ''}${a.platform && a.platform !== 'Unassigned' ? `<span>${esc(a.platform)}</span>` : ''}${a.initial ? '<span>at startup</span>' : ''}</div></div>
   </div>`;
 }
@@ -543,7 +547,7 @@ function roomTile(r, href) {
 // ------------------------------------------------------------------ devices table
 const COLS = {
   health: ['Health', (d) => status(d.health), (d) => ['unmonitored', 'healthy', 'warning', 'offline', 'critical'].indexOf(d.health)],
-  device: ['Device', (d) => `<b>${esc(d.make)}</b> ${esc(d.model.replace(new RegExp(`^${d.make}\\s+`), ''))}`, (d) => `${d.make} ${d.model}`],
+  device: ['Device', (d) => `<b>${esc(d.make)}</b> ${esc(d.model.replace(new RegExp(`^${d.make}\\s+`), ''))}${mockTag(d)}`, (d) => `${d.make} ${d.model}`],
   deviceType: ['Type', (d) => esc(d.deviceType), (d) => d.deviceType],
   customer: ['Customer', (d) => esc(d.customerName), (d) => d.customerName],
   site: ['Site', (d) => esc(d.site), (d) => d.site],
@@ -604,8 +608,9 @@ async function openDevice(id) {
   try { d = await api(`/api/devices/${encodeURIComponent(id)}`); } catch (e) { toast(ICONS.warning, e.message); return; }
   const roomHref = `#/estate/${encodeURIComponent(d.customerId)}/${encodeURIComponent(d.site)}/${encodeURIComponent(d.room)}`;
   drawer(`${d.make} ${d.model.replace(new RegExp(`^${d.make}\\s+`), '')}`, `${esc(d.deviceType)} · ${esc(d.room)}, ${esc(d.site)}`, `
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">${status(d.health)}${d.inUse ? '<span class="pill blue">In a meeting</span>' : ''}</div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">${status(d.health)}${mockTag(d)}${d.inUse ? '<span class="pill blue">In a meeting</span>' : ''}</div>
     ${d.healthReason && d.health !== 'unmonitored' ? `<div class="notice ${d.health === 'healthy' ? 'ok' : d.health === 'warning' ? 'info' : 'err'}">${esc(d.healthReason)}</div>` : ''}
+    ${d.diagnosis?.length ? diagnosisSection(d) : ''}
     <div class="section-title">Common device record</div>
     <dl class="kv">
       ${isAdmin() ? `<dt>Customer</dt><dd>${esc(d.customerName)}</dd>` : ''}
@@ -653,6 +658,7 @@ async function openDevice(id) {
         ${s.health ? status(s.health) : ''}</div>`;
   }).join('')}</div>`);
   if ($('#devActions')) mountDeviceActions($('#devActions'), d);
+  if ($('#diagCables')) mountDiagCables($('#diagCables'), d);
   $('#eSave')?.addEventListener('click', async () => {
     const tags = $('#eTags').value.split(',').map((t) => t.trim()).filter(Boolean);
     const set = { site: $('#eSite').value, room: $('#eRoom').value, platform: $('#ePlat').value, assetTag: $('#eAsset').value || null, notes: $('#eNotes').value || null, removeTags: d.tags || [], addTags: tags };
@@ -693,6 +699,32 @@ function drawer(title, sub, body, foot) {
 }
 function closeDrawer() { $('#drawerWrap')?.remove(); }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+// Error codes: what each fault means, likely causes and what to check.
+function diagnosisSection(d) {
+  return `<div class="section-title">Error codes and likely causes</div>
+    ${d.diagnosis.map((x, i) => `<details class="diag ${d.health}" ${i === 0 ? 'open' : ''}>
+      <summary><span class="code-chip">${esc(x.code)}</span><b>${esc(x.title)}</b><span class="muted">${esc(x.area)}</span></summary>
+      <div class="diag-body">
+        <div class="muted diag-src">Reported by <b>${esc(x.source)}</b>${x.raw ? ` as <span class="mono">${esc(x.raw)}</span>` : ''}</div>
+        <p>${esc(x.meaning)}</p>
+        <div class="diag-h">Likely causes, most likely first</div><ol>${x.causes.map((c) => `<li>${esc(c)}</li>`).join('')}</ol>
+        <div class="diag-h">What to check</div><ul>${x.checks.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>
+      </div></details>`).join('')}
+    <div id="diagCables"></div>`;
+}
+/** The device's cables from the room schematic, so the checks point at real ports. */
+async function mountDiagCables(el, d) {
+  const sch = await api(`/api/rooms/schematic?customerId=${encodeURIComponent(d.customerId)}&site=${encodeURIComponent(d.site)}&room=${encodeURIComponent(d.room)}`).catch(() => null);
+  const roomHref = `#/estate/${encodeURIComponent(d.customerId)}/${encodeURIComponent(d.site)}/${encodeURIComponent(d.room)}`;
+  const node = sch?.nodes?.find((n) => n.deviceId === d.id);
+  if (!node) { el.innerHTML = `<div class="muted diag-src">${sch?.nodes?.length ? 'This device is not linked on the room schematic.' : 'No room schematic yet.'} <a href="${roomHref}" data-closedrawer>Open the room</a> to ${sch?.nodes?.length ? 'link it' : 'draw one'} so its cables show here.</div>`; el.querySelector('a')?.addEventListener('click', closeDrawer); return; }
+  const links = sch.links.filter((l) => l.from === node.id || l.to === node.id);
+  el.innerHTML = `<div class="diag-h" style="margin-top:12px">Cables to check (from the room schematic)</div>
+    ${links.map((l) => { const out = l.from === node.id; return `<div class="conn-row"><b>${esc((out ? l.fromPort : l.toPort) || 'Cable')}</b> ${out ? '→' : '←'} ${esc(endText(sch, out ? l.to : l.from, out ? l.toPort : l.fromPort))}<small>${esc(cableText(l))}${l.condition ? ` · ${COND_LABEL[l.condition]}` : ''}${node.location ? ` · ${esc(node.location)}` : ''}</small></div>`; }).join('') || '<div class="muted">No cables drawn to this device.</div>'}
+    <a href="${roomHref}" class="linkbtn" id="diagRoom">Open the room schematic</a>`;
+  $('#diagRoom', el).addEventListener('click', closeDrawer);
+}
 
 // Remote actions run through the vendor API that reports the device: the OEM
 // cloud (e.g. Poly Lens) or the meeting platform (e.g. Webex Control Hub).
@@ -2207,6 +2239,17 @@ async function viewAudit() {
   for (const id of ['#aAction', '#aFrom', '#aTo']) $(id).addEventListener('change', go);
   let t;
   for (const id of ['#aActor', '#aQ']) $(id).addEventListener('input', () => { clearTimeout(t); t = setTimeout(go, 400); });
+}
+
+// ------------------------------------------------------------------ error code reference
+async function viewErrorCodes() {
+  const codes = await api('/api/error-codes');
+  hero('Error codes', 'What each red or amber code means, its likely causes and what to check. Codes are the same whichever vendor reported the fault; the device panel also shows the vendor\'s own value.');
+  const areas = [...new Set(codes.map((c) => c.area))];
+  $('#view').innerHTML = areas.map((a) => `<div class="card" style="margin-bottom:18px"><div class="card-head"><h2>${esc(a)}</h2></div>
+    ${codes.filter((c) => c.area === a).map((c) => `<details class="diag" id="${esc(c.code)}"><summary><span class="code-chip">${esc(c.code)}</span><b>${esc(c.title)}</b>${c.devices ? `<a class="pill bad" href="#/devices" data-code="${esc(c.code)}">${c.devices} device${c.devices > 1 ? 's' : ''} now</a>` : '<span class="muted">none now</span>'}</summary>
+      <div class="diag-body"><p>${esc(c.meaning)}</p><div class="diag-h">Likely causes, most likely first</div><ol>${c.causes.map((x) => `<li>${esc(x)}</li>`).join('')}</ol><div class="diag-h">What to check</div><ul>${c.checks.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div></details>`).join('')}</div>`).join('');
+  document.querySelectorAll('[data-code]').forEach((el) => el.addEventListener('click', (e) => { e.preventDefault(); S.filters = emptyFilters(); S.filters.q = el.dataset.code; saveFilters(); location.hash = '#/devices'; }));
 }
 
 // ------------------------------------------------------------------ API tracker (admins; checks: super admin)

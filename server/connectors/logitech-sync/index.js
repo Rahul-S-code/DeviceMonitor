@@ -15,6 +15,7 @@
 
 import https from 'node:https';
 import { BaseConnector } from '../base.js';
+import { issue, classifyFault } from '../../lib/issues.js';
 import { recordCall } from '../../lib/api-calls.js';
 import { makeDevice, classifyDeviceType, splitPath } from '../../lib/device-model.js';
 import { LogitechSyncMockTransport } from './mock.js';
@@ -139,7 +140,7 @@ export class LogitechSyncConnector extends BaseConnector {
       const site = group.length ? group[group.length - 1] : (loc[0] || 'Unassigned site');
       const region = group.length && KNOWN_REGIONS.includes(group[0].toUpperCase()) ? group[0].toUpperCase() : 'Unassigned';
       for (const d of p.devices ?? []) {
-        const { health, reason } = mapHealth(d);
+        const { health, reason, issues } = mapHealth(d);
         const isGeneric = d.type === 'Generic';
         const genericMake = isGeneric ? guessMake(d.name) : null;
         out.push(makeDevice({
@@ -156,6 +157,7 @@ export class LogitechSyncConnector extends BaseConnector {
           firmware: d.version || null,
           health,
           healthReason: reason,
+          issues,
           // Sync's lastSeen is the last disconnection event; a device that is
           // online now was last seen at sync time.
           lastSeen: d.status === 'Offline' ? (d.lastSeen ? new Date(d.lastSeen).toISOString() : null) : new Date(now).toISOString(),
@@ -176,12 +178,18 @@ export class LogitechSyncConnector extends BaseConnector {
   }
 }
 
+const SRC = 'Logitech Sync';
 function mapHealth(d) {
-  if (d.status === 'Offline') return { health: 'offline', reason: 'Lost connection to Logitech Sync or unplugged' };
+  if (d.status === 'Offline') return { health: 'offline', reason: 'Lost connection to Logitech Sync or unplugged', issues: [issue('EM-NET-001', SRC, 'status: Offline')] };
   const missing = peripheralGaps(d.peripherals);
-  if (d.healthStatus === 'Error') return { health: 'critical', reason: missing || 'Logitech Sync reports an error' };
-  if (d.healthStatus === 'Warning') return { health: 'warning', reason: missing || 'Logitech Sync reports a warning' };
-  return { health: 'healthy', reason: null };
+  const gapIssues = (fallback) => {
+    const list = Object.entries(d.peripherals || {}).filter(([, v]) => v?.count && v.count.actual < v.count.expected)
+      .map(([k, v]) => issue(classifyFault(k, 'EM-PER-006'), SRC, `peripherals.${k}: ${v.count.actual} of ${v.count.expected} connected`));
+    return list.length ? list : [issue(fallback, SRC, `healthStatus: ${d.healthStatus}`)];
+  };
+  if (d.healthStatus === 'Error') return { health: 'critical', reason: missing || 'Logitech Sync reports an error', issues: gapIssues('EM-GEN-001') };
+  if (d.healthStatus === 'Warning') return { health: 'warning', reason: missing || 'Logitech Sync reports a warning', issues: gapIssues('EM-GEN-002') };
+  return { health: 'healthy', reason: null, issues: [] };
 }
 
 const PERIPHERAL_NAMES = { camera: 'Camera', speaker: 'Speaker', displayHub: 'Display Hub', tableHub: 'Table Hub', micPod: 'Mic Pod', micPodHub: 'Mic Pod Hub' };

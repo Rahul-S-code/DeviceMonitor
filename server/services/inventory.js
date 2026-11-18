@@ -5,6 +5,7 @@ import { HEALTH_ORDER } from '../lib/device-model.js';
 import { getConnectorClass } from '../connectors/registry.js';
 import { compareVersions, modelKey, lifecycleStage, warrantyStatus } from '../lib/models.js';
 import { makeDevice, PLATFORMS } from '../lib/device-model.js';
+import { issue, explain } from '../lib/issues.js';
 
 export { compareVersions };
 
@@ -86,6 +87,7 @@ export class Inventory {
       if (o.contractRef) d.contractRef = o.contractRef;
       if (o.purchaseDate) d.purchaseDate = o.purchaseDate;
     }
+    const modeOf = new Map(s.connections.map((c) => [c.id, c.mode]));
     // Region and customer name from the site directory.
     for (const d of devices) {
       const info = s.siteInfo(d.customerId, d.site);
@@ -93,6 +95,9 @@ export class Inventory {
       if (info?.country) d.country = info.country;
       d.customerName = s.customerName(d.customerId);
       d.oems = [...new Set(d.sources.map((x) => x.oem))];
+      // Mock: every API source is a demo (mock) connection and nobody added it by hand.
+      const api = d.sources.filter((x) => x.oem !== 'manual');
+      d.mock = api.length > 0 && api.length === d.sources.length && api.every((x) => modeOf.get(x.connectionId) !== 'live');
     }
     // Platform: device-reported > room directory > inferred from the room's other devices.
     const roomPlatforms = new Map();
@@ -138,13 +143,21 @@ export class Inventory {
       if (d.firmwareStatus === 'behind') {
         d.health = 'warning';
         d.healthReason = `Firmware ${d.firmware} is below the approved baseline ${d.baseline}`;
+        d.issues = [...(d.issues || []), issue('EM-FW-001', 'Estate Monitor', `firmware ${d.firmware} < baseline ${d.baseline}`)];
       } else if (!d.baseline) {
         const latest = newest.get(d.model);
         if (latest && compareVersions(d.firmware, latest) < 0) {
           d.health = 'warning';
           d.healthReason = `Firmware ${d.firmware} is behind ${latest}, the newest version seen in the estate for this model`;
+          d.issues = [...(d.issues || []), issue('EM-FW-001', 'Estate Monitor', `firmware ${d.firmware} < newest in estate ${latest}`)];
         }
       }
+    }
+    // Error codes with meaning, likely causes and checks (healthy and manual devices have none).
+    for (const d of devices) {
+      d.issues = ['healthy', 'unmonitored'].includes(d.health) ? [] : d.issues || [];
+      d.diagnosis = d.issues.map(explain);
+      d.errorCodes = [...new Set(d.issues.map((i) => i.code))];
     }
   }
 
@@ -188,7 +201,7 @@ export class Inventory {
       for (const [k, vals] of Object.entries(filters)) if (vals && !vals.includes(d[k])) return false;
       if (oems && !d.oems.some((o) => oems.includes(o))) return false;
       if (f.room && d.room !== f.room) return false;
-      if (q && ![d.model, d.room, d.site, d.serial, d.make, d.customerName, d.hostName, d.assetTag, ...(d.tags || [])].some((x) => x && String(x).toLowerCase().includes(q))) return false;
+      if (q && ![d.model, d.room, d.site, d.serial, d.make, d.customerName, d.hostName, d.assetTag, ...(d.tags || []), ...(d.errorCodes || [])].some((x) => x && String(x).toLowerCase().includes(q))) return false;
       return true;
     });
   }

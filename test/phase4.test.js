@@ -199,3 +199,38 @@ test('device actions API: admins only, demo connections simulate, audited and ra
   assert.match(ls.note, /read-only/);
   assert.equal((await admin(`/api/devices/${encodeURIComponent(logi.id)}/actions`, { method: 'POST', body: JSON.stringify({ connectionId: ls.connectionId, action: 'reboot' }) })).status, 400);
 });
+
+test('error codes: every red or amber device has a code with causes, from each source', async (t) => {
+  const { ERROR_CODES, classifyFault } = await import('../server/lib/issues.js');
+  assert.equal(classifyFault('cameraNotDetected'), 'EM-PER-001');
+  assert.equal(classifyFault('displayHub'), 'EM-PER-005');
+  assert.equal(classifyFault('micPod'), 'EM-PER-002');
+  assert.equal(classifyFault('temperatureCheck'), 'EM-ENV-001');
+  for (const [code, e] of Object.entries(ERROR_CODES)) assert.ok(e.title && e.meaning && e.causes.length && e.checks.length, code);
+  const { ctx, login } = await startApp(t);
+  const bad = ctx.inventory.devices.filter((d) => ['warning', 'critical', 'offline'].includes(d.health));
+  assert.ok(bad.length > 5);
+  for (const d of bad) {
+    assert.ok(d.diagnosis.length, `${d.id} (${d.healthReason}) has a code`);
+    assert.ok(d.diagnosis.every((x) => ERROR_CODES[x.code] && x.source && x.causes.length));
+  }
+  assert.ok(ctx.inventory.devices.filter((d) => d.health === 'healthy').every((d) => !d.issues.length));
+  const viewer = await login('it@helix.example');
+  const codes = await (await viewer('/api/error-codes')).json();
+  assert.ok(codes.find((c) => c.code === 'EM-NET-001'));
+  const offline = bad.find((d) => d.customerId === 'cust-helix' && d.errorCodes.includes('EM-NET-001'));
+  if (offline) assert.ok((await (await viewer('/api/devices?q=EM-NET-001')).json()).some((d) => d.id === offline.id), 'search finds devices by code');
+});
+
+test('mock flag: only devices fed solely by demo connections', async (t) => {
+  const { ctx } = await startApp(t);
+  const devs = ctx.inventory.devices;
+  assert.ok(devs.filter((d) => d.sources.every((s) => s.oem !== 'manual')).every((d) => d.mock === true), 'demo estate is all mock');
+  ctx.store.addManualDevice({ customerId: 'cust-helix', site: 'London HQ', room: 'Room X', make: 'Neat', model: 'Bar Pro', deviceType: 'Video bar' }, { name: 't' });
+  ctx.sync.refresh();
+  assert.equal(ctx.inventory.devices.find((d) => d.model === 'Bar Pro').mock, false, 'manual devices are not mock');
+  const conn = ctx.store.connections[0];
+  conn.mode = 'live';
+  ctx.sync.refresh();
+  assert.ok(ctx.inventory.devices.filter((d) => d.sources.some((s) => s.connectionId === conn.id)).every((d) => d.mock === false), 'a live source clears the tag');
+});

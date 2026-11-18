@@ -17,6 +17,7 @@
 // warning for connectors that do not report native health.
 
 import { BaseConnector } from '../base.js';
+import { issue, classifyFault } from '../../lib/issues.js';
 import { trackedFetch } from '../../lib/api-calls.js';
 import { makeDevice, classifyDeviceType, normalisePlatform } from '../../lib/device-model.js';
 import { PolyLensMockTransport } from './mock.js';
@@ -191,6 +192,7 @@ export class PolyLensConnector extends BaseConnector {
       firmware: n.softwareVersion || null,
       health: n.connected ? 'healthy' : 'offline',
       healthReason: n.connected ? null : 'Disconnected from Poly Lens cloud',
+      issues: n.connected ? [] : [issue('EM-NET-001', C.displayName, 'connected: false')],
       lastSeen: n.lastDetected ? new Date(n.lastDetected).toISOString() : null,
       platform: normalisePlatform(n.activeApplicationName),
       platformSource: n.activeApplicationName ? 'device' : null,

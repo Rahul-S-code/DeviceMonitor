@@ -76,6 +76,9 @@ function mergeGroup(group) {
     : null;
   merged.lastSeen = sorted.map((d) => d.lastSeen).filter(Boolean).sort().pop() ?? null;
   merged.sources = sorted.flatMap((d) => d.sources.map((s) => ({ ...s, health: d.health })));
+  // Keep every source's error codes: the OEM and the platform can each see a different fault.
+  const seen = new Set();
+  merged.issues = sorted.flatMap((d) => (d.health === 'healthy' ? [] : d.issues || [])).filter((i) => { const k = `${i.code}|${i.source}|${i.raw}`; if (seen.has(k)) return false; seen.add(k); return true; });
   merged.duplicateOf = sorted.slice(1).map((d) => d.id);
   return merged;
 }

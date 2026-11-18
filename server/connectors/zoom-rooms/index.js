@@ -20,6 +20,7 @@
 // Zoom reports online/offline only, so health is healthy or offline here.
 
 import { BaseConnector } from '../base.js';
+import { issue, classifyFault } from '../../lib/issues.js';
 import { trackedFetch } from '../../lib/api-calls.js';
 import { makeDevice, classifyDeviceType } from '../../lib/device-model.js';
 import { ZoomRoomsMockTransport } from './mock.js';
@@ -185,6 +186,7 @@ export class ZoomRoomsConnector extends BaseConnector {
           firmware: d.device_firmware || d.app_version || null,
           health: offline ? 'offline' : 'healthy',
           healthReason: offline ? `Zoom reports the ${d.device_type || 'device'} offline` : null,
+          issues: offline ? [issue('EM-NET-001', C.displayName, `status: ${d.status}`)] : [],
           lastSeen: offline ? null : new Date().toISOString(),
           platform: C.platform,
           platformSource: 'device',

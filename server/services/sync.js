@@ -127,6 +127,7 @@ function deviceAlert(d, before, extra = {}) {
     model: d.model,
     platform: d.platform,
     oems: d.oems,
+    errorCodes: recovered ? [] : d.errorCodes || [],
     message: recovered
       ? `${name} in ${d.room} recovered`
       : `${name} in ${d.room} is ${label}${d.healthReason ? `: ${d.healthReason}` : ''}`,

@@ -16,6 +16,7 @@
 // (Poly Lens, Logitech Sync), which also reports Teams as the platform.
 
 import { BaseConnector } from '../base.js';
+import { issue, classifyFault } from '../../lib/issues.js';
 import { makeDevice, classifyDeviceType } from '../../lib/device-model.js';
 import { platformRooms, simulatedState } from '../../mock/estate.js';
 
@@ -24,6 +25,8 @@ const HEALTH = {
   critical: ['critical', 'Teams reports a critical issue'], offline: ['offline', 'Teams reports the device offline'],
   unknown: ['warning', 'Teams health unknown'],
 };
+
+const TEAMS_CODE = { critical: 'EM-SW-001', nonUrgent: 'EM-SW-002', offline: 'EM-NET-001' };
 
 export class TeamsRoomsConnector extends BaseConnector {
   static oem = 'teams-rooms';
@@ -83,6 +86,7 @@ export class TeamsRoomsConnector extends BaseConnector {
         firmware: d.softwareVersion || null,
         health,
         healthReason: reason,
+        issues: TEAMS_CODE[d.healthStatus] ? [issue(TEAMS_CODE[d.healthStatus], C.displayName, `healthStatus: ${d.healthStatus}`)] : d.healthStatus === 'healthy' ? [] : [issue('EM-GEN-003', C.displayName, `healthStatus: ${d.healthStatus}`)],
         lastSeen: health === 'offline' ? null : d.lastModifiedDateTime,
         platform: C.platform,
         platformSource: 'device',

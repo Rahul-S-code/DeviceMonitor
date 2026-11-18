@@ -9,6 +9,7 @@ import { Sessions, COOKIE, parseCookies, verifyPassword, allowedCustomers, isAdm
 import { validateSchematic, withBlockPorts, SCHEMATIC_TEMPLATES, BLOCKS, CABLES, NODE_KINDS, CONDITIONS } from './lib/schematic.js';
 import { detectDesignType, cleanFileName, DESIGN_ACCEPT, MAX_DESIGNS_PER_ROOM } from './lib/designs.js';
 import { ApiTracker } from './services/api-tracker.js';
+import { ERROR_CODES } from './lib/issues.js';
 import { Inventory } from './services/inventory.js';
 import { SyncService } from './services/sync.js';
 import { History, slaReport, WINDOWS } from './services/history.js';
@@ -191,6 +192,12 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       audit(req, 'device.action_failed', { customerId: d.customerId, target: `${d.make} ${d.model} (${d.room}, ${d.site})`, details: { ...details, error: e.message } });
       res.status(502).json({ error: e.message });
     }
+  });
+  // Error code reference, with how many devices in scope have each code now.
+  app.get('/api/error-codes', requireUser, (req, res) => {
+    const counts = {};
+    for (const d of inventory.query(scope(req))) for (const c of d.errorCodes || []) counts[c] = (counts[c] || 0) + 1;
+    res.json(Object.entries(ERROR_CODES).map(([code, e]) => ({ code, ...e, devices: counts[code] || 0 })));
   });
   app.get('/api/map', requireUser, (req, res) => res.json(inventory.map(inventory.query(scope(req), req.query), configuredScope(req))));
 

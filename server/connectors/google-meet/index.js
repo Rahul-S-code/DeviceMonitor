@@ -11,6 +11,7 @@
 // live mode is disabled until Google publishes an API.
 
 import { BaseConnector } from '../base.js';
+import { issue, classifyFault } from '../../lib/issues.js';
 import { makeDevice, classifyDeviceType } from '../../lib/device-model.js';
 import { platformRooms, simulatedState } from '../../mock/estate.js';
 
@@ -66,6 +67,7 @@ export class GoogleMeetConnector extends BaseConnector {
         firmware: d.osVersion || null,
         health,
         healthReason: offline ? 'Meet hardware is offline' : d.issues?.join('; ') || null,
+        issues: offline ? [issue('EM-NET-001', C.displayName, 'connectionStatus: OFFLINE')] : (d.issues || []).map((x) => issue(classifyFault(x, 'EM-GEN-002'), C.displayName, x)),
         lastSeen: offline ? null : new Date().toISOString(),
         platform: C.platform,
         platformSource: 'device',
