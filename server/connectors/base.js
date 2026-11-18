@@ -13,6 +13,14 @@ export class BaseConnector {
   static make = 'Unknown';
   /** Link to the official API documentation the connector was built from. */
   static docsUrl = '';
+  /** 'oem' = manufacturer device cloud, 'platform' = meeting-platform admin portal. */
+  static kind = 'oem';
+  /** False when no supported public API exists, so only mock data can be used. */
+  static liveSupported = true;
+  /** Shown in the UI to explain the live-mode situation (e.g. a retired API). */
+  static liveNote = '';
+  /** Steps shown when linking credentials. */
+  static setupSteps = [];
   /**
    * Non-secret settings (stored in plain text), e.g. tenant or org id.
    * @type {Array<{key:string,label:string,required?:boolean,placeholder?:string,help?:string,default?:string}>}
@@ -78,6 +86,10 @@ export class BaseConnector {
       displayName: this.displayName,
       make: this.make,
       docsUrl: this.docsUrl,
+      kind: this.kind,
+      liveSupported: this.liveSupported,
+      liveNote: this.liveNote,
+      setupSteps: this.setupSteps,
       settingFields: this.settingFields,
       credentialFields: this.credentialFields.map(({ key, label, multiline, required, help }) => ({ key, label, multiline, required, help })),
     };

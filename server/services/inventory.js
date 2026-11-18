@@ -3,16 +3,9 @@
 import { dedupeDevices } from './dedupe.js';
 import { HEALTH_ORDER } from '../lib/device-model.js';
 import { getConnectorClass } from '../connectors/registry.js';
+import { compareVersions, modelKey, lifecycleStage, warrantyStatus } from '../lib/models.js';
 
-export function compareVersions(a, b) {
-  const pa = String(a).split(/[^0-9]+/).filter(Boolean).map(Number);
-  const pb = String(b).split(/[^0-9]+/).filter(Boolean).map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (d) return d > 0 ? 1 : -1;
-  }
-  return 0;
-}
+export { compareVersions };
 
 export class Inventory {
   constructor(store) {
@@ -55,6 +48,10 @@ export class Inventory {
       if (o.tags) d.tags = o.tags;
       if (o.notes) d.notes = o.notes;
       if (o.assetTag) d.assetTag = o.assetTag;
+      if (o.warrantyExpires) { d.warrantyExpires = o.warrantyExpires; d.warrantySource = 'manual'; }
+      if (o.warrantyType) d.warrantyType = o.warrantyType;
+      if (o.contractRef) d.contractRef = o.contractRef;
+      if (o.purchaseDate) d.purchaseDate = o.purchaseDate;
     }
     // Region and customer name from the site directory.
     for (const d of devices) {
@@ -80,23 +77,66 @@ export class Inventory {
       else if (inferred) { d.platform = inferred; d.platformSource = 'inferred from room'; }
       else { d.platform = 'Unassigned'; d.platformSource = null; }
     }
-    // Derived health for sources without native health (Poly Lens):
-    // firmware older than the newest version seen for that model in the estate.
+    // Firmware: compare with the approved baseline in the model master. Models
+    // without a baseline fall back to the newest version seen in the estate.
+    const catalogue = new Map(s.models.map((m) => [modelKey(m.make, m.model), m]));
     const newest = new Map();
     for (const d of devices) {
       if (!d.firmware) continue;
       const cur = newest.get(d.model);
       if (!cur || compareVersions(d.firmware, cur) > 0) newest.set(d.model, d.firmware);
     }
+    const now = Date.now();
     for (const d of devices) {
+      const m = catalogue.get(modelKey(d.make, d.model)) || null;
+      d.modelId = m?.id ?? null;
+      d.baseline = m?.baseline ?? null;
+      if (!d.firmware) d.firmwareStatus = 'unknown';
+      else if (!m) d.firmwareStatus = 'uncatalogued';
+      else if (!m.baseline) d.firmwareStatus = 'no-baseline';
+      else d.firmwareStatus = compareVersions(d.firmware, m.baseline) < 0 ? 'behind' : compareVersions(d.firmware, m.baseline) > 0 ? 'ahead' : 'compliant';
+      const lc = lifecycleStage(m, now);
+      d.lifecycle = { ...lc, endOfSale: m?.endOfSale ?? null, endOfSupport: m?.endOfSupport ?? null, endOfLife: m?.endOfLife ?? null };
+      d.warrantyStatus = warrantyStatus(d.warrantyExpires, now);
+
+      // Derived health for sources without native health (Poly Lens, Zoom).
       const noNative = d.sources.every((x) => getConnectorClass(x.oem).nativeHealth === false);
       if (!noNative || d.health !== 'healthy' || !d.firmware) continue;
-      const latest = newest.get(d.model);
-      if (latest && compareVersions(d.firmware, latest) < 0) {
+      if (d.firmwareStatus === 'behind') {
         d.health = 'warning';
-        d.healthReason = `Firmware ${d.firmware} is behind ${latest}, the newest version seen in the estate for this model`;
+        d.healthReason = `Firmware ${d.firmware} is below the approved baseline ${d.baseline}`;
+      } else if (!d.baseline) {
+        const latest = newest.get(d.model);
+        if (latest && compareVersions(d.firmware, latest) < 0) {
+          d.health = 'warning';
+          d.healthReason = `Firmware ${d.firmware} is behind ${latest}, the newest version seen in the estate for this model`;
+        }
       }
     }
+  }
+
+  /** Firmware compliance, warranty and lifecycle roll-up for the Lifecycle tab. */
+  lifecycle(devs) {
+    const count = (fn) => devs.reduce((acc, d) => { const k = fn(d); acc[k] = (acc[k] || 0) + 1; return acc; }, {});
+    const models = new Map();
+    for (const d of devs) {
+      const k = d.modelId || `x|${d.make}|${d.model}`;
+      if (!models.has(k)) models.set(k, { modelId: d.modelId, make: d.make, model: d.model, deviceType: d.deviceType, baseline: d.baseline, lifecycle: d.lifecycle, total: 0, behind: 0, versions: {} });
+      const m = models.get(k);
+      m.total++;
+      if (d.firmwareStatus === 'behind') m.behind++;
+      if (d.firmware) m.versions[d.firmware] = (m.versions[d.firmware] || 0) + 1;
+    }
+    const attention = devs.filter((d) => d.firmwareStatus === 'behind' || ['expired', 'expiring'].includes(d.warrantyStatus) || ['eol', 'eos', 'eosale', 'soon'].includes(d.lifecycle?.stage));
+    return {
+      total: devs.length,
+      firmware: count((d) => d.firmwareStatus),
+      warranty: count((d) => d.warrantyStatus),
+      lifecycle: count((d) => d.lifecycle?.stage || 'unknown'),
+      models: [...models.values()].sort((a, b) => b.behind - a.behind || b.total - a.total),
+      attention: attention.slice(0, 500),
+      attentionTotal: attention.length,
+    };
   }
 
   /** Devices visible to the given customers, after applying filters. */

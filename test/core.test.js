@@ -57,7 +57,7 @@ async function startApp(t) {
   await ctx.sync.syncAll();
   const server = ctx.app.listen(0);
   await new Promise((r) => server.once('listening', r));
-  t.after(() => { server.close(); ctx.sync.stop(); ctx.store.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  t.after(() => { server.close(); ctx.sync.stop(); ctx.store.close(); ctx.history.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const login = async (email) => {
     const res = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'demo1234' }) });
@@ -126,7 +126,14 @@ test('mock estate de-duplicates devices seen by both OEM clouds', async (t) => {
   const summary = await (await admin('/api/summary')).json();
   assert.ok(summary.mergedDuplicates > 0);
   const devices = await (await admin('/api/devices')).json();
-  const merged = devices.filter((d) => d.oems.length === 2);
-  assert.equal(merged.length, summary.mergedDuplicates);
-  assert.ok(merged.every((d) => d.model === 'Poly Studio' && d.serial));
+  assert.equal(devices.filter((d) => d.oems.length > 1).length, summary.mergedDuplicates);
+  // The USB bar in mixed rooms is reported by both OEM clouds.
+  const both = devices.filter((d) => d.oems.includes('poly-lens') && d.oems.includes('logitech-sync'));
+  assert.ok(both.length > 0);
+  assert.ok(both.every((d) => d.model === 'Poly Studio' && d.serial));
+  // Platform portals (Zoom, Teams, Webex, Meet) report the same room systems; they merge
+  // into the OEM record and never create a duplicate or an "Unassigned site".
+  const platformOnly = devices.filter((d) => d.oems.every((o) => ['zoom-rooms', 'teams-rooms', 'webex-control-hub', 'google-meet-hardware'].includes(o)));
+  assert.equal(platformOnly.length, 0);
+  assert.ok(devices.every((d) => d.site !== 'Unassigned site'));
 });

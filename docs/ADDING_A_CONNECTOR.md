@@ -41,3 +41,15 @@ Rules:
 - Never log or return credentials. They arrive decrypted in `this.credentials`
   only in live mode.
 - Respect the OEM's rate limits; retry 429s with backoff.
+
+## Platform-side connectors
+
+Meeting-platform portals (Zoom Rooms, Webex Control Hub, Teams Rooms, Google
+Meet hardware) use the same interface with `static kind = 'platform'` and
+`static platform = '<one of PLATFORMS>'`. Set `platform` and
+`platformSource: 'device'` on every device; de-duplication merges them with
+the manufacturer's record by serial or MAC and keeps the OEM's site and room.
+
+If the vendor has no public API, set `static liveSupported = false` and
+explain why in `static liveNote`. The UI then disables Live mode and the API
+refuses it. Optional `static setupSteps` are shown in the Link drawer.

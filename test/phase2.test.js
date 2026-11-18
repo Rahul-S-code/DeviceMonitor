@@ -14,7 +14,7 @@ async function startApp(t) {
   await ctx.sync.syncAll();
   const server = ctx.app.listen(0);
   await new Promise((r) => server.once('listening', r));
-  t.after(() => { server.close(); ctx.sync.stop(); ctx.store.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  t.after(() => { server.close(); ctx.sync.stop(); ctx.store.close(); ctx.history.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const login = async (email, password = 'demo1234') => {
     const res = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) });

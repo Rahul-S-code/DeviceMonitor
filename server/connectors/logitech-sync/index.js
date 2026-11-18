@@ -19,7 +19,8 @@ import { makeDevice, classifyDeviceType, splitPath } from '../../lib/device-mode
 import { LogitechSyncMockTransport } from './mock.js';
 
 export const LOGI_DEFAULT_BASE = 'https://api.sync.logitech.com/v1';
-export const PROJECTION = 'place.info,place.device,place.device.info,place.device.status';
+// place.device.warranty was added in API v0.1.3 ("return ... device warranty information if available").
+export const PROJECTION = 'place.info,place.device,place.device.info,place.device.status,place.device.warranty';
 const KNOWN_REGIONS = ['AMER', 'EMEA', 'APAC', 'LATAM', 'NA', 'EU', 'UK', 'MEA', 'ANZ', 'INDIA'];
 
 /** Live transport: HTTPS GET with mTLS client certificate. */
@@ -157,6 +158,9 @@ export class LogitechSyncConnector extends BaseConnector {
           ip: d.network?.ip || null,
           sources: [{ oem: C.oem, connectionId: this.connection.id, sourceId: d.id }],
           weakIdentity: isGeneric, // generic peripherals have no serial; dedupe matches them by room + model
+          warrantyType: d.warranty?.type || null,
+          warrantyExpires: d.warranty?.expiresAt ? new Date(d.warranty.expiresAt).toISOString().slice(0, 10) : null,
+          warrantySource: d.warranty ? 'Logitech Sync' : null,
         }));
       }
     }

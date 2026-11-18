@@ -87,7 +87,7 @@ const TYPE_RULES = [
   [/dock/i, 'Desk dock'],
   [/voyager|zone|headset/i, 'Headset'],
   [/tv|display|board/i, 'Display'],
-  [/desktop-|nuc|pc|computer/i, 'Room PC'],
+  [/desktop-|nuc|pc|computer|thinksmart core|room kit core/i, 'Room PC'],
 ];
 
 export function classifyDeviceType(model, hint) {

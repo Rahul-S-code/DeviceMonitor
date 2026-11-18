@@ -4,13 +4,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { MOCK_CUSTOMERS, buildEstate, registerMockCustomer, unregisterMockCustomer } from '../mock/estate.js';
+import { MOCK_CUSTOMERS, buildEstate, registerMockCustomer, unregisterMockCustomer, demoModels } from '../mock/estate.js';
+import { modelKey, cleanModel, cleanRelease, sortReleases } from './models.js';
+import { classifyDeviceType } from './device-model.js';
 import { hashPassword } from './auth.js';
 
 const EMPTY = {
   customers: [], users: [], connections: [], siteDirectory: {}, roomDirectory: {},
-  schematics: {}, deviceOverrides: {}, alerts: [],
+  schematics: {}, deviceOverrides: {}, alerts: [], models: [], audit: [],
 };
+const MAX_AUDIT = 5000;
+export const DEFAULT_SLA_TARGET = 99.5;
+// Platform-side connections the demo customers get, by meeting platform.
+const PLATFORM_OEM = { 'Microsoft Teams': 'teams-rooms', Zoom: 'zoom-rooms', 'Cisco Webex': 'webex-control-hub', 'Google Meet': 'google-meet-hardware' };
+const OEM_LABEL = { 'poly-lens': 'Poly Lens', 'logitech-sync': 'Logitech Sync', 'teams-rooms': 'Teams Rooms', 'zoom-rooms': 'Zoom Rooms', 'webex-control-hub': 'Webex Control Hub', 'google-meet-hardware': 'Google Meet hardware' };
 
 export const roomKey = (customerId, site, room) => `${customerId}|${site}|${room}`;
 
@@ -75,6 +82,110 @@ export class Store {
 
   clearOverride(deviceId) { delete this.data.deviceOverrides[deviceId]; }
 
+  // --- audit log ----------------------------------------------------------
+  /** Append an audit entry. Never pass secret values in `details`. */
+  audit(entry) {
+    const e = { id: crypto.randomUUID(), at: new Date().toISOString(), ...entry };
+    this.data.audit.unshift(e);
+    if (this.data.audit.length > MAX_AUDIT) this.data.audit.length = MAX_AUDIT;
+    this.save();
+    return e;
+  }
+
+  // --- model and firmware master -------------------------------------------
+  get models() { return this.data.models; }
+
+  findModel(make, model) {
+    const k = modelKey(make, model);
+    return this.models.find((m) => modelKey(m.make, m.model) === k) ?? null;
+  }
+
+  createModel(input) {
+    const m = cleanModel(input);
+    if (this.findModel(m.make, m.model)) throw new Error(`${m.make} ${m.model} is already in the model master`);
+    this.models.push(m);
+    this.save();
+    return m;
+  }
+
+  updateModel(id, input) {
+    const i = this.models.findIndex((m) => m.id === id);
+    if (i < 0) throw new Error('Model not found');
+    const m = cleanModel(input, this.models[i]);
+    const clash = this.findModel(m.make, m.model);
+    if (clash && clash.id !== id) throw new Error(`${m.make} ${m.model} is already in the model master`);
+    this.models[i] = m;
+    this.save();
+    return m;
+  }
+
+  deleteModel(id) {
+    const i = this.models.findIndex((m) => m.id === id);
+    if (i < 0) throw new Error('Model not found');
+    const [m] = this.models.splice(i, 1);
+    this.save();
+    return m;
+  }
+
+  addRelease(id, input) {
+    const m = this.models.find((x) => x.id === id);
+    if (!m) throw new Error('Model not found');
+    const r = cleanRelease(input);
+    const cur = m.releases.find((x) => x.version === r.version);
+    if (cur) Object.assign(cur, { releasedAt: r.releasedAt ?? cur.releasedAt, notesUrl: r.notesUrl ?? cur.notesUrl, notes: r.notes ?? cur.notes, source: cur.source === 'fleet' ? 'fleet + manual' : 'manual' });
+    else m.releases.push(r);
+    sortReleases(m.releases);
+    m.updatedAt = new Date().toISOString();
+    this.save();
+    return m;
+  }
+
+  removeRelease(id, version) {
+    const m = this.models.find((x) => x.id === id);
+    if (!m) throw new Error('Model not found');
+    m.releases = m.releases.filter((r) => r.version !== version);
+    if (m.baseline === version) m.baseline = null;
+    this.save();
+    return m;
+  }
+
+  /**
+   * OEM release tracking: record firmware versions first seen in the fleet
+   * against catalogued models. Returns the newly seen [{model, version}].
+   */
+  recordFleetFirmware(devices) {
+    const fresh = [];
+    const now = new Date().toISOString();
+    const byKey = new Map(this.models.map((m) => [modelKey(m.make, m.model), m]));
+    for (const d of devices) {
+      if (!d.firmware) continue;
+      const m = byKey.get(modelKey(d.make, d.model));
+      if (!m || m.releases.some((r) => r.version === d.firmware)) continue;
+      m.releases.push({ version: d.firmware, releasedAt: null, notesUrl: null, notes: null, source: 'fleet', firstSeenAt: now, addedAt: now });
+      sortReleases(m.releases);
+      fresh.push({ model: m, version: d.firmware });
+    }
+    if (fresh.length) this.save();
+    return fresh;
+  }
+
+  /** Demo catalogue for the mock estate. Lifecycle dates are left for the admin to fill in. */
+  seedModels() {
+    if (this.models.length) return false;
+    const now = new Date().toISOString();
+    for (const d of demoModels()) {
+      const m = cleanModel({ make: d.make, model: d.model, deviceType: classifyDeviceType(d.model), monitoredBy: [d.make === 'Poly' ? 'poly-lens' : 'logitech-sync'], baseline: d.versions[0], notes: 'Demo entry: baseline set to the newest mock firmware.' });
+      m.releases = d.versions.map((v) => ({ version: v, releasedAt: null, notesUrl: null, notes: null, source: 'fleet', firstSeenAt: now, addedAt: now }));
+      this.models.push(m);
+    }
+    return true;
+  }
+
+  slaTarget(customerId) {
+    const t = this.customers.find((c) => c.id === customerId)?.slaTarget;
+    return typeof t === 'number' ? t : DEFAULT_SLA_TARGET;
+  }
+
   /** Customers created through onboarding get mock devices generated from their sites. */
   registerMocks() {
     for (const c of this.customers) {
@@ -94,7 +205,7 @@ export class Store {
     const slug = clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'customer';
     let id = `cust-${slug}`;
     while (this.customers.some((c) => c.id === id)) id = `cust-${slug}-${crypto.randomBytes(2).toString('hex')}`;
-    const customer = { id, name: clean, platforms: platforms.slice(0, 4), createdAt: new Date().toISOString() };
+    const customer = { id, name: clean, platforms: platforms.slice(0, 4), slaTarget: DEFAULT_SLA_TARGET, createdAt: new Date().toISOString() };
     const siteDir = {};
     for (const s of sites) {
       const sname = String(s.name || '').trim().slice(0, 60);
@@ -113,7 +224,7 @@ export class Store {
     this.users.push(...newUsers);
     const conns = connections.map((c) => ({
       id: crypto.randomUUID(), customerId: id, oem: c.oem, mode: 'mock',
-      name: `${clean} · ${c.displayName || c.oem}`, settings: {}, secret: null, createdAt: new Date().toISOString(),
+      name: `${clean} · ${c.displayName || OEM_LABEL[c.oem] || c.oem}`, settings: {}, secret: null, createdAt: new Date().toISOString(),
     }));
     this.connections.push(...conns);
     for (const r of rooms) {
@@ -130,9 +241,14 @@ export class Store {
     return { customer, connections: conns, users: newUsers.length };
   }
 
-  updateCustomer(id, { name, sites, platforms }) {
+  updateCustomer(id, { name, sites, platforms, slaTarget }) {
     const c = this.customers.find((x) => x.id === id);
     if (!c) throw new Error('Customer not found');
+    if (slaTarget !== undefined) {
+      const t = Number(slaTarget);
+      if (!Number.isFinite(t) || t < 50 || t > 100) throw new Error('SLA target must be between 50 and 100 percent');
+      c.slaTarget = Math.round(t * 1000) / 1000;
+    }
     if (name) c.name = String(name).trim().slice(0, 80);
     if (Array.isArray(platforms)) c.platforms = platforms.slice(0, 4);
     if (Array.isArray(sites)) {
@@ -163,20 +279,17 @@ export class Store {
   seedIfEmpty(demoPassword) {
     if (this.customers.length) return false;
     for (const c of MOCK_CUSTOMERS) {
-      this.customers.push({ id: c.id, name: c.name, platforms: [...new Set(c.platforms)] });
+      this.customers.push({ id: c.id, name: c.name, platforms: [...new Set(c.platforms)], slaTarget: DEFAULT_SLA_TARGET });
       this.data.siteDirectory[c.id] = Object.fromEntries(c.sites.map((s) => [s.name, cleanSite(s)]));
       for (const r of buildEstate(c.id).rooms) {
         // Logitech Sync has no platform field, so rooms it manages get a room-directory entry.
         if (r.oem !== 'poly') this.data.roomDirectory[roomKey(c.id, r.site, r.room)] = r.platform;
       }
-      for (const oem of ['poly-lens', 'logitech-sync']) {
-        this.connections.push({
-          id: crypto.randomUUID(), customerId: c.id, oem, mode: 'mock',
-          name: `${c.name} · ${oem === 'poly-lens' ? 'Poly Lens' : 'Logitech Sync'}`,
-          settings: {}, secret: null, createdAt: new Date().toISOString(),
-        });
-      }
+      for (const oem of ['poly-lens', 'logitech-sync']) this.addMockConnection(c, oem);
+      this.addPlatformConnections(c);
     }
+    this.seedModels();
+    this.data.phase3 = true;
     const pw = hashPassword(demoPassword);
     this.users.push({ id: 'u-admin', email: 'admin@provider.example', name: 'Service Desk Admin', role: 'provider_admin', customerId: null, password: pw });
     for (const c of MOCK_CUSTOMERS) {
@@ -185,6 +298,20 @@ export class Store {
     }
     this.flush();
     return true;
+  }
+
+  addMockConnection(c, oem) {
+    this.connections.push({
+      id: crypto.randomUUID(), customerId: c.id, oem, mode: 'mock',
+      name: `${c.name} · ${OEM_LABEL[oem] || oem}`, settings: {}, secret: null, createdAt: new Date().toISOString(),
+    });
+  }
+
+  addPlatformConnections(c) {
+    for (const p of new Set(c.platforms)) {
+      const oem = PLATFORM_OEM[p];
+      if (oem && !this.connections.some((x) => x.customerId === c.id && x.oem === oem)) this.addMockConnection(c, oem);
+    }
   }
 
   /** Bring older data files up to date (adds the super admin and site coordinates). */
@@ -198,6 +325,17 @@ export class Store {
       const dir = this.data.siteDirectory[m.id];
       if (!dir) continue;
       for (const s of m.sites) if (dir[s.name] && dir[s.name].lat === undefined) { dir[s.name] = cleanSite({ ...s, ...dir[s.name] }); changed = true; }
+    }
+    // Phase 3: model master, platform connectors for the demo customers, SLA targets.
+    // Runs once, so models or connections the admin later deletes stay deleted.
+    if (!this.data.phase3) {
+      this.seedModels();
+      for (const m of MOCK_CUSTOMERS) {
+        const c = this.customers.find((x) => x.id === m.id);
+        if (c) this.addPlatformConnections({ ...c, platforms: m.platforms });
+      }
+      this.data.phase3 = true;
+      changed = true;
     }
     if (changed) this.flush();
     return changed;

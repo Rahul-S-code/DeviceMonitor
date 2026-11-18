@@ -10,6 +10,7 @@
 // available (Poly Lens for a Poly device), fills gaps from other sources, and
 // takes the most severe health so a problem seen by any source is not hidden.
 import { normaliseSerial, normaliseMac, HEALTH_RANK } from '../lib/device-model.js';
+import { getConnectorClass } from '../connectors/registry.js';
 
 const OEM_MAKE = { 'poly-lens': 'Poly', 'logitech-sync': 'Logitech' };
 
@@ -57,12 +58,15 @@ export function dedupeDevices(devices) {
 
 function mergeGroup(group) {
   if (group.length === 1) return { ...group[0], duplicateOf: [] };
-  const score = (d) => (d.sources.some((s) => OEM_MAKE[s.oem] === d.make) ? 4 : 0) + (d.weakIdentity ? 0 : 2) + (d.serial ? 1 : 0);
+  // Manufacturer clouds know site and room layout; platform portals often don't.
+  const fromOem = (d) => d.sources.some((s) => getConnectorClass(s.oem).kind !== 'platform');
+  const score = (d) => (d.sources.some((s) => OEM_MAKE[s.oem] === d.make) ? 4 : 0) + (fromOem(d) ? 3 : 0) + (d.weakIdentity ? 0 : 2) + (d.serial ? 1 : 0);
+  const gap = (v) => v === null || v === undefined || v === 'Unassigned' || v === 'Unassigned site' || v === 'Unassigned room';
   const sorted = [...group].sort((a, b) => score(b) - score(a));
   const primary = sorted[0];
   const merged = { ...primary, weakIdentity: false };
   for (const d of sorted.slice(1)) {
-    for (const [k, v] of Object.entries(d)) if ((merged[k] === null || merged[k] === undefined || merged[k] === 'Unassigned') && v != null) merged[k] = v;
+    for (const [k, v] of Object.entries(d)) if (gap(merged[k]) && !gap(v)) merged[k] = v;
   }
   const worst = sorted.reduce((w, d) => (HEALTH_RANK[d.health] > HEALTH_RANK[w.health] ? d : w), primary);
   merged.health = worst.health;

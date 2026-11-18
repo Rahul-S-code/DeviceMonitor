@@ -17,7 +17,7 @@ Needs Node.js 20 or newer.
 npm install
 cp .env.example .env      # optional; set MASTER_KEY for anything beyond a demo
 npm start                 # http://localhost:8080
-npm test                  # 22 tests: connectors, dedupe, tenancy, encryption, mTLS, onboarding, schematics
+npm test                  # 31 tests: connectors, dedupe, tenancy, encryption, mTLS, onboarding, schematics, models, SLA, audit
 ```
 
 Demo sign-ins (password `demo1234`, or whatever `DEMO_PASSWORD` is set to on first run):
@@ -49,6 +49,15 @@ The three customers, their sites and devices are fictional mock data.
 - **Super admin and onboarding**: `superadmin@provider.example` gets a Customers page. "Onboard customer" creates the customer, its sites (city presets fill in the map coordinates), its user logins, its OEM connections (starting on mock data) and optional pre-loaded rooms with platforms and schematics. "Enter customer" (also in the top bar for any admin) switches the whole app to that customer's view until you exit.
 - **Group devices into rooms and bulk update**: tick devices on the Devices page or in a room, then group them into an existing or new room, set the platform, add tags and notes, or reset them to what the OEM reports. Changes are stored as overrides on top of the OEM data, so the next sync never undoes them. Single devices can be edited from their detail panel.
 - **Room schematics**: each room has a cabling diagram showing which device plugs into which, on which port, with which cable (HDMI, USB, USB-C, Ethernet, PoE, DisplayPort, audio, power, wireless). Start from a template (Rally Bar, Rally with PC, Poly Studio X, Poly G7500, USB huddle), add the room's monitored devices, edit items and connections, and import or export it as JSON. Linked devices show their live health on the diagram. Schematics can be loaded per room during onboarding.
+
+## Phase 3 features
+
+- **Model and firmware master** (Models tab; super admin edits, other admins read): the catalogue of make › model › device type, which connectors can monitor it, the approved firmware baseline, end-of-sale, end-of-support and end-of-life dates with a link to the manufacturer's notice, and a release list per model. Releases are tracked two ways: every firmware version first seen in the fleet is added automatically (and logged), and admins add official releases with release-notes links. Lifecycle dates are never invented; fill them in from the OEM's notices. Models seen in the estate but missing from the master are listed for one-click import.
+- **Lifecycle tab**: firmware compliance against the baseline, versions per model, warranty status (in warranty, expiring within 90 days, expired, not recorded), lifecycle stage per model, and a list of devices needing attention. Devices below baseline become a warning for sources with no native health (Poly Lens, Zoom).
+- **Warranty capture**: Logitech Sync's `place.device.warranty` (type and expiry, API v0.1.3+) is read automatically. Any device can carry a manual warranty end date, plan, contract reference and purchase date, from its detail panel or in bulk ("Warranty" in the bulk bar).
+- **Platform-side connectors** (Connections page, "Meeting-platform portals"): Zoom Rooms (live, Server-to-Server OAuth) and Webex Control Hub (live, admin token). Teams Rooms and Google Meet hardware run on mock data only, because neither has a public device-health API (see API references). Platform devices merge with the OEM record of the same device by serial or MAC, and supply the meeting platform.
+- **SLA tab**: availability over 24 hours, 7 days or 30 days by customer, site, room and device, against a per-customer target (default 99.5%, set under Customers › Sites & users), plus incidents, mean time to restore and a trend chart. A device is unavailable while offline or critical. Health is recorded at every sync into `data/history.json` (35 days kept); devices from mock connections use a simulated history so the demo has 30 days of data.
+- **Audit log tab** (admins): sign-ins and failed sign-ins, entering customers, device edits, room platform and schematic changes, onboarding, users, connection changes, tests and syncs (only the names of changed credential fields, never values), model master changes, new firmware seen, and audit exports. Filter by activity, user, date and text; export to CSV.
 
 ## Publish it online (Render)
 
@@ -93,7 +102,7 @@ the connector's paging and mapping code is identical in both modes.
 `site, room, deviceType, make, model, serial, firmware, health (healthy|warning|critical|offline), lastSeen`,
 plus `customerId, region, platform, ip, mac, sources[]`. See `server/lib/device-model.js`.
 
-### How OEM data is mapped
+### How OEM and platform data is mapped
 
 | | Poly Lens | Logitech Sync |
 |---|---|---|
@@ -104,6 +113,15 @@ plus `customerId, region, platform, ip, mac, sources[]`. See `server/lib/device-
 | Last seen | `lastDetected` | sync time if online, else `lastSeen` (last disconnection) |
 | Platform | `activeApplicationName` | not in the API: set per room on the room page, or inferred from other devices in the room |
 | Region | site directory | first segment of `group` if it is a region code, else site directory |
+
+Platform portals:
+
+| | Zoom Rooms | Webex Control Hub |
+|---|---|---|
+| Calls | `GET /rooms`, `GET /rooms/{id}/devices`, `GET /rooms/locations` | `GET /devices`, `GET /workspaces`, `GET /locations` |
+| Site / room | building location / room `name` | workspace location / workspace `displayName` |
+| Make / model / serial | `device_manufacturer` / `device_model` / `serial_number` | `product` / `product` / `serial` |
+| Health | device `status` Offline → offline, else healthy | `connectionStatus`: connected → healthy, connected_with_issues → warning (with `errorCodes`), disconnected/offline_* → offline |
 
 ### De-duplication
 
@@ -128,15 +146,22 @@ are git-ignored.
 - Poly Lens: [How to get started](https://lensapidocsdev.z19.web.core.windows.net/docs/graphql/how-to-get-started), [Getting started](https://lensapidocsdev.z19.web.core.windows.net/docs/graphql/getting-started), [Inventory reporting](https://lensapidocsdev.z19.web.core.windows.net/docs/graphql/Example%20Queries/inventory-reporting)
 - Logitech Sync: [API quick start guide](https://hub.sync.logitech.com/syncguides/post/1-8-getting-started---api-quick-start-guide-QOU16rRoLmzBP9F) and the Sync Cloud API OpenAPI definition v0.1.4 (download it from Sync Portal › Settings › Sync Cloud API)
 
+- Zoom Rooms: [Rooms API](https://developers.zoom.us/docs/api/rooms/), [Server-to-Server OAuth](https://developers.zoom.us/docs/internal-apps/s2s-oauth/). Scope `room:read:admin`.
+- Webex: [Devices](https://developer.webex.com/docs/api/v1/devices), [Workspaces](https://developer.webex.com/docs/api/v1/workspaces), [Locations](https://developer.webex.com/docs/api/v1/locations). Scopes `spark-admin:devices_read`, `spark-admin:workspaces_read`, `spark-admin:locations_read`.
+- Teams Rooms: Microsoft retired the Graph beta `teamworkDevice` API (Message Center MC1183294) and has [not published a replacement](https://learn.microsoft.com/en-us/answers/questions/5569164/what-is-replacing-the-teamworkdevice-endpoint-on-g). The connector keeps the retired resource's field names in its mock so a future API can be mapped quickly.
+- Google Meet hardware: status is only in the [Admin console](https://knowledge.workspace.google.com/admin/meet-hardware/check-for-offline-meet-hardware); there is no public API for it.
+
 Things to confirm against a real tenant when going live:
 
 - Poly Lens: tenants in a different region may need a regional API host; set the Token URL and GraphQL URL on the connection if so.
 - Logitech Sync: use the exact "API Server" from your portal; the API only returns licensed rooms (Select, Essential or Sync Plus).
+- Zoom: the room location tree is read best effort; without the locations scope rooms land in "Unassigned site" until grouped.
+- Webex: service-app tokens expire; replace the token on the connection before it lapses.
 
 ## Later phases
 
-Alert rules, ServiceNow ticket creation, uptime reports, and Microsoft Entra ID
-sign-in. The alert generator in `services/sync.js` and the session layer in
+Alert rules, ServiceNow ticket creation, scheduled uptime reports, Microsoft
+Entra ID sign-in, and bulk device upload with "Not monitored" inventory. The alert generator in `services/sync.js` and the session layer in
 `lib/auth.js` are the hooks for these.
 
 ## Adding an OEM

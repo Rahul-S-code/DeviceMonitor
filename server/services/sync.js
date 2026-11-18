@@ -8,9 +8,9 @@ const SEVERITY = { warning: 'warning', critical: 'critical', offline: 'critical'
 const MAX_ALERTS = 500;
 
 export class SyncService extends EventEmitter {
-  constructor({ store, vault, inventory, intervalMs = 30_000 }) {
+  constructor({ store, vault, inventory, history = null, intervalMs = 30_000 }) {
     super();
-    Object.assign(this, { store, vault, inventory, intervalMs });
+    Object.assign(this, { store, vault, inventory, history, intervalMs });
     this.status = new Map(); // connectionId -> status
     this.lastHealth = new Map(); // deviceId -> health
     this.running = false;
@@ -66,6 +66,13 @@ export class SyncService extends EventEmitter {
   /** Rebuild inventory and emit alerts for health transitions. */
   refresh() {
     const devices = this.inventory.rebuild();
+    // SLA history: devices fed only by mock connections get simulated history before recording began.
+    const modeOf = new Map(this.store.connections.map((c) => [c.id, c.mode]));
+    this.history?.record(devices, (d) => d.sources.every((x) => modeOf.get(x.connectionId) !== 'live'));
+    // OEM release tracking: firmware versions seen for the first time on catalogued models.
+    for (const { model, version } of this.store.recordFleetFirmware(devices)) {
+      this.store.audit({ actor: { id: 'system', email: 'system', name: 'Sync', role: 'system' }, action: 'firmware.detected', target: `${model.make} ${model.model}`, details: { version, note: 'First seen in the fleet' } });
+    }
     const seen = new Set();
     for (const d of devices) {
       seen.add(d.id);

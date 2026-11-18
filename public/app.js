@@ -4,8 +4,8 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const HEALTH = ['healthy', 'warning', 'critical', 'offline'];
 const HLABEL = { healthy: 'Healthy', warning: 'Warning', critical: 'Critical', offline: 'Offline' };
-const OEM_SHORT = { 'poly-lens': 'PL', 'logitech-sync': 'LS' };
-const OEM_NAME = { 'poly-lens': 'Poly Lens', 'logitech-sync': 'Logitech Sync' };
+const OEM_SHORT = { 'poly-lens': 'PL', 'logitech-sync': 'LS', 'zoom-rooms': 'ZR', 'webex-control-hub': 'WX', 'teams-rooms': 'TR', 'google-meet-hardware': 'GM' };
+const OEM_NAME = { 'poly-lens': 'Poly Lens', 'logitech-sync': 'Logitech Sync', 'zoom-rooms': 'Zoom Rooms', 'webex-control-hub': 'Webex Control Hub', 'teams-rooms': 'Teams Rooms', 'google-meet-hardware': 'Google Meet hardware' };
 const FILTER_KEYS = [
   ['customer', 'Customer'], ['region', 'Region'], ['site', 'Site'], ['platform', 'Platform'],
   ['oem', 'OEM'], ['deviceType', 'Device type'], ['health', 'Health'],
@@ -128,8 +128,11 @@ function renderShell() {
       <a href="#/map" data-r="map">Map</a>
       <a href="#/estate" data-r="estate">Sites &amp; rooms</a>
       <a href="#/devices" data-r="devices">Devices</a>
+      <a href="#/lifecycle" data-r="lifecycle">Lifecycle</a>
+      <a href="#/sla" data-r="sla">SLA</a>
       <a href="#/alerts" data-r="alerts">Alerts</a>
       <a href="#/connections" data-r="connections">Connections</a>
+      ${isAdmin() ? '<a href="#/models" data-r="models">Models</a><a href="#/audit" data-r="audit">Audit log</a>' : ''}
       ${isSuper() ? '<a href="#/customers" data-r="customers">Customers</a>' : ''}
     </nav>
     <div class="top-right">
@@ -157,7 +160,7 @@ async function navigate() {
   if (!S.me) return;
   const r = route();
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.r === r.name));
-  const withFilters = ['overview', 'estate', 'devices', 'map'].includes(r.name);
+  const withFilters = ['overview', 'estate', 'devices', 'map', 'lifecycle', 'sla'].includes(r.name);
   if (r.name !== 'map') destroyMap();
   $('#filters').innerHTML = '';
   if (withFilters) renderFilters();
@@ -169,6 +172,10 @@ async function navigate() {
     else if (r.name === 'connections') await viewConnections();
     else if (r.name === 'map') await viewMap(r.args);
     else if (r.name === 'customers' && isSuper()) await viewCustomers();
+    else if (r.name === 'lifecycle') await viewLifecycle();
+    else if (r.name === 'sla') await viewSla();
+    else if (r.name === 'models' && isAdmin()) await viewModels();
+    else if (r.name === 'audit' && isAdmin()) await viewAudit();
     else location.hash = '#/overview';
   } catch (e) {
     if (e.message !== 'Signed out') $('#view').innerHTML = `<div class="card"><div class="notice err">${esc(e.message)}</div></div>`;
@@ -242,6 +249,8 @@ function refreshView() {
     else if (r.name === 'connections') viewConnections(true);
     else if (r.name === 'alerts') viewAlerts(true);
     else if (r.name === 'map') viewMap(r.args, true);
+    else if (r.name === 'lifecycle') viewLifecycle();
+    else if (r.name === 'sla') viewSla();
   }, 80);
 }
 
@@ -265,7 +274,7 @@ async function viewOverview() {
     <div class="grid cols-main">
       <div class="grid">
         <div class="grid cols-2">
-          ${breakdownCard('By OEM connection', 'Devices per manufacturer cloud', summary.byOem.map((x) => ({ ...x, label: OEM_NAME[x.key] || x.key })), (k) => ({ k: 'oem', v: k }))}
+          ${breakdownCard('By source', 'Devices per manufacturer cloud or platform portal', summary.byOem.map((x) => ({ ...x, label: OEM_NAME[x.key] || x.key })), (k) => ({ k: 'oem', v: k }))}
           ${breakdownCard('By meeting platform', 'Teams, Zoom, Webex and Google Meet', summary.byPlatform, (k) => ({ k: 'platform', v: k }))}
         </div>
         <div class="grid cols-2">
@@ -277,7 +286,7 @@ async function viewOverview() {
       <div class="grid">
         <div class="card"><div class="card-head"><div><h2>Live alert feed</h2><div class="card-sub">Health changes as they happen</div></div><a href="#/alerts" class="pill blue">View all</a></div>
           <div class="feed" id="feed"></div></div>
-        <div class="card"><div class="card-head"><div><h2>OEM sync status</h2><div class="card-sub">Each connector polls its manufacturer cloud</div></div><a href="#/connections" class="pill blue">Manage</a></div>
+        <div class="card"><div class="card-head"><div><h2>Sync status</h2><div class="card-sub">Manufacturer clouds and meeting-platform portals</div></div><a href="#/connections" class="pill blue">Manage</a></div>
           <div class="sync-list" id="syncList"></div></div>
       </div>
     </div>`;
@@ -528,6 +537,7 @@ async function openDevice(id) {
       ${d.tags?.length ? `<dt>Tags</dt><dd>${d.tags.map((t) => `<span class="pill blue">${esc(t)}</span>`).join(' ')}</dd>` : ''}
       ${d.notes ? `<dt>Notes</dt><dd>${esc(d.notes)}</dd>` : ''}
     </dl>
+    ${lifecycleSection(d)}
     ${d.overridden?.length ? `<div class="notice info" style="margin-top:14px">Manually changed: ${d.overridden.map(esc).join(', ')}. The OEM reports this device in <b>${esc(d.reportedRoom)}</b>, ${esc(d.reportedSite)}.</div>` : ''}
     ${isAdmin() ? `<div class="section-title">Edit this device</div>
       <div class="grid cols-2" style="gap:10px">
@@ -538,6 +548,12 @@ async function openDevice(id) {
       </div>
       <div class="field"><label>Tags (comma separated)</label><input id="eTags" value="${esc((d.tags || []).join(', '))}"></div>
       <div class="field"><label>Notes</label><input id="eNotes" value="${esc(d.notes || '')}"></div>
+      <div class="grid cols-2" style="gap:10px">
+        <div class="field"><label>Warranty end</label><input id="eWarr" type="date" value="${esc(d.warrantyExpires || '')}"></div>
+        <div class="field"><label>Warranty / support plan</label><input id="eWarrType" value="${esc(d.warrantyType || '')}" placeholder="e.g. Poly+ Premier, Logitech Select"></div>
+        <div class="field"><label>Contract reference</label><input id="eContract" value="${esc(d.contractRef || '')}"></div>
+        <div class="field"><label>Purchase date</label><input id="ePurchase" type="date" value="${esc(d.purchaseDate || '')}"></div>
+      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" id="eSave">Save changes</button>${d.overridden?.length ? '<button class="btn btn-outline btn-sm" id="eReset">Reset to OEM values</button>' : ''}</div>` : ''}
     <div class="section-title">Reported by ${d.sources.length} source${d.sources.length > 1 ? 's' : ''}</div>
     ${d.sources.length > 1 ? '<div class="notice info">This device was reported by more than one OEM cloud and has been merged into one record. Health shows the most severe state any source reports.</div>' : ''}
@@ -550,6 +566,11 @@ async function openDevice(id) {
   $('#eSave')?.addEventListener('click', async () => {
     const tags = $('#eTags').value.split(',').map((t) => t.trim()).filter(Boolean);
     const set = { site: $('#eSite').value, room: $('#eRoom').value, platform: $('#ePlat').value, assetTag: $('#eAsset').value || null, notes: $('#eNotes').value || null, removeTags: d.tags || [], addTags: tags };
+    const changed = (id, cur) => ($(id).value !== (cur || '') ? ($(id).value || null) : undefined);
+    set.warrantyExpires = changed('#eWarr', d.warrantyExpires);
+    set.warrantyType = changed('#eWarrType', d.warrantyType);
+    set.contractRef = changed('#eContract', d.contractRef);
+    set.purchaseDate = changed('#ePurchase', d.purchaseDate);
     if (set.site === d.reportedSite) set.site = null;
     if (set.room === d.reportedRoom) set.room = null;
     try { await api('/api/devices/bulk', { method: 'POST', body: { ids: [d.id], set } }); toast(ICONS.resolved, 'Device updated'); closeDrawer(); refreshView(); } catch (e) { toast(ICONS.critical, e.message); }
@@ -594,9 +615,9 @@ async function viewAlerts() {
 // ------------------------------------------------------------------ connections view
 async function viewConnections() {
   await loadConnections();
-  hero('OEM connections', isAdmin()
-    ? 'Link each customer\'s manufacturer cloud. Credentials are encrypted on the server and never sent back to the browser.'
-    : 'Sync status of the manufacturer clouds feeding your estate.');
+  hero('Connections', isAdmin()
+    ? 'Link each customer\'s manufacturer clouds and meeting-platform portals. Credentials are encrypted on the server and never sent back to the browser.'
+    : 'Sync status of the manufacturer clouds and platform portals feeding your estate.');
   const byCust = new Map();
   for (const c of S.connections) { if (!byCust.has(c.customerName)) byCust.set(c.customerName, []); byCust.get(c.customerName).push(c); }
   $('#view').innerHTML = `
@@ -604,7 +625,7 @@ async function viewConnections() {
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-grad" id="linkPoly">Link Poly Lens</button><button class="btn btn-outline" id="addConn">Add connection</button></div></div>` : ''}
     ${[...byCust.entries()].map(([name, conns]) => `
       <div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>${esc(name)}</h2><div class="card-sub">${conns.length} connection${conns.length > 1 ? 's' : ''}</div></div></div>
-        <div class="conn-grid">${conns.map(connCard).join('')}</div></div>`).join('') || '<div class="card empty">No connections yet</div>'}`;
+        ${['oem', 'platform'].map((k) => { const list = conns.filter((c) => (S.connectors.find((x) => x.oem === c.oem)?.kind || 'oem') === k); return list.length ? `<div class="section-title" style="margin-top:4px">${k === 'oem' ? 'Manufacturer clouds' : 'Meeting-platform portals'}</div><div class="conn-grid">${list.map(connCard).join('')}</div>` : ''; }).join('')}</div>`).join('') || '<div class="card empty">No connections yet</div>'}`;
   document.querySelectorAll('[data-cfg]').forEach((b) => b.addEventListener('click', () => openConnection(S.connections.find((c) => c.id === b.dataset.cfg))));
   document.querySelectorAll('[data-sync]').forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true; b.textContent = 'Syncing…';
@@ -626,7 +647,8 @@ function connCard(c) {
       <span class="pill ${c.mode}">${c.mode === 'live' ? 'Live' : 'Mock data'}</span></div>
     <div class="conn-stats"><div><span class="muted">Status</span>${syncState(st)}</div><div><span class="muted">Devices</span><b>${st.deviceCount}</b></div><div><span class="muted">Last sync</span><b>${ago(st.lastSuccessAt)}</b></div></div>
     ${st.error ? `<div class="err-line">${esc(st.error)}</div>` : ''}
-    ${isAdmin() ? `<div class="conn-actions"><button class="btn btn-primary btn-sm" data-cfg="${c.id}">${c.mode === 'live' ? 'Configure' : 'Configure & go live'}</button><button class="btn btn-outline btn-sm" data-sync="${c.id}">Sync now</button></div>` : ''}
+    ${S.connectors.find((x) => x.oem === c.oem)?.liveSupported === false ? '<div class="muted" style="font-size:12px">Mock only: no public API for live data.</div>' : ''}
+    ${isAdmin() ? `<div class="conn-actions"><button class="btn btn-primary btn-sm" data-cfg="${c.id}">${c.mode === 'live' || S.connectors.find((x) => x.oem === c.oem)?.liveSupported === false ? 'Configure' : 'Configure & go live'}</button><button class="btn btn-outline btn-sm" data-sync="${c.id}">Sync now</button></div>` : ''}
   </div>`;
 }
 
@@ -654,17 +676,17 @@ function openConnection(conn, preset = {}) {
     const body = `
       <div id="connMsg"></div>
       ${creating ? `<div class="field"><label>Customer</label><select id="cCust">${S.customers.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div>
-        <div class="field"><label>OEM</label><select id="cOem">${S.connectors.map((x) => `<option value="${x.oem}" ${x.oem === oem ? 'selected' : ''}>${esc(x.displayName)}</option>`).join('')}</select></div>` : ''}
+        <div class="field"><label>Source</label><select id="cOem">${['oem', 'platform'].map((k) => `<optgroup label="${k === 'oem' ? 'Manufacturer clouds' : 'Meeting-platform portals'}">${S.connectors.filter((x) => x.kind === k).map((x) => `<option value="${x.oem}" ${x.oem === oem ? 'selected' : ''}>${esc(x.displayName)}</option>`).join('')}</optgroup>`).join('')}</select></div>` : ''}
       <div class="field"><label>Connection name</label><input id="cName" value="${esc(conn?.name || '')}" placeholder="e.g. Helix Financial · ${esc(C.displayName)}"></div>
-      <div class="field"><label>Data source</label><div class="seg" id="cMode"><button data-m="mock" class="${mode === 'mock' ? 'on' : ''}">Mock data</button><button data-m="live" class="${mode === 'live' ? 'on' : ''}">Live API</button></div>
+      <div class="field"><label>Data source</label><div class="seg" id="cMode"><button data-m="mock" class="${mode === 'mock' ? 'on' : ''}">Mock data</button><button data-m="live" class="${mode === 'live' ? 'on' : ''}" ${C.liveSupported === false ? 'disabled title="No public API available"' : ''}>Live API</button></div>
         <div class="help">${mode === 'mock' ? 'Uses built-in sample data in the same format as the real API. No keys needed.' : `Calls the real ${esc(C.displayName)} API with the credentials below.`}</div></div>
-      <div class="section-title">How to get credentials</div>
-      <ol class="steps">${(SETUP_STEPS[oem] || []).map((s) => `<li>${esc(s)}</li>`).join('')}</ol>
-      <div class="muted" style="font-size:12px;margin:-8px 0 12px">Built from the <a href="${esc(C.docsUrl)}" target="_blank" rel="noopener">official ${esc(C.displayName)} API documentation</a>.</div>
-      <div class="section-title">Settings</div>
+      ${C.liveSupported === false ? `<div class="notice info">${esc(C.liveNote)}</div>` : `<div class="section-title">How to get credentials</div>
+      <ol class="steps">${(C.setupSteps?.length ? C.setupSteps : SETUP_STEPS[oem] || []).map((s) => `<li>${esc(s)}</li>`).join('')}</ol>`}
+      <div class="muted" style="font-size:12px;margin:-8px 0 12px">${C.liveSupported === false ? `<a href="${esc(C.docsUrl)}" target="_blank" rel="noopener">Source for this</a>` : `Built from the <a href="${esc(C.docsUrl)}" target="_blank" rel="noopener">official ${esc(C.displayName)} API documentation</a>.`}</div>
+      ${C.settingFields.length ? '<div class="section-title">Settings</div>' : ''}
       ${C.settingFields.map((f) => `<div class="field"><label for="s_${f.key}">${esc(f.label)}${f.required ? ' *' : ''}</label>
         <input id="s_${f.key}" data-setting="${f.key}" value="${esc(conn?.settings?.[f.key] ?? '')}" placeholder="${esc(f.placeholder || f.default || '')}">${f.help ? `<div class="help">${esc(f.help)}</div>` : ''}</div>`).join('')}
-      <div class="section-title">Credentials (encrypted at rest)</div>
+      ${C.credentialFields.length ? '<div class="section-title">Credentials (encrypted at rest)</div>' : ''}
       ${C.credentialFields.map((f) => {
     const stored = conn?.credentials?.[f.key];
     const ph = stored ? 'Stored. Leave blank to keep the current value.' : '';
@@ -684,7 +706,7 @@ function openConnection(conn, preset = {}) {
     });
     const msg = (kind, text) => { $('#connMsg', w).innerHTML = `<div class="notice ${kind}">${esc(text)}</div>`; w.querySelector('.drawer-body').scrollTop = 0; };
     $('#cOem', w)?.addEventListener('change', (e) => { oem = e.target.value; render(); });
-    w.querySelectorAll('#cMode button').forEach((b) => b.addEventListener('click', () => {
+    w.querySelectorAll('#cMode button:not([disabled])').forEach((b) => b.addEventListener('click', () => {
       // Preserve typed values across re-render.
       const keep = collect();
       mode = b.dataset.m; render();
@@ -799,6 +821,7 @@ function renderBulkBar() {
     <button class="btn btn-sm btn-grad" data-act="room">Group into room</button>
     <button class="btn btn-sm btn-outline" data-act="platform">Set platform</button>
     <button class="btn btn-sm btn-outline" data-act="tags">Tags &amp; notes</button>
+    <button class="btn btn-sm btn-outline" data-act="warranty">Warranty</button>
     <button class="btn btn-sm btn-outline" data-act="reset">Reset to OEM values</button>
     <button class="linkbtn" data-act="clear">Clear selection</button>`;
   bar.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => bulkAction(b.dataset.act)));
@@ -849,6 +872,20 @@ async function bulkAction(act) {
     const w = drawer('Set platform', `${devs.length} devices`, `${list}<div class="field"><label>Platform</label><select id="pPlat">${PLATFORM_LIST.map((p) => `<option>${p}</option>`).join('')}</select>
       <div class="help">Overrides what the OEM reports. "Unassigned" removes the override.</div></div>`, '<button class="btn btn-primary" id="pGo">Apply</button>');
     $('#pGo', w).addEventListener('click', () => run({ set: { platform: $('#pPlat', w).value } }, 'Platform updated'));
+  } else if (act === 'warranty') {
+    const w = drawer('Warranty and contract', `${devs.length} devices`, `${list}
+      <div class="grid cols-2" style="gap:10px">
+        <div class="field"><label>Warranty end</label><input id="wEnd" type="date"></div>
+        <div class="field"><label>Warranty / support plan</label><input id="wType" placeholder="e.g. Poly+ Premier"></div>
+        <div class="field"><label>Contract reference</label><input id="wRef"></div>
+        <div class="field"><label>Purchase date</label><input id="wBuy" type="date"></div>
+      </div><div class="help">Only the fields you fill in are changed. A date entered here overrides the warranty date reported by Logitech Sync.</div>`, '<button class="btn btn-primary" id="wGo">Apply</button>');
+    $('#wGo', w).addEventListener('click', () => {
+      const set = {};
+      for (const [id, k] of [['#wEnd', 'warrantyExpires'], ['#wType', 'warrantyType'], ['#wRef', 'contractRef'], ['#wBuy', 'purchaseDate']]) if ($(id, w).value.trim()) set[k] = $(id, w).value.trim();
+      if (!Object.keys(set).length) { toast(ICONS.warning, 'Fill in at least one field'); return; }
+      run({ set }, 'Warranty updated');
+    });
   } else if (act === 'tags') {
     const w = drawer('Tags & notes', `${devs.length} devices`, `${list}
       <div class="field"><label>Add tags (comma separated)</label><input id="tAdd" placeholder="e.g. VIP, Floor 4, Refresh 2027"></div>
@@ -1236,8 +1273,11 @@ function openOnboarding() {
     <div class="step"><span>3</span>Customer logins</div>
     <div class="help" style="margin-bottom:8px">These users only ever see this customer's devices.</div>
     <div id="obUsers"></div><button class="btn btn-outline btn-sm" id="obAddUser">Add user</button>
-    <div class="step"><span>4</span>OEM connections</div>
-    <div class="chk-row">${S.connectors.map((c) => `<label><input type="checkbox" class="obConn" value="${c.oem}" checked> ${esc(c.displayName)}</label>`).join('')}</div>
+    <div class="step"><span>4</span>Connections</div>
+    <div class="help" style="margin-bottom:6px">Manufacturer clouds</div>
+    <div class="chk-row">${S.connectors.filter((c) => c.kind !== 'platform').map((c) => `<label><input type="checkbox" class="obConn" value="${c.oem}" checked> ${esc(c.displayName)}</label>`).join('')}</div>
+    <div class="help" style="margin:10px 0 6px">Meeting-platform portals</div>
+    <div class="chk-row">${S.connectors.filter((c) => c.kind === 'platform').map((c) => `<label><input type="checkbox" class="obConn" value="${c.oem}" checked> ${esc(c.displayName)}${c.liveSupported === false ? ' <span class="muted">(mock only)</span>' : ''}</label>`).join('')}</div>
     <div class="help">Connections start on mock data. Add the API keys afterwards on the Connections page to go live.</div>
     <div class="step"><span>5</span>Rooms and schematics (optional)</div>
     <div class="help" style="margin-bottom:8px">Pre-load rooms with their platform and cabling, from a template or a JSON file. Devices can be grouped into these rooms later.</div>
@@ -1308,7 +1348,8 @@ function openOnboarding() {
 function openCustomerEdit(c) {
   const w = drawer(c.name, 'Sites, users and customer details', `
     <div id="ceMsg"></div>
-    <div class="field"><label>Customer name</label><input id="ceName" value="${esc(c.name)}"></div>
+    <div class="grid cols-2" style="gap:10px"><div class="field"><label>Customer name</label><input id="ceName" value="${esc(c.name)}"></div>
+      <div class="field"><label>SLA availability target (%)</label><input id="ceSla" type="number" step="0.01" min="50" max="100" value="${esc(c.slaTarget ?? 99.5)}"><div class="help">Shown against measured availability on the SLA tab.</div></div></div>
     <div class="section-title">Sites</div>
     <div id="ceSites">${c.sites.map((s, i) => siteRow(s, i)).join('')}</div>
     <button class="btn btn-outline btn-sm" id="ceAddSite">Add site</button>
@@ -1324,7 +1365,7 @@ function openCustomerEdit(c) {
   bindSiteRows($('#ceSites', w));
   $('#ceAddSite', w).addEventListener('click', () => { $('#ceSites', w).insertAdjacentHTML('beforeend', siteRow({}, Date.now())); bindSiteRows($('#ceSites', w)); });
   $('#ceSave', w).addEventListener('click', async () => {
-    try { await api(`/api/admin/customers/${c.id}`, { method: 'PUT', body: { name: $('#ceName', w).value, sites: readSites($('#ceSites', w)) } }); closeDrawer(); toast(ICONS.resolved, 'Customer saved'); S.customers = await api('/api/customers'); viewCustomers(); } catch (e) { msg(e.message); }
+    try { await api(`/api/admin/customers/${c.id}`, { method: 'PUT', body: { name: $('#ceName', w).value, slaTarget: Number($('#ceSla', w).value), sites: readSites($('#ceSites', w)) } }); closeDrawer(); toast(ICONS.resolved, 'Customer saved'); S.customers = await api('/api/customers'); viewCustomers(); } catch (e) { msg(e.message); }
   });
   $('#nuAdd', w).addEventListener('click', async () => {
     try { const u = await api(`/api/admin/customers/${c.id}/users`, { method: 'POST', body: { email: $('#nuEmail', w).value, name: $('#nuName', w).value, password: $('#nuPw', w).value } }); openCustomerEdit(u); toast(ICONS.resolved, 'User added'); } catch (e) { msg(e.message); }
@@ -1339,4 +1380,303 @@ function openCustomerEdit(c) {
     closeDrawer(); toast(ICONS.resolved, `${c.name} deleted`);
     S.customers = await api('/api/customers'); S.options = await api('/api/filters'); viewCustomers();
   });
+}
+
+// ------------------------------------------------------------------ lifecycle helpers
+const FW_LABEL = { compliant: 'At baseline', ahead: 'Ahead of baseline', behind: 'Below baseline', 'no-baseline': 'No baseline set', uncatalogued: 'Model not in master', unknown: 'Not reported' };
+const FW_TONE = { compliant: 'good', ahead: 'good', behind: 'crit', 'no-baseline': 'mute', uncatalogued: 'mute', unknown: 'mute' };
+const W_LABEL = { active: 'In warranty', expiring: 'Expires within 90 days', expired: 'Expired', unknown: 'Not recorded' };
+const W_TONE = { active: 'good', expiring: 'warn', expired: 'crit', unknown: 'mute' };
+const LC_LABEL = { supported: 'Supported', soon: 'Milestone within 12 months', eosale: 'End of sale', eos: 'End of support', eol: 'End of life', nodates: 'No lifecycle dates', unknown: 'Not in model master' };
+const LC_TONE = { supported: 'good', soon: 'warn', eosale: 'warn', eos: 'crit', eol: 'crit', nodates: 'mute', unknown: 'mute' };
+const chip = (text, tone) => `<span class="chip ${tone || 'mute'}">${esc(text)}</span>`;
+const fmtDate = (v) => {
+  if (!v) return '—';
+  const d = new Date(String(v).length === 10 ? `${v}T00:00:00Z` : v);
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', ...(String(v).length === 10 ? { timeZone: 'UTC' } : {}) });
+};
+const fmtDateTime = (v) => new Date(v).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const shortModel = (make, model) => String(model).replace(new RegExp(`^${make}\\s+`, 'i'), '');
+function cmpVer(a, b) {
+  const pa = String(a).split(/[^0-9]+/).filter(Boolean).map(Number);
+  const pb = String(b).split(/[^0-9]+/).filter(Boolean).map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] ?? 0) - (pb[i] ?? 0); if (d) return d > 0 ? 1 : -1; }
+  return 0;
+}
+function statTile(label, value, sub, tone) {
+  return `<div class="stat ${tone || ''}"><div class="lbl">${label}</div><div class="val">${value}</div>${sub ? `<div class="pct">${sub}</div>` : ''}</div>`;
+}
+function barList(rows, total) {
+  return `<div class="barlist">${rows.map((r) => `<div class="barrow"><span class="grow">${esc(r.label)}</span><b>${r.n}</b>
+    <span class="bartrack"><span class="tone-${r.tone}" style="width:${total ? Math.max((r.n / total) * 100, r.n ? 1.5 : 0) : 0}%"></span></span></div>`).join('')}</div>`;
+}
+function lifecycleSection(d) {
+  const lc = d.lifecycle || {};
+  return `<div class="section-title">Firmware, warranty and lifecycle</div>
+    <dl class="kv">
+      <dt>Firmware</dt><dd><span class="mono">${esc(d.firmware || '—')}</span> ${chip(FW_LABEL[d.firmwareStatus] || 'Unknown', FW_TONE[d.firmwareStatus])}</dd>
+      <dt>Approved baseline</dt><dd class="mono">${esc(d.baseline || '—')}</dd>
+      <dt>Warranty</dt><dd>${chip(W_LABEL[d.warrantyStatus] || 'Not recorded', W_TONE[d.warrantyStatus])} ${d.warrantyExpires ? `until ${fmtDate(d.warrantyExpires)}` : ''}
+        ${d.warrantyType || d.warrantySource ? `<div class="muted" style="font-size:12px">${esc([d.warrantyType, d.warrantySource && `from ${d.warrantySource}`].filter(Boolean).join(' · '))}</div>` : ''}</dd>
+      ${d.contractRef ? `<dt>Contract</dt><dd class="mono">${esc(d.contractRef)}</dd>` : ''}
+      ${d.purchaseDate ? `<dt>Purchased</dt><dd>${fmtDate(d.purchaseDate)}</dd>` : ''}
+      <dt>Lifecycle</dt><dd>${chip(lc.label || 'Unknown', LC_TONE[lc.stage])}</dd>
+      <dt>End of sale</dt><dd>${fmtDate(lc.endOfSale)}</dd>
+      <dt>End of support</dt><dd>${fmtDate(lc.endOfSupport)}</dd>
+      <dt>End of life</dt><dd>${fmtDate(lc.endOfLife)}</dd>
+    </dl>`;
+}
+
+// ------------------------------------------------------------------ lifecycle view
+async function viewLifecycle() {
+  const lc = await api(`/api/lifecycle${qs()}`);
+  hero('Lifecycle', `Firmware against the approved baseline, warranty cover, and end-of-sale, support and life dates from the model master. ${lc.total} devices.`);
+  const n = (o, k) => o[k] || 0;
+  const f = lc.firmware; const w = lc.warranty; const l = lc.lifecycle;
+  const rated = n(f, 'compliant') + n(f, 'ahead') + n(f, 'behind');
+  const compliance = rated ? `${(((n(f, 'compliant') + n(f, 'ahead')) / rated) * 100).toFixed(1)}%` : '—';
+  const pastSupport = n(l, 'eos') + n(l, 'eol');
+  $('#view').innerHTML = `
+    <div class="stats">
+      ${statTile('Firmware compliance', compliance, `${n(f, 'behind')} devices below baseline · ${rated} with a baseline`, n(f, 'behind') ? 'warn' : 'good')}
+      ${statTile('Warranty expired', n(w, 'expired'), `${n(w, 'expiring')} more expire within 90 days`, n(w, 'expired') ? 'crit' : 'good')}
+      ${statTile('Past end of support', pastSupport, `${n(l, 'eol')} end of life · ${n(l, 'eosale')} end of sale`, pastSupport ? 'crit' : 'good')}
+      ${statTile('Missing lifecycle dates', n(l, 'nodates') + n(l, 'unknown'), isSuper() ? '<a href="#/models">Add them in the model master</a>' : 'Maintained in the model master', '')}
+    </div>
+    <div class="grid cols-2" style="margin-bottom:18px">
+      <div class="card"><div class="card-head"><div><h2>Firmware by model</h2><div class="card-sub">Versions running in the fleet against the approved baseline</div></div>${isAdmin() ? '<a class="pill blue" href="#/models">Model master</a>' : ''}</div>
+        <div class="table-wrap flat"><table><thead><tr><th>Model</th><th>Baseline</th><th>Devices</th><th>Below</th><th>Versions in fleet</th></tr></thead><tbody>
+        ${lc.models.map((m) => `<tr><td><b>${esc(m.make)}</b> ${esc(shortModel(m.make, m.model))}${m.modelId ? '' : ' <span class="muted">(not in master)</span>'}</td><td class="mono">${esc(m.baseline || '—')}</td><td>${m.total}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td>
+          <td>${Object.entries(m.versions).sort((a, b) => cmpVer(b[0], a[0])).map(([v, c]) => `<span class="pill mono ${m.baseline && cmpVer(v, m.baseline) < 0 ? 'bad' : ''}">${esc(v)} × ${c}</span>`).join(' ') || '—'}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No devices</td></tr>'}
+        </tbody></table></div></div>
+      <div class="card"><div class="card-head"><div><h2>Warranty</h2><div class="card-sub">From Logitech Sync where it reports it, otherwise entered on the device</div></div></div>
+        ${barList(['active', 'expiring', 'expired', 'unknown'].map((k) => ({ label: W_LABEL[k], n: n(w, k), tone: W_TONE[k] })), lc.total)}
+        <div class="section-title">Model lifecycle stage</div>
+        ${barList(['supported', 'soon', 'eosale', 'eos', 'eol', 'nodates', 'unknown'].map((k) => ({ label: LC_LABEL[k], n: n(l, k), tone: LC_TONE[k] })).filter((x) => x.n), lc.total)}
+      </div>
+    </div>
+    <div class="card"><div class="card-head"><div><h2>Devices needing attention</h2><div class="card-sub">${lc.attentionTotal} devices below baseline, out of warranty or past a lifecycle milestone${lc.attentionTotal > lc.attention.length ? ` (first ${lc.attention.length} shown)` : ''}</div></div></div>
+      ${lc.attention.length ? `<div class="table-wrap"><table><thead><tr><th>Device</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Site / room</th><th>Firmware</th><th>Warranty</th><th>Lifecycle</th></tr></thead><tbody>
+        ${lc.attention.map((d) => `<tr data-id="${esc(d.id)}"><td><b>${esc(d.make)}</b> ${esc(shortModel(d.make, d.model))}<div class="muted mono" style="font-size:11.5px">${esc(d.serial || '')}</div></td>${isAdmin() && !acting() ? `<td>${esc(d.customerName)}</td>` : ''}
+          <td>${esc(d.site)}<div class="muted">${esc(d.room)}</div></td>
+          <td><span class="mono">${esc(d.firmware || '—')}</span> ${d.firmwareStatus === 'behind' ? chip(`baseline ${d.baseline}`, 'crit') : ''}</td>
+          <td>${chip(W_LABEL[d.warrantyStatus], W_TONE[d.warrantyStatus])}${d.warrantyExpires ? `<div class="muted" style="font-size:12px">${fmtDate(d.warrantyExpires)}</div>` : ''}</td>
+          <td>${chip(d.lifecycle?.label || '—', LC_TONE[d.lifecycle?.stage])}${d.lifecycle?.date ? `<div class="muted" style="font-size:12px">${fmtDate(d.lifecycle.date)}</div>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>` : '<div class="empty">Nothing needs attention</div>'}</div>`;
+  document.querySelectorAll('tbody tr[data-id]').forEach((tr) => tr.addEventListener('click', () => openDevice(tr.dataset.id)));
+}
+
+// ------------------------------------------------------------------ SLA view
+const WIN_LABEL = { '24h': '24 hours', '7d': '7 days', '30d': '30 days' };
+const pctText = (v) => (v === null || v === undefined ? '—' : `${v.toFixed(v >= 99.9 ? 3 : 2)}%`);
+const mins = (m) => (m === null || m === undefined ? '—' : m < 60 ? `${m} min` : m < 1440 ? `${(m / 60).toFixed(1)} h` : `${(m / 1440).toFixed(1)} d`);
+async function viewSla() {
+  const win = S.slaWindow || '7d';
+  const r = await api(`/api/sla${qs({ window: win })}`);
+  const o = r.overall;
+  const targets = [...new Set(r.byCustomer.map((c) => c.target))];
+  const target = targets.length === 1 ? targets[0] : null;
+  hero('Service levels', `Availability over the last ${WIN_LABEL[win]}. A device is unavailable while it is offline or critical; warnings still count as available.`);
+  const metChip = (g) => (g.met === null ? '' : g.met ? chip('Met', 'good') : chip('Missed', 'crit'));
+  $('#view').innerHTML = `
+    <div class="card-head" style="margin-bottom:14px"><div class="seg" id="slaWin">${Object.keys(WIN_LABEL).map((k) => `<button data-w="${k}" class="${k === win ? 'on' : ''}">${WIN_LABEL[k]}</button>`).join('')}</div>
+      ${r.simulated ? '<span class="muted" style="font-size:12.5px">History for mock connections is simulated. Live connections use the health recorded at every sync.</span>' : ''}</div>
+    <div class="stats">
+      ${statTile('Availability', pctText(o.availability), target !== null ? `Target ${target}%` : `${o.customersMeeting} of ${o.customers} customers meet their target`, o.availability === null ? '' : target !== null ? (o.availability >= target ? 'good' : 'crit') : (o.customersMeeting === o.customers ? 'good' : 'warn'))}
+      ${statTile('Incidents', o.incidents, `${o.devices} devices measured`, '')}
+      ${statTile('Mean time to restore', mins(o.mttrMin), 'Average length of incidents that ended', '')}
+      ${statTile('Total downtime', mins(o.downtimeMin), 'Summed across devices', '')}
+    </div>
+    <div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Availability trend</h2><div class="card-sub">${win === '24h' ? 'Hourly' : 'Daily'} availability across the devices in view${target !== null ? `, with the ${target}% target` : ''}</div></div></div>
+      ${trendChart(r.trend, target, win)}</div>
+    <div class="grid cols-2" style="margin-bottom:18px">
+      <div class="card"><div class="card-head"><div><h2>By customer</h2><div class="card-sub">${isSuper() ? 'Set targets under Customers › Sites &amp; users' : 'Measured against the agreed target'}</div></div></div>
+        <div class="table-wrap flat"><table><thead><tr><th>Customer</th><th>Availability</th><th>Target</th><th></th><th>Incidents</th><th>MTTR</th></tr></thead><tbody>
+        ${r.byCustomer.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${pctText(c.availability)}</td><td>${c.target}%</td><td>${metChip(c)}</td><td>${c.incidents}</td><td>${mins(c.mttrMin)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No data</td></tr>'}</tbody></table></div></div>
+      <div class="card"><div class="card-head"><div><h2>By site</h2><div class="card-sub">Lowest availability first</div></div></div>
+        <div class="table-wrap flat"><table><thead><tr><th>Site</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Availability</th><th></th><th>Incidents</th><th>Downtime</th></tr></thead><tbody>
+        ${r.bySite.map((s) => `<tr><td><b>${esc(s.site)}</b><div class="muted">${esc(s.region || '')}</div></td>${isAdmin() && !acting() ? `<td>${esc(s.customerName)}</td>` : ''}<td>${pctText(s.availability)}</td><td>${metChip(s)}</td><td>${s.incidents}</td><td>${mins(s.downtimeMin)}</td></tr>`).join('')}</tbody></table></div></div>
+    </div>
+    <div class="grid cols-2" style="margin-bottom:18px">
+      <div class="card"><div class="card-head"><div><h2>Rooms with the lowest availability</h2></div></div>
+        <div class="table-wrap flat"><table><thead><tr><th>Room</th><th>Availability</th><th>Incidents</th><th>Downtime</th></tr></thead><tbody>
+        ${r.worstRooms.map((x) => `<tr class="link" data-room="${esc(JSON.stringify([x.customerId, x.site, x.room]))}"><td><b>${esc(x.room)}</b><div class="muted">${esc(x.site)}${isAdmin() && !acting() ? ` · ${esc(x.customerName)}` : ''}</div></td><td>${pctText(x.availability)}</td><td>${x.incidents}</td><td>${mins(x.downtimeMin)}</td></tr>`).join('')}</tbody></table></div></div>
+      <div class="card"><div class="card-head"><div><h2>Devices with the lowest availability</h2></div></div>
+        <div class="table-wrap flat"><table><thead><tr><th>Device</th><th>Availability</th><th>Incidents</th><th>Now</th></tr></thead><tbody>
+        ${r.worstDevices.map((d) => `<tr data-id="${esc(d.id)}"><td><b>${esc(d.make)}</b> ${esc(shortModel(d.make, d.model))}<div class="muted">${esc(d.room)}, ${esc(d.site)}</div></td><td>${pctText(d.availability)}</td><td>${d.incidents}</td><td>${status(d.health)}</td></tr>`).join('')}</tbody></table></div></div>
+    </div>
+    <div class="card"><div class="card-head"><div><h2>Recent incidents</h2><div class="card-sub">Periods when a device was offline or critical</div></div></div>
+      ${r.incidents.length ? `<div class="table-wrap"><table><thead><tr><th>Started</th><th>Device</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Room</th><th>State</th><th>Duration</th></tr></thead><tbody>
+      ${r.incidents.slice(0, 50).map((i) => `<tr data-id="${esc(i.deviceId)}"><td>${fmtDateTime(i.start)}</td><td><b>${esc(i.make)}</b> ${esc(shortModel(i.make, i.model))}</td>${isAdmin() && !acting() ? `<td>${esc(i.customerName)}</td>` : ''}<td>${esc(i.room)}<div class="muted">${esc(i.site)}</div></td><td>${status(i.health)}</td><td>${i.ongoing ? chip('Ongoing', 'crit') : mins(i.durationMin)}</td></tr>`).join('')}
+      </tbody></table></div>` : '<div class="empty">No incidents in this period</div>'}</div>`;
+  document.querySelectorAll('#slaWin button').forEach((b) => b.addEventListener('click', () => { S.slaWindow = b.dataset.w; viewSla(); }));
+  document.querySelectorAll('#view tr[data-id]').forEach((tr) => tr.addEventListener('click', () => openDevice(tr.dataset.id)));
+  document.querySelectorAll('#view tr[data-room]').forEach((tr) => tr.addEventListener('click', () => { location.hash = `#/estate/${JSON.parse(tr.dataset.room).map(encodeURIComponent).join('/')}`; }));
+}
+
+function trendChart(points, target, win) {
+  const vals = points.map((p) => p.availability).filter((v) => v !== null);
+  if (!vals.length) return '<div class="empty">No history yet</div>';
+  const W = 1100; const H = 200; const L = 44; const B = 24; const T = 18;
+  const lo = Math.max(0, Math.min(Math.floor(Math.min(...vals, target ?? 100) - 0.5), 99));
+  const y = (v) => T + (H - T - B) * (1 - (v - lo) / (100 - lo));
+  const bw = (W - L) / points.length;
+  const ticks = [lo, (lo + 100) / 2, 100];
+  const label = (iso) => { const d = new Date(iso); return win === '24h' ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
+  const every = Math.ceil(points.length / 8);
+  return `<svg class="trend" viewBox="0 0 ${W} ${H}" role="img" aria-label="Availability trend">
+    ${ticks.map((t) => `<line x1="${L}" x2="${W}" y1="${y(t)}" y2="${y(t)}" class="grid-line"/><text x="${L - 6}" y="${y(t) + 4}" text-anchor="end" class="axis">${t.toFixed(t % 1 ? 1 : 0)}%</text>`).join('')}
+    ${points.map((p, i) => (p.availability === null ? '' : `<rect x="${L + i * bw + bw * 0.18}" y="${y(p.availability)}" width="${bw * 0.64}" height="${Math.max(H - B - y(p.availability), 1)}" rx="3" class="${target !== null && p.availability < target ? 'bar-miss' : 'bar-ok'}"><title>${label(p.start)}: ${pctText(p.availability)}</title></rect>`)).join('')}
+    ${target !== null ? `<line x1="${L}" x2="${W}" y1="${y(target)}" y2="${y(target)}" class="target-line"/><text x="${L + 4}" y="${y(target) - 5}" class="axis target-text">Target ${target}%</text>` : ''}
+    ${points.map((p, i) => (i % every ? '' : `<text x="${L + i * bw + bw / 2}" y="${H - 6}" text-anchor="middle" class="axis">${label(p.start)}</text>`)).join('')}
+  </svg>`;
+}
+
+// ------------------------------------------------------------------ model master
+async function viewModels() {
+  const r = await api('/api/models');
+  S.modelList = r.models;
+  hero('Model master', isSuper()
+    ? 'The approved catalogue of device models: firmware baseline, release history and end-of-sale, support and life dates. Devices are checked against it on every sync.'
+    : 'The approved catalogue of device models, maintained by the super admin.');
+  $('#view').innerHTML = `
+    ${isSuper() ? `<div class="cta"><div><h3>Keep the master current</h3><p>Set the approved firmware baseline per model and fill in lifecycle dates from the manufacturer's notices. New firmware versions seen in the fleet are added to each model's release list automatically.</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-grad" id="mAdd">Add model</button></div></div>` : ''}
+    ${r.uncatalogued.length ? `<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Models in the estate but not in the master</h2><div class="card-sub">${r.uncatalogued.reduce((a, u) => a + u.devices, 0)} devices can't be checked for firmware compliance or lifecycle</div></div>${isSuper() ? '<button class="btn btn-primary btn-sm" id="mImport">Add all to the master</button>' : ''}</div>
+      <div class="chips">${r.uncatalogued.map((u, i) => `<button class="pill" data-unc="${i}" ${isSuper() ? '' : 'disabled'}>${esc(u.make)} ${esc(shortModel(u.make, u.model))} · ${u.devices}</button>`).join('')}</div></div>` : ''}
+    <div class="card"><div class="card-head"><div><h2>${r.models.length} models</h2><div class="card-sub">Click a model to ${isSuper() ? 'edit it and its releases' : 'see its releases'}</div></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Make</th><th>Model</th><th>Type</th><th>Monitored by</th><th>Baseline</th><th>Newest known</th><th>End of sale</th><th>End of support</th><th>End of life</th><th>Devices</th><th>Below baseline</th></tr></thead><tbody>
+      ${r.models.map((m) => `<tr data-model="${esc(m.id)}"><td><b>${esc(m.make)}</b></td><td>${esc(shortModel(m.make, m.model))}</td><td>${esc(m.deviceType)}</td>
+        <td><span class="src-tags">${(m.monitoredBy || []).map((o) => `<span class="pill" title="${esc(OEM_NAME[o] || o)}">${OEM_SHORT[o] || esc(o)}</span>`).join('') || '<span class="muted">Not monitored</span>'}</span></td>
+        <td class="mono">${esc(m.baseline || '—')}</td><td class="mono">${esc(m.latest || '—')}${m.latest && m.baseline && cmpVer(m.latest, m.baseline) > 0 ? ` ${chip('newer', 'warn')}` : ''}</td>
+        <td>${fmtDate(m.endOfSale)}</td><td>${fmtDate(m.endOfSupport)}</td><td>${fmtDate(m.endOfLife)}</td><td>${m.devices}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td></tr>`).join('') || '<tr><td colspan="11" class="empty">No models yet</td></tr>'}
+      </tbody></table></div></div>`;
+  document.querySelectorAll('tr[data-model]').forEach((tr) => tr.addEventListener('click', () => openModel(S.modelList.find((m) => m.id === tr.dataset.model))));
+  $('#mAdd')?.addEventListener('click', () => openModel(null));
+  document.querySelectorAll('[data-unc]').forEach((b) => b.addEventListener('click', () => openModel(null, r.uncatalogued[b.dataset.unc])));
+  $('#mImport')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try { const x = await api('/api/models/import', { method: 'POST', body: {} }); toast(ICONS.resolved, `${x.added} models added`); viewModels(); } catch (err) { toast(ICONS.critical, err.message); e.target.disabled = false; }
+  });
+}
+
+const DEVICE_TYPES = ['Video bar', 'Video system', 'Touch controller', 'Camera', 'Conference phone', 'Desk phone', 'Room PC', 'Whiteboard camera', 'Room sensor', 'Display', 'Headset', 'Desk dock', 'Peripheral'];
+function openModel(m, preset = {}) {
+  const creating = !m;
+  const ro = !isSuper();
+  const v = (k) => esc(m?.[k] ?? preset[k] ?? '');
+  const dis = ro ? 'disabled' : '';
+  const monitored = m?.monitoredBy ?? preset.oems ?? [];
+  const w = drawer(creating ? 'Add model' : `${m.make} ${shortModel(m.make, m.model)}`, creating ? 'Add a device model to the master' : `${m.devices} devices in the estate${m.behind ? `, ${m.behind} below baseline` : ''}`, `
+    <div id="mMsg"></div>
+    <div class="grid cols-2" style="gap:10px">
+      <div class="field"><label>Make *</label><input id="mMake" value="${v('make')}" ${dis} placeholder="e.g. Poly"></div>
+      <div class="field"><label>Model *</label><input id="mModel" value="${v('model')}" ${dis} placeholder="e.g. Studio X50"></div>
+      <div class="field"><label>Device type</label><select id="mType" ${dis}>${DEVICE_TYPES.map((t) => `<option ${t === (m?.deviceType || preset.deviceType) ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="field"><label>Approved firmware baseline</label><input id="mBase" list="mVers" value="${v('baseline')}" ${dis} placeholder="e.g. 4.2.0"><datalist id="mVers">${(m?.releases || []).map((r) => `<option value="${esc(r.version)}">`).join('')}</datalist>
+        <div class="help">Devices below this version are flagged on the Lifecycle tab.</div></div>
+    </div>
+    <div class="field"><label>Monitored by</label><div class="chk-row">${S.connectors.map((c) => `<label><input type="checkbox" class="mMon" value="${c.oem}" ${monitored.includes(c.oem) ? 'checked' : ''} ${dis}> ${esc(c.displayName)}</label>`).join('')}</div>
+      <div class="help">Which connectors can report this model. Leave all unticked for kit with no API.</div></div>
+    <div class="section-title">Lifecycle</div>
+    <div class="grid cols-2" style="gap:10px">
+      <div class="field"><label>End of sale</label><input id="mEosale" type="date" value="${v('endOfSale')}" ${dis}></div>
+      <div class="field"><label>End of support</label><input id="mEos" type="date" value="${v('endOfSupport')}" ${dis}></div>
+      <div class="field"><label>End of life</label><input id="mEol" type="date" value="${v('endOfLife')}" ${dis}></div>
+      <div class="field"><label>Manufacturer notice (link)</label><input id="mUrl" value="${v('lifecycleUrl')}" ${dis} placeholder="https://"></div>
+    </div>
+    <div class="help block" style="margin:-4px 0 10px">Take these from the manufacturer's end-of-life notice. They are not filled in automatically.</div>
+    <div class="field"><label>Notes</label><input id="mNotes" value="${v('notes')}" ${dis}></div>
+    ${creating ? '' : `<div class="section-title">Firmware releases</div>
+      <div class="help block" style="margin-bottom:8px">Versions seen in the fleet are added automatically (marked "seen in fleet"). Add official releases with their release notes so a new version is known before devices take it.</div>
+      <div class="table-wrap flat"><table><thead><tr><th>Version</th><th>Released</th><th>Source</th><th>Notes</th><th></th></tr></thead><tbody>
+      ${m.releases.map((r) => `<tr><td class="mono"><b>${esc(r.version)}</b> ${r.version === m.baseline ? chip('baseline', 'good') : ''}</td><td>${r.releasedAt ? fmtDate(r.releasedAt) : r.firstSeenAt ? `<span class="muted">seen ${fmtDate(r.firstSeenAt)}</span>` : '—'}</td>
+        <td>${r.source === 'fleet' ? 'Seen in fleet' : r.source === 'manual' ? 'Added by admin' : 'Fleet + admin'}</td><td>${r.notesUrl ? `<a href="${esc(r.notesUrl)}" target="_blank" rel="noopener">Release notes</a>` : esc(r.notes || '')}</td>
+        <td>${ro ? '' : `<button class="linkbtn" data-rel-del="${esc(r.version)}">Remove</button>`}${!ro && r.version !== m.baseline ? ` <button class="linkbtn" data-rel-base="${esc(r.version)}">Set baseline</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No releases recorded</td></tr>'}</tbody></table></div>
+      ${ro ? '' : `<div class="user-row" style="margin-top:10px"><input id="rVer" placeholder="Version *"><input id="rDate" type="date" title="Release date"><input id="rUrl" placeholder="Release notes link (https://)"><button class="btn btn-outline btn-sm" id="rAdd">Add release</button></div>`}`}`,
+  ro ? '' : `${creating ? '' : '<button class="btn btn-danger" id="mDel" style="margin-right:auto">Delete model</button>'}<button class="btn btn-primary" id="mSave">${creating ? 'Add model' : 'Save'}</button>`);
+  w.querySelector('.drawer').classList.add('wide');
+  if (ro) return;
+  const msg = (t) => { $('#mMsg', w).innerHTML = `<div class="notice err">${esc(t)}</div>`; w.querySelector('.drawer-body').scrollTop = 0; };
+  const reopen = (fresh) => { S.modelList = S.modelList.map((x) => (x.id === fresh.id ? fresh : x)); openModel(fresh); viewModels(); };
+  $('#mSave', w).addEventListener('click', async () => {
+    const body = {
+      make: $('#mMake', w).value.trim(), model: $('#mModel', w).value.trim(), deviceType: $('#mType', w).value,
+      monitoredBy: [...w.querySelectorAll('.mMon:checked')].map((c) => c.value), baseline: $('#mBase', w).value.trim() || null,
+      endOfSale: $('#mEosale', w).value || null, endOfSupport: $('#mEos', w).value || null, endOfLife: $('#mEol', w).value || null,
+      lifecycleUrl: $('#mUrl', w).value.trim() || null, notes: $('#mNotes', w).value.trim() || null,
+    };
+    try {
+      await api(creating ? '/api/models' : `/api/models/${m.id}`, { method: creating ? 'POST' : 'PUT', body });
+      closeDrawer(); toast(ICONS.resolved, creating ? 'Model added' : 'Model saved'); viewModels();
+    } catch (e) { msg(e.message); }
+  });
+  $('#mDel', w)?.addEventListener('click', async (e) => {
+    if (!e.target.dataset.confirm) { e.target.dataset.confirm = 1; e.target.textContent = 'Click again to delete'; return; }
+    await api(`/api/models/${m.id}`, { method: 'DELETE' }); closeDrawer(); toast(ICONS.resolved, 'Model deleted'); viewModels();
+  });
+  $('#rAdd', w)?.addEventListener('click', async () => {
+    try { reopen(await api(`/api/models/${m.id}/releases`, { method: 'POST', body: { version: $('#rVer', w).value, releasedAt: $('#rDate', w).value || null, notesUrl: $('#rUrl', w).value.trim() || null } })); toast(ICONS.resolved, 'Release added'); } catch (e) { msg(e.message); }
+  });
+  w.querySelectorAll('[data-rel-del]').forEach((b) => b.addEventListener('click', async () => {
+    try { reopen(await api(`/api/models/${m.id}/releases/${encodeURIComponent(b.dataset.relDel)}`, { method: 'DELETE' })); } catch (e) { msg(e.message); }
+  }));
+  w.querySelectorAll('[data-rel-base]').forEach((b) => b.addEventListener('click', async () => {
+    try { reopen(await api(`/api/models/${m.id}`, { method: 'PUT', body: { baseline: b.dataset.relBase } })); toast(ICONS.resolved, `Baseline set to ${b.dataset.relBase}`); } catch (e) { msg(e.message); }
+  }));
+}
+
+// ------------------------------------------------------------------ audit log
+const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 'Enter customer'], ['device.', 'Device edits'], ['room.', 'Rooms and schematics'], ['customer.', 'Customers'], ['user.', 'Users'], ['connection.', 'Connections and keys'], ['model.', 'Model master'], ['firmware.', 'New firmware seen'], ['audit.', 'Audit exports']];
+const AUDIT_LABEL = {
+  'auth.login': 'Signed in', 'auth.login_failed': 'Failed sign-in', 'auth.logout': 'Signed out',
+  'session.enter_customer': 'Entered customer', 'session.exit_customer': 'Left customer',
+  'device.bulk_update': 'Updated devices', 'device.reset': 'Reset devices to OEM values',
+  'room.schematic_saved': 'Saved room schematic', 'room.schematic_removed': 'Removed room schematic', 'room.platform': 'Changed room platform',
+  'customer.onboard': 'Onboarded customer', 'customer.update': 'Updated customer', 'customer.delete': 'Deleted customer',
+  'user.create': 'Added user', 'user.delete': 'Removed user',
+  'connection.create': 'Added connection', 'connection.update': 'Changed connection', 'connection.test': 'Tested connection', 'connection.sync': 'Ran sync', 'connection.delete': 'Removed connection',
+  'model.create': 'Added model', 'model.update': 'Changed model', 'model.delete': 'Deleted model', 'model.release_add': 'Added firmware release', 'model.release_remove': 'Removed firmware release', 'model.import': 'Imported models from estate',
+  'firmware.detected': 'New firmware seen in fleet', 'audit.export': 'Exported audit log',
+};
+function auditDetails(e) {
+  const d = e.details;
+  if (!d) return '';
+  const parts = [];
+  for (const [k, v] of Object.entries(d)) {
+    if (k === 'deviceIds') continue;
+    if (v && typeof v === 'object' && !Array.isArray(v) && 'from' in v) parts.push(`${k}: ${v.from ?? '—'} → ${v.to ?? '—'}`);
+    else if (Array.isArray(v)) parts.push(`${k}: ${v.join(', ') || '—'}`);
+    else if (typeof v === 'object' && v) parts.push(`${k}: ${JSON.stringify(v)}`);
+    else parts.push(`${k}: ${v}`);
+  }
+  return esc(parts.join(' · '));
+}
+async function viewAudit() {
+  const f = S.auditFilter || (S.auditFilter = { action: '', actor: '', q: '', from: '', to: '' });
+  const p = new URLSearchParams(Object.entries(f).filter(([, v]) => v));
+  const r = await api(`/api/audit?${p}&limit=500`);
+  hero('Audit log', `Sign-ins, configuration changes and exports, newest first. Credential values are never recorded.${acting() ? ' Showing this customer only.' : ''}`);
+  $('#view').innerHTML = `
+    <div class="filters audit-filters">
+      <select id="aAction">${AUDIT_GROUPS.map(([v, l]) => `<option value="${v}" ${f.action === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <input id="aActor" placeholder="User email" value="${esc(f.actor)}">
+      <label class="muted">From <input id="aFrom" type="date" value="${esc(f.from)}"></label>
+      <label class="muted">To <input id="aTo" type="date" value="${esc(f.to)}"></label>
+      <div class="search">${ICONS.search}<input id="aQ" placeholder="Search target or details…" value="${esc(f.q)}"></div>
+      <a class="btn btn-outline btn-sm" href="/api/audit.csv?${p}" download>Export CSV</a>
+    </div>
+    <div class="card"><div class="card-head"><div><h2>${r.total} entries</h2>${r.total > r.entries.length ? `<div class="card-sub">Newest ${r.entries.length} shown. Export to get them all.</div>` : ''}</div></div>
+      ${r.entries.length ? `<div class="table-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th>${acting() ? '' : '<th>Customer</th>'}<th>Details</th></tr></thead><tbody>
+      ${r.entries.map((e) => `<tr class="${e.action === 'auth.login_failed' ? 'warn-row' : ''}"><td style="white-space:nowrap">${fmtDateTime(e.at)}</td>
+        <td>${esc(e.actor?.name || e.actor?.email || '—')}<div class="muted" style="font-size:11.5px">${esc(e.actor?.role === 'system' ? 'automatic' : e.actor?.email || '')}${e.actingCustomerId && !acting() ? ' · acting as customer' : ''}</div></td>
+        <td><b>${esc(AUDIT_LABEL[e.action] || e.action)}</b></td><td>${esc(e.target || '')}</td>${acting() ? '' : `<td>${esc(e.customerName || '')}</td>`}
+        <td class="audit-details">${auditDetails(e)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No matching entries</div>'}</div>`;
+  const go = () => {
+    S.auditFilter = { action: $('#aAction').value, actor: $('#aActor').value.trim(), q: $('#aQ').value.trim(), from: $('#aFrom').value, to: $('#aTo').value };
+    viewAudit();
+  };
+  for (const id of ['#aAction', '#aFrom', '#aTo']) $(id).addEventListener('change', go);
+  let t;
+  for (const id of ['#aActor', '#aQ']) $(id).addEventListener('input', () => { clearTimeout(t); t = setTimeout(go, 400); });
 }

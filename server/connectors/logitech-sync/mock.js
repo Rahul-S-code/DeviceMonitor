@@ -1,7 +1,7 @@
 // Mock transport returning the same JSON shape as the Logitech Sync Cloud API
 // GET /org/{orgId}/place, built from the shared mock estate.
 
-import { buildEstate, simulatedState, hash } from '../../mock/estate.js';
+import { buildEstate, simulatedState, hash, mockWarranty } from '../../mock/estate.js';
 
 export class LogitechSyncMockTransport {
   constructor(customerId, { now = () => Date.now() } = {}) {
@@ -44,7 +44,11 @@ export class LogitechSyncMockTransport {
       createdAt: 1717200000000,
     };
     if (d.kind !== 'Generic') base.version = d.firmware;
-    if (d.kind === 'Logitech' && d.serial) base.serial = d.serial;
+    if (d.kind === 'Logitech' && d.serial) {
+      base.serial = d.serial;
+      const w = mockWarranty(d.key, t);
+      base.warranty = { type: w.type === 'Extended' ? 'Select' : 'StandardWarranty', expiresAt: w.expiresAt };
+    }
     if (d.kind === 'Computer') base.network = { ip: d.ip, mac: d.mac };
     if (d.kind === 'Logitech' && /Rally Bar|Tap IP/.test(d.model)) {
       base.network = { ip: d.ip, mac: d.mac, hostName: `${d.model.replace(/\s+/g, '')}-${d.serial.slice(-6)}`, wired: { mode: 'dhcp', address: d.ip, gateway: d.ip.replace(/\d+$/, '1'), subnetMask: '255.255.255.0', dns: ['10.0.0.53'] }, wireless: null };

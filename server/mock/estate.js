@@ -164,3 +164,39 @@ export function simulatedState(key, now = Date.now(), windowMs = 90_000) {
   if (r < 0.13) return { state: 'warning', since: w * windowMs };
   return { state: 'healthy', since: null };
 }
+
+/**
+ * The main room system in each room on `platform`, as a meeting-platform
+ * admin portal (Teams Rooms, Zoom Rooms, Webex Control Hub, Meet hardware)
+ * would list it. Serial and MAC match the OEM mock, so de-duplication merges
+ * the platform view with the manufacturer's view of the same device.
+ */
+export function platformRooms(customerId, platform) {
+  const out = [];
+  for (const room of buildEstate(customerId).rooms) {
+    if (room.platform !== platform) continue;
+    const main = room.devices.find((d) => d.kind === 'Computer') || room.devices.find((d) => d.kind !== 'Generic');
+    if (!main) continue;
+    const make = main.kind === 'Computer' ? 'Lenovo' : main.oem === 'poly' ? 'Poly' : 'Logitech';
+    const model = main.kind === 'Computer' ? 'ThinkSmart Core' : main.model.replace(/^Poly\s+/, '');
+    out.push({ room, device: main, make, model });
+  }
+  return out;
+}
+
+/** Models in the mock estate, used to pre-fill the demo model master. */
+export function demoModels() {
+  return Object.entries(FIRMWARE).filter(([m]) => m !== 'DESKTOP').map(([model, versions]) => ({
+    make: model.startsWith('Poly') ? 'Poly' : 'Logitech', model, versions,
+  }));
+}
+
+/** Simulated warranty for a mock device: about 1 in 6 expired, 1 in 8 expiring soon. */
+export function mockWarranty(key, now = Date.now()) {
+  const r = hash(key + 'warranty');
+  const day = 86_400_000;
+  const expiresAt = r < 0.16 ? now - (10 + Math.floor(r * 2000)) * day
+    : r < 0.29 ? now + (5 + Math.floor(r * 280)) * day
+      : now + (120 + Math.floor(r * 900)) * day;
+  return { type: r > 0.7 ? 'Extended' : 'Standard', expiresAt: Math.floor(expiresAt / day) * day };
+}
