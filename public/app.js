@@ -995,10 +995,16 @@ async function viewMap(args, isRefresh) {
       <div class="map-legend">${['healthy', 'warning', 'critical', 'offline'].map((h) => `<span>${ICONS[h]}${HLABEL[h]}</span>`).join('')}<span class="muted">Marker colour = worst device</span></div></div>
     <div class="card map-side" id="mapSide"></div></div>`;
   const map = L.map('map', { worldCopyJump: true, zoomControl: true, attributionControl: true }).setView([30, 10], 2);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 18, subdomains: 'abcd',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  }).addTo(map);
+  // Open map data: OpenStreetMap tiles by default, with a switcher for the other layers.
+  if (!S.config?.mapLayers) S.config = await fetch('/api/config').then((r) => r.json()).catch(() => ({}));
+  const layers = S.config?.mapLayers?.length ? S.config.mapLayers : [{ id: 'osm', name: 'OpenStreetMap', url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }];
+  // OpenStreetMap's tile policy needs a Referer, so tiles send the site origin (the rest of the app sends none).
+  const base = Object.fromEntries(layers.map((l) => [l.name, L.tileLayer(l.url, { maxZoom: l.maxZoom || 19, subdomains: l.subdomains || 'abc', attribution: l.attribution, referrerPolicy: 'strict-origin-when-cross-origin', crossOrigin: false })]));
+  let chosen = null;
+  try { chosen = localStorage.getItem('dm.mapLayer'); } catch { /* ignore */ }
+  (base[chosen] || Object.values(base)[0]).addTo(map);
+  if (layers.length > 1) L.control.layers(base, null, { position: 'topright' }).addTo(map);
+  map.on('baselayerchange', (e) => { try { localStorage.setItem('dm.mapLayer', e.name); } catch { /* ignore */ } });
   MAP = { map, sites, sel: selection, layer: L.layerGroup().addTo(map) };
   const key = (s) => `${s.customerId}|${s.site}`;
   const worstOf = (list) => ['critical', 'offline', 'warning', 'healthy'].find((h) => list.some((s) => s.health[h])) || 'none';

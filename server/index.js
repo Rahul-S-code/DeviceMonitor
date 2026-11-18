@@ -34,6 +34,16 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const superPassword = process.env.SUPERADMIN_PASSWORD || (production ? randomPw() : demoPassword);
   if (store.seedIfEmpty(demoPassword)) console.log(`[seed] Demo data created. Demo users' password: ${process.env.DEMO_PASSWORD ? '(DEMO_PASSWORD)' : demoPassword}`);
   if (store.migrate(superPassword)) console.log(`[seed] Super admin created: superadmin@provider.example / ${process.env.SUPERADMIN_PASSWORD ? '(SUPERADMIN_PASSWORD)' : superPassword}`);
+  // Map base layers. OpenStreetMap's own tiles by default; MAP_TILE_URL adds a
+  // self-hosted or other open tile server (e.g. https://tiles.example.com/{z}/{x}/{y}.png).
+  const mapLayers = [
+    { id: 'osm', name: 'OpenStreetMap', url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' },
+    { id: 'carto-light', name: 'Light (OpenStreetMap data)', url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', subdomains: 'abcd', maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>' },
+  ];
+  if (process.env.MAP_TILE_URL && /^https:\/\/[^\s"'<>]+$/.test(process.env.MAP_TILE_URL)) {
+    mapLayers.unshift({ id: 'custom', name: process.env.MAP_TILE_NAME || 'Custom map', url: process.env.MAP_TILE_URL, maxZoom: 19, attribution: process.env.MAP_TILE_ATTRIBUTION || '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' });
+  }
+  const tileHosts = [...new Set(mapLayers.map((l) => { const h = new URL(l.url.replace(/\{s\}/, 'x').replace(/\{[^}]+\}/g, '0')).host; return l.subdomains ? `https://*.${h.split('.').slice(1).join('.')}` : `https://${h}`; }))].join(' ');
   const showDemoAccounts = process.env.SHOW_DEMO_ACCOUNTS ? process.env.SHOW_DEMO_ACCOUNTS === 'true' : !production;
   const vault = Vault.fromEnv(dataDir);
   const inventory = new Inventory(store);
@@ -47,7 +57,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   app.use(express.json({ limit: '256kb' }));
   app.use((req, res, next) => {
     res.set({
-      'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.basemaps.cartocdn.com; connect-src 'self'",
+      'Content-Security-Policy': `default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: ${tileHosts}; connect-src 'self'`,
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY',
@@ -99,7 +109,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.clearCookie(COOKIE, { path: '/' });
     res.json({ ok: true });
   });
-  app.get('/api/config', (_req, res) => res.json({ showDemoAccounts }));
+  app.get('/api/config', (_req, res) => res.json({ showDemoAccounts, mapLayers }));
   app.get('/api/me', requireUser, (req, res) => {
     const { id, email, name, role, customerId } = req.user;
     const acting = isAdminRole(req.user) && req.session.actingCustomerId && store.customers.some((c) => c.id === req.session.actingCustomerId) ? req.session.actingCustomerId : null;
