@@ -626,6 +626,7 @@ async function openDevice(id) {
     ${d.manualId ? `<div class="notice ${d.health === 'unmonitored' ? 'info' : 'ok'}" style="margin-top:14px">${d.health === 'unmonitored' ? `${esc(d.healthReason || 'Added manually.')} It has no live health.` : 'Added manually and now also reported by a connected API, which provides its live health.'}
       ${isAdmin() ? `<div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mEdit">Edit manual record</button><button class="btn btn-danger btn-sm" id="mDel">Remove manual record</button></div>` : ''}</div>` : ''}
     ${lifecycleSection(d)}
+    ${isAdmin() && d.sources.some((x) => x.oem !== 'manual') ? '<div class="section-title">Remote actions</div><div id="devActions"><div class="muted">Loading…</div></div>' : ''}
     ${d.overridden?.length ? `<div class="notice info" style="margin-top:14px">Manually changed: ${d.overridden.map(esc).join(', ')}. The OEM reports this device in <b>${esc(d.reportedRoom)}</b>, ${esc(d.reportedSite)}.</div>` : ''}
     ${isAdmin() ? `<div class="section-title">Edit this device</div>
       <div class="grid cols-2" style="gap:10px">
@@ -651,6 +652,7 @@ async function openDevice(id) {
         <div><div class="sync-name">${esc(OEM_NAME[s.oem] || s.oem)}</div><div class="sync-meta mono">${esc(s.sourceId)}</div>${conn ? `<div class="sync-meta">${esc(conn.name)}</div>` : ''}</div>
         ${s.health ? status(s.health) : ''}</div>`;
   }).join('')}</div>`);
+  if ($('#devActions')) mountDeviceActions($('#devActions'), d);
   $('#eSave')?.addEventListener('click', async () => {
     const tags = $('#eTags').value.split(',').map((t) => t.trim()).filter(Boolean);
     const set = { site: $('#eSite').value, room: $('#eRoom').value, platform: $('#ePlat').value, assetTag: $('#eAsset').value || null, notes: $('#eNotes').value || null, removeTags: d.tags || [], addTags: tags };
@@ -691,6 +693,35 @@ function drawer(title, sub, body, foot) {
 }
 function closeDrawer() { $('#drawerWrap')?.remove(); }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+// Remote actions run through the vendor API that reports the device: the OEM
+// cloud (e.g. Poly Lens) or the meeting platform (e.g. Webex Control Hub).
+async function mountDeviceActions(el, d) {
+  let r;
+  try { r = await api(`/api/devices/${encodeURIComponent(d.id)}/actions`); } catch (e) { el.innerHTML = `<div class="notice err">${esc(e.message)}</div>`; return; }
+  const any = r.sets.some((x) => x.actions.length);
+  el.innerHTML = `<div class="help" style="margin:-4px 0 10px">Each action runs through the API of the service shown. ${r.sets.length > 1 ? 'This device is reported by more than one service, so pick which API to use.' : ''}</div>
+    ${r.sets.map((set) => `<div class="act-set">
+      <div class="act-head"><b>${esc(set.displayName)}</b><span class="pill ${set.kind === 'platform' ? 'blue' : ''}">${esc(set.apiSet)}</span>${set.mode ? `<span class="pill ${set.mode}">${set.mode === 'live' ? 'Live' : 'Demo'}</span>` : ''}</div>
+      ${set.actions.map((a) => `<div class="act-row"><div><b>${esc(a.label)}</b>${a.target === 'room' ? ' <span class="muted">(whole room)</span>' : ''}<div class="muted">${esc(a.description)}</div>
+          <div class="act-api"><span class="mono">${esc(a.api.method)} ${esc(a.api.endpoint)}</span> · ${esc(a.api.name)} · needs ${esc(a.scope)}</div></div>
+        <button class="btn btn-outline btn-sm" data-act="${esc(a.id)}" data-conn="${esc(set.connectionId)}" data-confirm-text="${esc(a.confirm)}">${esc(a.label)}</button></div>`).join('')}
+      ${set.note ? `<div class="muted act-note">${esc(set.note)}</div>` : ''}
+      ${set.mode === 'mock' && set.actions.length ? '<div class="muted act-note">Demo connection: the action is simulated and nothing is sent.</div>' : ''}
+    </div>`).join('')}
+    ${any ? '' : '<div class="muted">None of the services reporting this device offers remote actions.</div>'}
+    <div id="actMsg"></div>`;
+  el.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', async () => {
+    if (!b.dataset.armed) { b.dataset.armed = 1; b.dataset.label = b.textContent; b.textContent = `${b.dataset.confirmText} Click to confirm`; b.classList.add('btn-danger'); setTimeout(() => { if (b.isConnected && b.dataset.armed) { delete b.dataset.armed; b.textContent = b.dataset.label; b.classList.remove('btn-danger'); } }, 6000); return; }
+    delete b.dataset.armed; b.disabled = true; b.textContent = 'Sending…';
+    try {
+      const res = await api(`/api/devices/${encodeURIComponent(d.id)}/actions`, { method: 'POST', body: { connectionId: b.dataset.conn, action: b.dataset.act } });
+      $('#actMsg', el).innerHTML = `<div class="notice ${res.simulated ? 'info' : 'ok'}"><b>${esc(res.action)} via ${esc(res.via)}</b> (${esc(res.apiSet)} API). ${esc(res.message)}</div>`;
+      toast(ICONS.resolved, `${res.action} ${res.simulated ? 'simulated' : 'sent'} via ${res.via}`);
+    } catch (e) { $('#actMsg', el).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; }
+    b.disabled = false; b.textContent = b.dataset.label; b.classList.remove('btn-danger');
+  }));
+}
 
 // ------------------------------------------------------------------ alerts view
 async function viewAlerts() {
@@ -2124,12 +2155,12 @@ function openModel(m, preset = {}) {
 }
 
 // ------------------------------------------------------------------ audit log
-const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 'Enter customer'], ['device.', 'Device edits'], ['room.', 'Rooms and schematics'], ['customer.', 'Customers'], ['user.', 'Users'], ['connection.', 'Connections and keys'], ['model.', 'Model master'], ['firmware.', 'New firmware seen'], ['api.', 'API checks'], ['audit.', 'Audit exports']];
+const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 'Enter customer'], ['device.', 'Device edits and actions'], ['room.', 'Rooms and schematics'], ['customer.', 'Customers'], ['user.', 'Users'], ['connection.', 'Connections and keys'], ['model.', 'Model master'], ['firmware.', 'New firmware seen'], ['api.', 'API checks'], ['audit.', 'Audit exports']];
 const AUDIT_LABEL = {
   'auth.login': 'Signed in', 'auth.login_failed': 'Failed sign-in', 'auth.logout': 'Signed out',
   'session.enter_customer': 'Entered customer', 'session.exit_customer': 'Left customer',
   'device.bulk_update': 'Updated devices', 'device.manual_add': 'Added device manually', 'device.manual_update': 'Edited manual device', 'device.manual_delete': 'Removed manual device', 'device.reset': 'Reset devices to OEM values',
-  'room.schematic_saved': 'Saved room schematic', 'room.design_uploaded': 'Uploaded room design document', 'room.design_removed': 'Removed room design document', 'api.check': 'Ran API check', 'room.schematic_removed': 'Removed room schematic', 'room.platform': 'Changed room platform',
+  'device.action': 'Ran a device action', 'device.action_failed': 'Device action failed', 'room.schematic_saved': 'Saved room schematic', 'room.design_uploaded': 'Uploaded room design document', 'room.design_removed': 'Removed room design document', 'api.check': 'Ran API check', 'room.schematic_removed': 'Removed room schematic', 'room.platform': 'Changed room platform',
   'customer.onboard': 'Onboarded customer', 'customer.update': 'Updated customer', 'customer.delete': 'Deleted customer',
   'user.create': 'Added user', 'user.delete': 'Removed user',
   'connection.create': 'Added connection', 'connection.update': 'Changed connection', 'connection.test': 'Tested connection', 'connection.sync': 'Ran sync', 'connection.delete': 'Removed connection',

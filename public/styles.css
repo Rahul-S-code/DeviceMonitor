@@ -504,3 +504,13 @@ a.stat:hover { transform: translateY(-1px); box-shadow: 0 1px 2px rgba(11, 29, 7
 .api-table .muted { font-size: 11.5px; margin-top: 2px; }
 .api-url { font-size: 11px; color: var(--ink-3); word-break: break-all; max-width: 340px; margin-top: 2px; }
 .spark { display: block; }
+/* ---------- device actions ---------- */
+.act-set { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+.act-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.act-row { display: flex; gap: 12px; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.act-row:first-of-type { border-top: 0; }
+.act-row .muted { font-size: 12px; }
+.act-api { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+.act-api .mono { color: var(--ink-2); }
+.act-row .btn { flex-shrink: 0; max-width: 180px; white-space: normal; }
+.act-note { font-size: 12px; margin-top: 6px; }

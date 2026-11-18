@@ -17,7 +17,7 @@ Needs Node.js 20 or newer.
 npm install
 cp .env.example .env      # optional; set MASTER_KEY for anything beyond a demo
 npm start                 # http://localhost:8080
-npm test                  # 41 tests: connectors, dedupe, tenancy, encryption, mTLS, onboarding, schematics, designs, API tracker, models, SLA, audit
+npm test                  # 43 tests: connectors, dedupe, tenancy, encryption, mTLS, onboarding, schematics, designs, API tracker, models, SLA, audit
 ```
 
 Demo sign-ins (password `demo1234`, or whatever `DEMO_PASSWORD` is set to on first run):
@@ -75,6 +75,20 @@ The **Design documents** card holds uploaded drawings for the room (PDF, PNG, JP
 ## API tracker
 
 **Configure › API tracker** (admins) lists every external API the tool uses: each OEM and platform endpoint, the map tile servers and Google Fonts, with the customers and connections that use it. The super admin's **Check all APIs** (or **Check** on one row) calls each endpoint without credentials and times the answer (a 401 or 403 counts as up, since it means the service answered), and tests every customer connection with its own credentials. Results keep the last 48 checks per API (response time chart, average, p95, uptime). Live connector traffic is also counted per endpoint (calls, errors, average time) since the server started. Checks run automatically every `API_CHECK_MINUTES` (default 30, 0 turns it off).
+
+## Remote device actions
+
+Admins see **Remote actions** in a device's panel. Every action runs through the API of one named service, and the panel says which: the **OEM device cloud API** (the manufacturer, e.g. Poly Lens) or the **meeting platform API** (e.g. Webex Control Hub, Zoom). When both report a device, both are listed and you pick one. Each action shows the exact endpoint and the permission the credentials need.
+
+| Service | API set | Actions | Endpoint | Permission needed |
+| --- | --- | --- | --- | --- |
+| Poly Lens | OEM | Reboot device | GraphQL `rebootDevice(deviceId)` | API client allowed to control devices |
+| Webex Control Hub | Platform | Restart, wake from standby, put into standby (Cisco RoomOS devices) | `POST /v1/xapi/command/SystemUnit.Boot`, `Standby.Deactivate`, `Standby.Activate` | `spark:xapi_commands` |
+| Zoom Rooms | Platform | Restart Zoom Room (whole room) | `PATCH /v2/rooms/{roomId}/events` with `zoomroom.restart` | `room:write:admin` |
+| Logitech Sync | OEM | None: the API is read-only | | |
+| Teams Rooms, Google Meet | Platform | None: no supported public API | | |
+
+Actions are confirmed with a second click, limited to one per device per minute, and written to the audit log (who, which action, which API, result). On demo (mock) connections nothing is sent; the panel says what a live connection would call. The read-only scopes used for monitoring are not enough: add the write permission above to the live credentials to enable actions.
 
 ## Adding devices by hand
 

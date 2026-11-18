@@ -105,6 +105,16 @@ export class PolyLensConnector extends BaseConnector {
     { id: 'poly-lens-auth', name: 'Poly Lens token', method: 'POST', url: POLY_DEFAULTS.authUrl, purpose: 'Gets an access token (OAuth client credentials)', auth: 'Client ID and secret' },
     { id: 'poly-lens-graphql', name: 'Poly Lens GraphQL', method: 'POST', url: POLY_DEFAULTS.apiUrl, purpose: 'Tenants, sites, rooms, devices, firmware and connection state', auth: 'Bearer token' },
   ];
+  static actions = [
+    {
+      id: 'reboot', label: 'Reboot device', target: 'device',
+      description: 'Restarts the device. A call in progress drops, and the device is back in a few minutes.',
+      confirm: 'Reboot this device now?',
+      api: { set: 'OEM', name: 'Poly Lens GraphQL API', method: 'POST', endpoint: 'GraphQL mutation rebootDevice(deviceId)' },
+      scope: 'A Poly Lens API client allowed to control devices',
+    },
+  ];
+
   static settingFields = [
     { key: 'tenantId', label: 'Tenant ID', placeholder: 'Leave blank to sync every tenant the API client can access', help: 'Optional. Found in Poly Lens under Account > Tenant.' },
     { key: 'authUrl', label: 'Token URL', default: POLY_DEFAULTS.authUrl },
@@ -128,6 +138,14 @@ export class PolyLensConnector extends BaseConnector {
         })
         : new PolyLensMockTransport(this.connection.customerId);
     }
+  }
+
+  async performAction(action, source) {
+    if (action.id !== 'reboot') throw new Error('Unknown action');
+    const data = await this.transport.graphql('mutation reboot($deviceId: String!) { rebootDevice(deviceId: $deviceId) { error success } }', { deviceId: source.sourceId });
+    const r = data?.rebootDevice;
+    if (!r?.success) throw new Error(`Poly Lens did not reboot the device${r?.error ? `: ${r.error}` : ''}`);
+    return { ok: true, message: 'Poly Lens accepted the reboot. The device will be back in a few minutes.' };
   }
 
   async testConnection() {

@@ -73,6 +73,7 @@ export class LogitechSyncConnector extends BaseConnector {
   static make = 'Logitech';
   static nativeHealth = true;
   static docsUrl = 'https://hub.sync.logitech.com/syncguides/post/1-8-getting-started---api-quick-start-guide-QOU16rRoLmzBP9F';
+  static actionsNote = 'The Logitech Sync API is read-only (rooms, devices, status). Reboots and firmware updates are done in the Sync Portal.';
   static apis = [
     { id: 'logitech-sync-places', name: 'Logitech Sync places', method: 'GET', url: `${LOGI_DEFAULT_BASE}/org/{orgId}/place`, probe: LOGI_DEFAULT_BASE, purpose: 'Rooms, devices, status, firmware and warranty', auth: 'mTLS client certificate' },
   ];

@@ -148,3 +148,54 @@ test('API tracker: lists every API, checks are super admin only and recorded', a
   assert.equal(one.apis.find((a) => a.id === 'poly-lens-auth').checks.length, 1);
   assert.ok(ctx.store.data.audit.some((e) => e.action === 'api.check'));
 });
+
+test('device actions: each runs through its own vendor API (live transports)', async () => {
+  const { PolyLensConnector } = await import('../server/connectors/poly-lens/index.js');
+  const { WebexConnector, WebexHttpTransport } = await import('../server/connectors/webex/index.js');
+  const { ZoomRoomsConnector, ZoomHttpTransport } = await import('../server/connectors/zoom-rooms/index.js');
+  // Poly Lens (OEM): GraphQL rebootDevice mutation
+  let gql;
+  const poly = new PolyLensConnector({ connection: { id: 'p', mode: 'live', settings: {} }, credentials: { clientId: 'a', clientSecret: 'b' }, transport: { graphql: async (q, v) => { gql = { q, v }; return { rebootDevice: { success: true, error: null } }; } } });
+  assert.equal((await poly.runAction('reboot', { sourceId: 'dev-1' })).ok, true);
+  assert.match(gql.q, /rebootDevice\(deviceId: \$deviceId\)/);
+  assert.deepEqual(gql.v, { deviceId: 'dev-1' });
+  // Webex (platform): cloud xAPI command
+  const calls = [];
+  const wx = new WebexConnector({ connection: { id: 'w', mode: 'live', settings: {} }, credentials: { accessToken: 't' }, transport: new WebexHttpTransport({ baseUrl: 'https://webexapis.com/v1', accessToken: 't', fetchImpl: async (url, init) => { calls.push({ url: String(url), init }); return new Response('{}', { status: 200 }); } }) });
+  await wx.runAction('restart', { sourceId: 'wx-9' });
+  assert.equal(calls[0].url, 'https://webexapis.com/v1/xapi/command/SystemUnit.Boot');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { deviceId: 'wx-9', arguments: { Action: 'Restart' } });
+  assert.equal(WebexConnector.actionApplies(WebexConnector.actions[0], { make: 'Poly', model: 'Studio X50' }), false, 'xAPI is RoomOS only');
+  // Zoom (platform): room controls
+  const zc = [];
+  const zt = new ZoomHttpTransport({ accountId: 'a', clientId: 'b', clientSecret: 'c', authUrl: 'https://zoom.us/oauth/token', apiUrl: 'https://api.zoom.us/v2', fetchImpl: async (url, init) => { zc.push({ url: String(url), init }); return String(url).includes('oauth') ? new Response(JSON.stringify({ access_token: 'x' }), { status: 200 }) : new Response(null, { status: 204 }); } });
+  const zoom = new ZoomRoomsConnector({ connection: { id: 'z', mode: 'live', settings: { accountId: 'a' } }, credentials: { clientId: 'b', clientSecret: 'c' }, transport: zt });
+  await zoom.runAction('restart-room', { sourceId: 'd1', roomId: 'room 7' });
+  const patch = zc.find((c) => c.init?.method === 'PATCH');
+  assert.equal(patch.url, 'https://api.zoom.us/v2/rooms/room%207/events');
+  assert.deepEqual(JSON.parse(patch.init.body), { method: 'zoomroom.restart' });
+});
+
+test('device actions API: admins only, demo connections simulate, audited and rate limited', async (t) => {
+  const { ctx, login } = await startApp(t);
+  const admin = await login('admin@provider.example');
+  const devices = await (await admin('/api/devices')).json();
+  const d = devices.find((x) => x.oems.includes('poly-lens'));
+  const viewer = await login(`it@${d.customerId.replace('cust-', '')}.example`);
+  assert.equal((await viewer(`/api/devices/${encodeURIComponent(d.id)}/actions`)).status, 403);
+  const { sets } = await (await admin(`/api/devices/${encodeURIComponent(d.id)}/actions`)).json();
+  const polySet = sets.find((s) => s.oem === 'poly-lens');
+  assert.equal(polySet.apiSet, 'OEM device cloud API');
+  assert.equal(polySet.actions[0].id, 'reboot');
+  const run = () => admin(`/api/devices/${encodeURIComponent(d.id)}/actions`, { method: 'POST', body: JSON.stringify({ connectionId: polySet.connectionId, action: 'reboot' }) });
+  const r = await (await run()).json();
+  assert.equal(r.simulated, true);
+  assert.equal(r.via, 'Poly Lens');
+  assert.equal((await run()).status, 429);
+  assert.ok(ctx.store.data.audit.some((e) => e.action === 'device.action' && e.details.via === 'Poly Lens'));
+  const logi = devices.find((x) => x.oems.includes('logitech-sync'));
+  const ls = (await (await admin(`/api/devices/${encodeURIComponent(logi.id)}/actions`)).json()).sets.find((s) => s.oem === 'logitech-sync');
+  assert.equal(ls.actions.length, 0);
+  assert.match(ls.note, /read-only/);
+  assert.equal((await admin(`/api/devices/${encodeURIComponent(logi.id)}/actions`, { method: 'POST', body: JSON.stringify({ connectionId: ls.connectionId, action: 'reboot' }) })).status, 400);
+});

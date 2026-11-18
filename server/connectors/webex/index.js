@@ -46,6 +46,20 @@ export class WebexHttpTransport {
     }
     return items;
   }
+
+  /** Run an xAPI command on a device (cloud xAPI). */
+  async command(name, deviceId, args) {
+    const res = await this.fetchImpl(`${this.baseUrl}/xapi/command/${name}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.accessToken}`, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ deviceId, ...(args ? { arguments: args } : {}) }),
+    });
+    if (res.status === 401) throw new Error('Webex returned 401: the access token is invalid or expired.');
+    if (res.status === 403) throw new Error('Webex returned 403: the token needs the spark:xapi_commands scope, from an admin with device rights.');
+    if (res.status === 404) throw new Error('Webex returned 404: the device is not online in Webex or does not support this command.');
+    if (!res.ok) throw new Error(`Webex xAPI error (HTTP ${res.status})`);
+    return res.json().catch(() => ({}));
+  }
 }
 
 const STATUS = {
@@ -70,6 +84,7 @@ export class WebexConnector extends BaseConnector {
   static apis = [
     { id: 'webex-devices', name: 'Webex List Devices', method: 'GET', url: `${WEBEX_DEFAULT_BASE}/devices`, purpose: 'Devices, software version and connection status', auth: 'Bearer token (spark-admin:devices_read)' },
     { id: 'webex-workspaces', name: 'Webex List Workspaces', method: 'GET', url: `${WEBEX_DEFAULT_BASE}/workspaces`, purpose: 'Room (workspace) names', auth: 'Bearer token (spark-admin:workspaces_read)' },
+    { id: 'webex-xapi-command', name: 'Webex xAPI command', method: 'POST', url: `${WEBEX_DEFAULT_BASE}/xapi/command/{command}`, probe: `${WEBEX_DEFAULT_BASE}/xapi/command/Standby.Deactivate`, purpose: 'Device actions: restart, wake, standby', auth: 'Bearer token (spark:xapi_commands)' },
     { id: 'webex-locations', name: 'Webex List Locations', method: 'GET', url: `${WEBEX_DEFAULT_BASE}/locations`, purpose: 'Site names (optional)', auth: 'Bearer token (spark-admin:locations_read)' },
   ];
   static setupSteps = [
@@ -78,6 +93,33 @@ export class WebexConnector extends BaseConnector {
     'Have a Control Hub full admin authorise it, then generate an access token.',
     'Paste the token below, press Test connection, then switch to Live and save. Service-app tokens expire, so refresh them before they lapse.',
   ];
+  static actions = [
+    {
+      id: 'restart', label: 'Restart device', target: 'device',
+      description: 'Restarts the RoomOS device (SystemUnit Boot). A call in progress drops.',
+      confirm: 'Restart this device now?',
+      api: { set: 'Platform', name: 'Webex xAPI (cloud)', method: 'POST', endpoint: '/v1/xapi/command/SystemUnit.Boot' },
+      scope: 'spark:xapi_commands',
+    },
+    {
+      id: 'wake', label: 'Wake from standby', target: 'device',
+      description: 'Brings the device out of standby so the screens and camera come on.',
+      confirm: 'Wake this device?',
+      api: { set: 'Platform', name: 'Webex xAPI (cloud)', method: 'POST', endpoint: '/v1/xapi/command/Standby.Deactivate' },
+      scope: 'spark:xapi_commands',
+    },
+    {
+      id: 'standby', label: 'Put into standby', target: 'device',
+      description: 'Puts the device into standby (screens off).',
+      confirm: 'Put this device into standby?',
+      api: { set: 'Platform', name: 'Webex xAPI (cloud)', method: 'POST', endpoint: '/v1/xapi/command/Standby.Activate' },
+      scope: 'spark:xapi_commands',
+    },
+  ];
+
+  /** xAPI commands run on Cisco RoomOS devices only. */
+  static actionApplies(_action, device) { return /cisco|webex/i.test(`${device.make} ${device.model}`); }
+
   static settingFields = [
     { key: 'orgId', label: 'Org ID', placeholder: 'Optional. Only for partner admins managing several orgs' },
     { key: 'baseUrl', label: 'API base URL', default: WEBEX_DEFAULT_BASE },
@@ -93,6 +135,13 @@ export class WebexConnector extends BaseConnector {
         ? new WebexHttpTransport({ baseUrl: this.connection.settings?.baseUrl || WEBEX_DEFAULT_BASE, accessToken: this.credentials.accessToken })
         : new WebexMockTransport(this.connection.customerId);
     }
+  }
+
+  async performAction(action, source) {
+    const cmd = { restart: ['SystemUnit.Boot', { Action: 'Restart' }], wake: ['Standby.Deactivate'], standby: ['Standby.Activate'] }[action.id];
+    if (!cmd) throw new Error('Unknown action');
+    await this.transport.command(cmd[0], source.sourceId, cmd[1]);
+    return { ok: true, message: `Webex ran ${cmd[0]} on the device.` };
   }
 
   async testConnection() {

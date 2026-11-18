@@ -25,6 +25,17 @@ export class BaseConnector {
    * @type {Array<{id:string,name:string,method:string|null,url:string|null,probe?:string,purpose:string,auth:string|null,availability?:string}>}
    */
   static apis = [];
+  /**
+   * Remote actions this connector can run through its vendor API (reboot...).
+   * api.set says whose API it is: 'OEM' (manufacturer cloud) or 'Platform'
+   * (meeting-platform admin portal). Empty when the API is read-only.
+   * @type {Array<{id:string,label:string,description:string,confirm:string,api:{set:string,name:string,method:string,endpoint:string},scope:string,target:'device'|'room'}>}
+   */
+  static actions = [];
+  /** Why there are no actions, shown in the device panel. */
+  static actionsNote = '';
+  /** Can this action run on that device? Override to limit by make or source data. */
+  static actionApplies(_action, _device, _source) { return true; }
   /** Steps shown when linking credentials. */
   static setupSteps = [];
   /**
@@ -76,6 +87,24 @@ export class BaseConnector {
     return this.mapDevices(raw);
   }
 
+  /**
+   * Run a remote action. Demo (mock) connections never call anything and say
+   * what a live connection would call.
+   */
+  async runAction(actionId, source, device) {
+    const C = this.constructor;
+    const a = C.actions.find((x) => x.id === actionId);
+    if (!a) throw new Error(`${C.displayName} cannot run that action`);
+    if (!this.isLive) return { ok: true, simulated: true, message: `Demo connection, so nothing was sent to ${C.displayName}. On a live connection this calls ${a.api.method} ${a.api.endpoint}.` };
+    this.assertLiveConfig();
+    return this.performAction(a, source, device);
+  }
+
+  // eslint-disable-next-line no-unused-vars
+  async performAction(action, source, device) {
+    throw new Error('performAction() not implemented');
+  }
+
   /** Throws a helpful error if required live settings or secrets are missing. */
   assertLiveConfig() {
     const C = this.constructor;
@@ -96,6 +125,8 @@ export class BaseConnector {
       liveSupported: this.liveSupported,
       liveNote: this.liveNote,
       setupSteps: this.setupSteps,
+      actions: this.actions,
+      actionsNote: this.actionsNote,
       settingFields: this.settingFields,
       credentialFields: this.credentialFields.map(({ key, label, multiline, required, help }) => ({ key, label, multiline, required, help })),
     };

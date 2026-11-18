@@ -148,6 +148,50 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const d = inventory.query(scope(req)).find((x) => x.id === req.params.id);
     return d ? res.json(d) : res.status(404).json({ error: 'Not found' });
   });
+  // --- device actions (admins): run through the vendor API that reports the device
+  const actionSets = (d) => d.sources.filter((src) => src.oem !== 'manual').map((src) => {
+    const C = getConnectorClass(src.oem);
+    const conn = store.connections.find((c) => c.id === src.connectionId);
+    return {
+      oem: C.oem, displayName: C.displayName, kind: C.kind, apiSet: C.kind === 'platform' ? 'Meeting platform API' : 'OEM device cloud API',
+      connectionId: src.connectionId, connectionName: conn?.name || null, mode: conn?.mode || null,
+      actions: conn ? C.actions.filter((a) => C.actionApplies(a, d, src)) : [],
+      note: !conn ? 'The connection that reported this device has been removed.' : C.actions.length ? (C.actions.some((a) => C.actionApplies(a, d, src)) ? null : `${C.displayName} actions don't apply to this device.`) : C.actionsNote,
+    };
+  });
+  const lastAction = new Map();
+  app.get('/api/devices/:id/actions', requireAdmin, (req, res) => {
+    const d = inventory.query(scope(req)).find((x) => x.id === req.params.id);
+    if (!d) return res.status(404).json({ error: 'Not found' });
+    res.json({ sets: actionSets(d) });
+  });
+  app.post('/api/devices/:id/actions', requireAdmin, requireJson, async (req, res) => {
+    const d = inventory.query(scope(req)).find((x) => x.id === req.params.id);
+    if (!d) return res.status(404).json({ error: 'Not found' });
+    const { connectionId, action } = req.body || {};
+    const src = d.sources.find((x) => x.connectionId === connectionId && x.oem !== 'manual');
+    const conn = store.connections.find((c) => c.id === connectionId);
+    if (!src || !conn) return res.status(400).json({ error: 'That connection does not report this device' });
+    const C = getConnectorClass(conn.oem);
+    const a = C.actions.find((x) => x.id === action);
+    if (!a || !C.actionApplies(a, d, src)) return res.status(400).json({ error: `${C.displayName} cannot run that action on this device` });
+    const key = `${a.target === 'room' ? `${conn.id}|${src.roomId}` : d.id}|${a.id}`;
+    if (Date.now() - (lastAction.get(key) || 0) < 60_000) return res.status(429).json({ error: 'This action was just run. Wait a minute before running it again.' });
+    lastAction.set(key, Date.now());
+    const details = { action: a.label, via: C.displayName, apiSet: a.api.set, endpoint: `${a.api.method} ${a.api.endpoint}`, mode: conn.mode };
+    try {
+      const r = await Promise.race([
+        sync.connectorFor(conn).runAction(a.id, src, d),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`${C.displayName} did not answer within 20 seconds`)), 20_000).unref?.()),
+      ]);
+      audit(req, 'device.action', { customerId: d.customerId, target: `${d.make} ${d.model} (${d.room}, ${d.site})`, details: { ...details, result: r.simulated ? 'simulated (demo connection)' : 'sent' } });
+      res.json({ ...r, action: a.label, via: C.displayName, apiSet: a.api.set });
+    } catch (e) {
+      lastAction.delete(key);
+      audit(req, 'device.action_failed', { customerId: d.customerId, target: `${d.make} ${d.model} (${d.room}, ${d.site})`, details: { ...details, error: e.message } });
+      res.status(502).json({ error: e.message });
+    }
+  });
   app.get('/api/map', requireUser, (req, res) => res.json(inventory.map(inventory.query(scope(req), req.query), configuredScope(req))));
 
   // Bulk update: group devices into a room, set platform, tags, notes, or reset to OEM values.

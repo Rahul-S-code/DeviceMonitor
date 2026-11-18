@@ -56,6 +56,18 @@ export class ZoomHttpTransport {
     if (!res.ok) throw new Error(`Zoom API error (HTTP ${res.status})`);
     return res.json();
   }
+
+  async patch(path, body) {
+    const res = await this.fetchImpl(this.apiUrl + path, {
+      method: 'PATCH',
+      headers: { authorization: `Bearer ${await this.getToken()}`, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401 || res.status === 403) throw new Error(`Zoom returned ${res.status}: the app needs the room:write:admin scope.`);
+    if (res.status === 404) throw new Error('Zoom returned 404: the room was not found or is offline.');
+    if (!res.ok) throw new Error(`Zoom API error (HTTP ${res.status})`);
+    return res.status === 204 ? {} : res.json().catch(() => ({}));
+  }
 }
 
 export class ZoomRoomsConnector extends BaseConnector {
@@ -70,8 +82,21 @@ export class ZoomRoomsConnector extends BaseConnector {
     { id: 'zoom-auth', name: 'Zoom OAuth token', method: 'POST', url: ZOOM_DEFAULTS.authUrl, purpose: 'Gets an access token (Server-to-Server OAuth)', auth: 'Account ID, client ID and secret' },
     { id: 'zoom-rooms-list', name: 'List Zoom Rooms', method: 'GET', url: `${ZOOM_DEFAULTS.apiUrl}/rooms`, purpose: 'Rooms and their online status', auth: 'Bearer token (room:read:admin)' },
     { id: 'zoom-room-devices', name: 'List Zoom Room devices', method: 'GET', url: `${ZOOM_DEFAULTS.apiUrl}/rooms/{roomId}/devices`, probe: `${ZOOM_DEFAULTS.apiUrl}/rooms/0/devices`, purpose: 'Devices in each room, with app version and status', auth: 'Bearer token (room:read:admin)' },
+    { id: 'zoom-room-events', name: 'Use Zoom Room controls', method: 'PATCH', url: `${ZOOM_DEFAULTS.apiUrl}/rooms/{roomId}/events`, probe: `${ZOOM_DEFAULTS.apiUrl}/rooms/0/events`, purpose: 'Device actions: restart the Zoom Room', auth: 'Bearer token (room:write:admin)' },
     { id: 'zoom-room-locations', name: 'List Zoom Room locations', method: 'GET', url: `${ZOOM_DEFAULTS.apiUrl}/rooms/locations`, purpose: 'Location names for sites (optional)', auth: 'Bearer token' },
   ];
+  static actions = [
+    {
+      id: 'restart-room', label: 'Restart Zoom Room', target: 'room',
+      description: 'Restarts the Zoom Rooms app for the whole room (every Zoom device in it). A meeting in progress ends.',
+      confirm: 'Restart the Zoom Room now?',
+      api: { set: 'Platform', name: 'Zoom Rooms API', method: 'PATCH', endpoint: '/v2/rooms/{roomId}/events (zoomroom.restart)' },
+      scope: 'room:write:admin',
+    },
+  ];
+
+  static actionApplies(_action, _device, source) { return !!source.roomId; }
+
   static setupSteps = [
     'In the Zoom App Marketplace, choose Develop › Build App › Server-to-Server OAuth.',
     'Add the scope room:read:admin (List Zoom Rooms and List Zoom Room devices) and activate the app.',
@@ -95,6 +120,12 @@ export class ZoomRoomsConnector extends BaseConnector {
         ? new ZoomHttpTransport({ accountId: s.accountId, clientId: this.credentials.clientId, clientSecret: this.credentials.clientSecret, authUrl: ZOOM_DEFAULTS.authUrl, apiUrl: s.apiUrl || ZOOM_DEFAULTS.apiUrl })
         : new ZoomRoomsMockTransport(this.connection.customerId);
     }
+  }
+
+  async performAction(action, source) {
+    if (action.id !== 'restart-room') throw new Error('Unknown action');
+    await this.transport.patch(`/rooms/${encodeURIComponent(source.roomId)}/events`, { method: 'zoomroom.restart' });
+    return { ok: true, message: 'Zoom accepted the restart. The room is back in a minute or two.' };
   }
 
   async testConnection() {
@@ -161,7 +192,7 @@ export class ZoomRoomsConnector extends BaseConnector {
           mac: d.device_mac_addresses?.[0] || null,
           ip: d.ip_address || null,
           inUse: r.status === 'InMeeting',
-          sources: [{ oem: C.oem, connectionId: this.connection.id, sourceId: d.id }],
+          sources: [{ oem: C.oem, connectionId: this.connection.id, sourceId: d.id, roomId: r.id }],
         }));
       }
     }
