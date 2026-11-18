@@ -17,14 +17,15 @@ Needs Node.js 20 or newer.
 npm install
 cp .env.example .env      # optional; set MASTER_KEY for anything beyond a demo
 npm start                 # http://localhost:8080
-npm test                  # 16 tests: connectors, dedupe, tenancy, encryption, mTLS
+npm test                  # 22 tests: connectors, dedupe, tenancy, encryption, mTLS, onboarding, schematics
 ```
 
 Demo sign-ins (password `demo1234`, or whatever `DEMO_PASSWORD` is set to on first run):
 
 | Account | Sees |
 |---|---|
-| `admin@provider.example` | All customers, can manage connections and credentials |
+| `superadmin@provider.example` | Everything, plus the Customers page: onboard customers, add their logins, enter any customer (password: `SUPERADMIN_PASSWORD`, else `DEMO_PASSWORD`) |
+| `admin@provider.example` | All customers, can manage connections, credentials, rooms and devices |
 | `it@helix.example` | Helix Financial only |
 | `it@northwind.example` | Northwind Retail only |
 | `it@meridian.example` | Meridian Health only |
@@ -42,6 +43,24 @@ The three customers, their sites and devices are fictional mock data.
 - **Multi-customer**: every API call is scoped server-side to the signed-in user's customer. Provider admins see everything.
 - **Connections page**: "Link Poly Lens" flow to paste a client ID and secret, test the connection, and switch from mock to live. Logitech Sync takes an org ID plus certificate and private key PEMs.
 
+## Phase 2 features
+
+- **Map**: every site on a world map (OpenStreetMap data, CARTO tiles). Zoomed out you see regions; zoom in or click for sites, then drill into rooms and devices in the side panel. Marker colour is the worst device health at that site.
+- **Super admin and onboarding**: `superadmin@provider.example` gets a Customers page. "Onboard customer" creates the customer, its sites (city presets fill in the map coordinates), its user logins, its OEM connections (starting on mock data) and optional pre-loaded rooms with platforms and schematics. "Enter customer" (also in the top bar for any admin) switches the whole app to that customer's view until you exit.
+- **Group devices into rooms and bulk update**: tick devices on the Devices page or in a room, then group them into an existing or new room, set the platform, add tags and notes, or reset them to what the OEM reports. Changes are stored as overrides on top of the OEM data, so the next sync never undoes them. Single devices can be edited from their detail panel.
+- **Room schematics**: each room has a cabling diagram showing which device plugs into which, on which port, with which cable (HDMI, USB, USB-C, Ethernet, PoE, DisplayPort, audio, power, wireless). Start from a template (Rally Bar, Rally with PC, Poly Studio X, Poly G7500, USB huddle), add the room's monitored devices, edit items and connections, and import or export it as JSON. Linked devices show their live health on the diagram. Schematics can be loaded per room during onboarding.
+
+## Publish it online (Render)
+
+GitHub stores the code but cannot run a Node server, so the app is hosted on Render, which deploys straight from this repository:
+
+1. Sign in at [render.com](https://render.com) with your GitHub account.
+2. Choose **New > Blueprint**, pick this repository and the `main` branch.
+3. Render reads `render.yaml`. Enter a `SUPERADMIN_PASSWORD` and a `DEMO_PASSWORD` when asked (use strong ones: the site is public).
+4. Press **Apply**. After the build you get a public `https://estate-monitor-….onrender.com` address. Every push to `main` redeploys it.
+
+On the free plan the service sleeps after 15 minutes without visitors (the first visit then takes about a minute), and its disk is temporary, so onboarded customers, schematics and saved API keys are reset when it restarts. For real use, add a Render persistent disk mounted at `/opt/render/project/src/data` (paid plan) or move the store to a database.
+
 ## Architecture
 
 ```
@@ -53,7 +72,9 @@ server/
     logitech-sync/          Logitech Sync: mutual TLS + REST
   lib/device-model.js       Common device format, health/platform normalisation
   lib/vault.js              AES-256-GCM encryption for credentials
-  lib/store.js              JSON-file config store (data/store.json)
+  lib/store.js              JSON-file config store (data/store.json): customers, users, connections,
+                            site directory (with map coordinates), device overrides, room schematics
+  lib/schematic.js          Room schematic validation and templates
   lib/auth.js               scrypt passwords, HttpOnly sessions, customer scoping
   services/dedupe.js        Merge devices reported by several sources
   services/inventory.js     Enrichment, filtering, aggregates, drill-down tree

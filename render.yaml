@@ -1,0 +1,22 @@
+# One-click hosting on Render (https://render.com).
+# In Render: New > Blueprint > pick this repository. Render reads this file,
+# asks for the two passwords, and gives you a public https://….onrender.com link.
+services:
+  - type: web
+    name: estate-monitor
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/config
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MASTER_KEY          # encrypts stored OEM API credentials
+        generateValue: true
+      - key: SUPERADMIN_PASSWORD # password for superadmin@provider.example
+        sync: false
+      - key: DEMO_PASSWORD       # password for the demo admin and customer logins
+        sync: false
+      - key: SHOW_DEMO_ACCOUNTS  # hide demo account hints on the public sign-in page
+        value: "false"
