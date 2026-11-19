@@ -905,6 +905,20 @@ function connCard(c) {
   </div>`;
 }
 
+// Keeps browsers and password managers from filling connection fields
+// (autofill once put a sign-in email into the Poly Lens Token URL).
+const NO_AUTOFILL = 'autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"';
+const isUrlSetting = (f) => f.type === 'url' || /Url$/.test(f.key);
+function urlSettingError(w) {
+  for (const i of w.querySelectorAll('[data-url]')) {
+    const v = i.value.trim();
+    if (!v) continue;
+    let ok = false; try { ok = new URL(v).protocol === 'https:' && !v.includes('@'); } catch { /* invalid */ }
+    if (!ok) { i.focus(); return `${i.closest('.field')?.querySelector('label')?.textContent.replace(/\s*\*$/, '').trim() || 'URL'} must be a full https:// address. Clear it to use the default.`; }
+  }
+  return null;
+}
+
 const SETUP_STEPS = {
   'poly-lens': [
     'Sign in to Poly Lens as a tenant admin.',
@@ -938,13 +952,13 @@ function openConnection(conn, preset = {}) {
       <div class="muted" style="font-size:12px;margin:-8px 0 12px">${C.liveSupported === false ? `<a href="${esc(C.docsUrl)}" target="_blank" rel="noopener">Source for this</a>` : `Built from the <a href="${esc(C.docsUrl)}" target="_blank" rel="noopener">official ${esc(C.displayName)} API documentation</a>.`}</div>
       ${C.settingFields.length ? '<div class="section-title">Settings</div>' : ''}
       ${C.settingFields.map((f) => `<div class="field"><label for="s_${f.key}">${esc(f.label)}${f.required ? ' *' : ''}</label>
-        <input id="s_${f.key}" data-setting="${f.key}" value="${esc(conn?.settings?.[f.key] ?? '')}" placeholder="${esc(f.placeholder || f.default || '')}">${f.help ? `<div class="help">${esc(f.help)}</div>` : ''}</div>`).join('')}
+        <input id="s_${f.key}" data-setting="${f.key}" ${isUrlSetting(f) ? 'type="url" inputmode="url" data-url="1"' : 'type="text"'} autocomplete="off" ${NO_AUTOFILL} name="em-set-${f.key}-${Math.random().toString(36).slice(2, 8)}" value="${esc(conn?.settings?.[f.key] ?? '')}" placeholder="${esc(f.placeholder || f.default || '')}">${f.help || isUrlSetting(f) ? `<div class="help">${esc(f.help || '')}${isUrlSetting(f) && f.default ? `${f.help ? ' ' : ''}Leave blank to use the default.` : ''}</div>` : ''}</div>`).join('')}
       ${C.credentialFields.length ? '<div class="section-title">Credentials (encrypted at rest)</div>' : ''}
       ${C.credentialFields.map((f) => {
     const stored = conn?.credentials?.[f.key];
     const ph = stored ? 'Stored. Leave blank to keep the current value.' : '';
     return `<div class="field"><label for="k_${f.key}">${esc(f.label)}${f.required ? ' *' : ''} ${stored ? '<span class="stored">✓ stored</span>' : ''}</label>
-          ${f.multiline ? `<textarea id="k_${f.key}" data-cred="${f.key}" placeholder="${esc(ph || '-----BEGIN ...-----')}" spellcheck="false"></textarea>` : `<input id="k_${f.key}" data-cred="${f.key}" type="password" autocomplete="off" placeholder="${esc(ph)}">`}
+          ${f.multiline ? `<textarea id="k_${f.key}" data-cred="${f.key}" autocomplete="off" ${NO_AUTOFILL} placeholder="${esc(ph || '-----BEGIN ...-----')}" spellcheck="false"></textarea>` : `<input id="k_${f.key}" data-cred="${f.key}" type="password" autocomplete="new-password" ${NO_AUTOFILL} name="em-key-${f.key}-${Math.random().toString(36).slice(2, 8)}" placeholder="${esc(ph)}">`}
           ${f.help ? `<div class="help">${esc(f.help)}</div>` : ''}</div>`;
   }).join('')}`;
     const foot = `${!creating ? '<button class="btn btn-danger" id="cDel" style="margin-right:auto">Remove</button>' : ''}
@@ -968,11 +982,13 @@ function openConnection(conn, preset = {}) {
       if (keep.name) $('#cName').value = keep.name;
     }));
     $('#cTest', w)?.addEventListener('click', async (e) => {
+      const bad = urlSettingError(w); if (bad) return msg('err', bad);
       e.target.disabled = true; e.target.textContent = 'Testing…';
       try { const r = await api(`/api/connections/${conn.id}/test`, { method: 'POST', body: collect() }); msg(r.ok ? 'ok' : 'err', r.message); } catch (err) { msg('err', err.message); }
       e.target.disabled = false; e.target.textContent = 'Test connection';
     });
     $('#cSave', w).addEventListener('click', async (e) => {
+      const bad = urlSettingError(w); if (bad) return msg('err', bad);
       e.target.disabled = true;
       try {
         const body = collect();

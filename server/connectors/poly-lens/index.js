@@ -59,6 +59,27 @@ export const INVENTORY_QUERY = `query Inventory($params: DeviceFindArgs, $tenant
   }
 }`;
 
+/** Builds an auth error that carries Poly's own reason (OAuth error / error_description). */
+export function polyAuthError(status, body = {}, text = '', authUrl = '') {
+  const code = body.error || body.code || '';
+  const reason = body.error_description || body.message || body.detail || (!code && text && !/^\s*</.test(text) ? text.slice(0, 200) : '');
+  const said = [code, reason].filter(Boolean).join(': ');
+  let fix;
+  if (status === 400 && /invalid_client|unauthorized_client/i.test(code)) fix = 'The client ID is not recognised or this credential is not allowed to use client credentials. Copy the client ID again from Poly Lens > Integrations > API Credentials.';
+  else if (status === 400 && /invalid_grant|invalid_request/i.test(code)) fix = 'Poly rejected the request. Re-enter the client ID and secret with no spaces or line breaks.';
+  else if (status === 400) fix = 'Poly rejected the request. Check that the Token URL is exactly https://login.silica-prod01.io.lens.poly.com/oauth/token, then re-enter the client ID and secret.';
+  else if (status === 401 || status === 403) fix = 'The client ID or secret is wrong, or the credential was deleted. Create a new API credential in Poly Lens and paste both values again.';
+  else if (status === 404) fix = `Nothing answers at ${authUrl}. Reset the Token URL to the default.`;
+  else if (status === 429) fix = 'Too many token requests. Wait a minute and try again.';
+  else fix = 'Poly Lens may be having problems. Try again shortly.';
+  return `Poly Lens auth failed (HTTP ${status}${said ? `, Poly says "${said}"` : ''}). ${fix}`;
+}
+
+/** A setting that must be an https URL; anything else falls back to the default. */
+export function safeUrl(value, fallback) {
+  try { const u = new URL(String(value || '').trim()); return u.protocol === 'https:' ? u.toString().replace(/\/$/, '') : fallback; } catch { return fallback; }
+}
+
 /** Live HTTP transport: OAuth client-credentials + GraphQL over fetch. */
 export class PolyLensHttpTransport {
   constructor({ clientId, clientSecret, authUrl, apiUrl, fetchImpl = trackedFetch }) {
@@ -69,13 +90,25 @@ export class PolyLensHttpTransport {
 
   async getToken() {
     if (this.token && Date.now() < this.tokenExpires - 60_000) return this.token;
-    const res = await this.fetchImpl(this.authUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ client_id: this.clientId, client_secret: this.clientSecret, grant_type: 'client_credentials' }),
-    });
-    if (!res.ok) throw new Error(`Poly Lens auth failed (HTTP ${res.status}). Check the client ID and secret.`);
-    const body = await res.json();
+    const clientId = String(this.clientId || '').trim();
+    const clientSecret = String(this.clientSecret || '').trim();
+    if (!clientId || !clientSecret) throw new Error('Poly Lens auth needs both a client ID and a client secret.');
+    // Exactly the request in Poly's "How to get started" guide: JSON body, no audience or scope.
+    let res;
+    try {
+      res = await this.fetchImpl(this.authUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, grant_type: 'client_credentials' }),
+      });
+    } catch (e) {
+      throw new Error(`Could not reach the Poly Lens token URL (${this.authUrl}): ${e.message}`);
+    }
+    const text = await res.text().catch(() => '');
+    let body = {};
+    try { body = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+    if (!res.ok) throw new Error(polyAuthError(res.status, body, text, this.authUrl));
+    if (!body.access_token) throw new Error('Poly Lens token response had no access_token. Check the Token URL.');
     this.token = body.access_token;
     this.tokenExpires = Date.now() + (body.expires_in ?? 3600) * 1000;
     return this.token;
@@ -145,8 +178,8 @@ export class PolyLensConnector extends BaseConnector {
         ? new PolyLensHttpTransport({
           clientId: this.credentials.clientId,
           clientSecret: this.credentials.clientSecret,
-          authUrl: s.authUrl || POLY_DEFAULTS.authUrl,
-          apiUrl: s.apiUrl || POLY_DEFAULTS.apiUrl,
+          authUrl: safeUrl(s.authUrl, POLY_DEFAULTS.authUrl),
+          apiUrl: safeUrl(s.apiUrl, POLY_DEFAULTS.apiUrl),
         })
         : new PolyLensMockTransport(this.connection.customerId);
     }

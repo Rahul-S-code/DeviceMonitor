@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { PolyLensConnector, PolyLensHttpTransport, POLY_DEFAULTS } from '../server/connectors/poly-lens/index.js';
+import { PolyLensConnector, PolyLensHttpTransport, POLY_DEFAULTS, polyAuthError, safeUrl } from '../server/connectors/poly-lens/index.js';
 import { PolyLensMockTransport } from '../server/connectors/poly-lens/mock.js';
 import { LogitechSyncConnector } from '../server/connectors/logitech-sync/index.js';
 import { CONNECTORS } from '../server/connectors/registry.js';
@@ -53,7 +53,7 @@ test('Poly Lens live transport uses OAuth client credentials and a Bearer token'
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
-    if (url === POLY_DEFAULTS.authUrl) return { ok: true, status: 200, json: async () => ({ access_token: 'tok123', expires_in: 3600 }) };
+    if (url === POLY_DEFAULTS.authUrl) return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok123', expires_in: 3600 }) };
     return { ok: true, status: 200, json: async () => ({ data: { tenants: [{ id: 't1', name: 'Tenant 1' }] } }) };
   };
   const transport = new PolyLensHttpTransport({ clientId: 'id', clientSecret: 'secret', ...POLY_DEFAULTS, fetchImpl });
@@ -142,4 +142,23 @@ test('Logitech Sync live mode calls /org/{orgId}/place over mutual TLS', async (
   // Without a client certificate the server must refuse the connection.
   const bad = new LogitechSyncConnector({ connection, credentials: { certPem: 'x', keyPem: 'x', caPem: read('ca.pem') } });
   await assert.rejects(() => bad.sync());
+});
+
+test('Poly Lens auth: trims credentials and reports Poly\'s own error reason', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => { calls.push({ url, init }); return { ok: false, status: 400, text: async () => JSON.stringify({ error: 'invalid_client', error_description: 'Client not found' }) }; };
+  const t = new PolyLensHttpTransport({ clientId: '  abc\n', clientSecret: ' s3cret ', ...POLY_DEFAULTS, fetchImpl });
+  await assert.rejects(() => t.getToken(), (e) => /HTTP 400/.test(e.message) && /invalid_client: Client not found/.test(e.message) && /client ID/.test(e.message));
+  assert.deepEqual(JSON.parse(calls[0].init.body), { client_id: 'abc', client_secret: 's3cret', grant_type: 'client_credentials' });
+  assert.equal(calls[0].init.headers['content-type'], 'application/json');
+  assert.match(polyAuthError(401, {}, ''), /wrong/);
+  assert.match(polyAuthError(400, {}, '<html>bad</html>'), /^Poly Lens auth failed \(HTTP 400\)\. /);
+});
+
+test('Poly Lens ignores a Token URL that is not an https URL', () => {
+  assert.equal(safeUrl('rahul@example.com', POLY_DEFAULTS.authUrl), POLY_DEFAULTS.authUrl);
+  assert.equal(safeUrl('http://login.example.com/oauth/token', 'x'), 'x');
+  assert.equal(safeUrl(' https://login.silica-prod01.io.lens.poly.com/oauth/token ', 'x'), POLY_DEFAULTS.authUrl);
+  const c = new PolyLensConnector({ connection: conn('poly-lens', { mode: 'live', settings: { authUrl: 'someone@example.com' } }), credentials: { clientId: 'a', clientSecret: 'b' } });
+  assert.equal(c.transport.authUrl, POLY_DEFAULTS.authUrl);
 });

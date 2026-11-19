@@ -537,6 +537,19 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   const cleanSettings = (C, input = {}) => Object.fromEntries(C.settingFields.map((f) => [f.key, String(input[f.key] ?? '').trim()]).filter(([, v]) => v !== ''));
+  // URL settings (authUrl, apiUrl, baseUrl ...) must be https URLs. Catches browser
+  // autofill putting an email or a password into a URL field.
+  const isUrlField = (f) => f.type === 'url' || /Url$/.test(f.key);
+  const settingsError = (C, input) => {
+    if (!input) return null;
+    for (const f of C.settingFields.filter(isUrlField)) {
+      const v = String(input[f.key] ?? '').trim();
+      if (!v) continue;
+      let u = null; try { u = new URL(v); } catch { /* invalid */ }
+      if (!u || u.protocol !== 'https:' || /@/.test(v)) return `${f.label} must be a full https:// address${f.default ? `, for example ${f.default}` : ''}. Clear the field to use the default.`;
+    }
+    return null;
+  };
   const mergeSecrets = (C, existingBox, input = {}) => {
     const current = existingBox ? vault.decrypt(existingBox) : {};
     for (const f of C.credentialFields) {
@@ -552,6 +565,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     if (!inScope(req, customerId)) return res.status(400).json({ error: 'Unknown customer' });
     let C; try { C = getConnectorClass(oem); } catch (e) { return res.status(400).json({ error: e.message }); }
     if (mode === 'live' && C.liveSupported === false) return res.status(400).json({ error: C.liveNote || `${C.displayName} has no live API` });
+    const badSetting = settingsError(C, settings); if (badSetting) return res.status(400).json({ error: badSetting });
     const conn = {
       id: crypto.randomUUID(), customerId, oem, mode: mode === 'live' ? 'live' : 'mock',
       name: name || `${store.customerName(customerId)} · ${C.displayName}`,
@@ -569,6 +583,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const C = getConnectorClass(conn.oem);
     const { name, settings, credentials, mode } = req.body || {};
     if (mode === 'live' && C.liveSupported === false) return res.status(400).json({ error: C.liveNote || `${C.displayName} has no live API` });
+    const badSetting = settingsError(C, settings); if (badSetting) return res.status(400).json({ error: badSetting });
     const before = { name: conn.name, mode: conn.mode, settings: JSON.stringify(conn.settings) };
     if (name) conn.name = String(name).slice(0, 120);
     if (settings) conn.settings = cleanSettings(C, settings);
@@ -593,6 +608,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     if (!conn) return res.status(404).json({ error: 'Not found' });
     const C = getConnectorClass(conn.oem);
     const b = req.body || {};
+    const badSetting = settingsError(C, b.settings); if (badSetting) return res.json({ ok: false, message: badSetting });
     const draft = { ...conn, mode: b.mode || conn.mode, settings: b.settings ? cleanSettings(C, b.settings) : conn.settings };
     const creds = { ...(conn.secret ? vault.decrypt(conn.secret) : {}) };
     for (const f of C.credentialFields) if (typeof b.credentials?.[f.key] === 'string' && b.credentials[f.key].trim()) creds[f.key] = b.credentials[f.key].trim();
