@@ -75,6 +75,30 @@ export function polyAuthError(status, body = {}, text = '', authUrl = '') {
   return `Poly Lens auth failed (HTTP ${status}${said ? `, Poly says "${said}"` : ''}). ${fix}`;
 }
 
+/** Poly documents { access_token, token_type, expires_in }; accept common variants too. */
+export function tokenFrom(body) {
+  if (!body || typeof body !== 'object') return null;
+  for (const b of [body, body.data, body.result]) {
+    const t = b && (b.access_token || b.accessToken || b.token);
+    if (typeof t === 'string' && t.trim()) return t.trim();
+  }
+  return null;
+}
+
+/** Explains a 2xx token reply with no token, without echoing any secret values. */
+export function polyNoTokenError(res, body, text, authUrl) {
+  const ct = (res.headers?.get?.('content-type') || '').split(';')[0].trim() || 'unknown';
+  const isHtml = /html/i.test(ct) || /^\s*</.test(text || '');
+  const keys = body && typeof body === 'object' ? Object.keys(body).slice(0, 10) : [];
+  const said = body?.error_description || body?.error || body?.message;
+  let what;
+  if (isHtml) what = 'it returned a web page, not a token. The Token URL is pointing at a sign-in or web page instead of the token endpoint';
+  else if (!text) what = 'the reply was empty';
+  else if (keys.length) what = `the reply had the fields ${keys.join(', ')}${said ? ` and said "${String(said).slice(0, 160)}"` : ''}`;
+  else what = 'the reply was not JSON';
+  return `Poly Lens did not return an access token from ${authUrl} (HTTP ${res.status}, ${ct}): ${what}. Clear the Token URL field so it uses the default https://login.silica-prod01.io.lens.poly.com/oauth/token, save, and test again.`;
+}
+
 /** A setting that must be an https URL; anything else falls back to the default. */
 export function safeUrl(value, fallback) {
   try { const u = new URL(String(value || '').trim()); return u.protocol === 'https:' ? u.toString().replace(/\/$/, '') : fallback; } catch { return fallback; }
@@ -108,8 +132,10 @@ export class PolyLensHttpTransport {
     let body = {};
     try { body = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
     if (!res.ok) throw new Error(polyAuthError(res.status, body, text, this.authUrl));
-    if (!body.access_token) throw new Error('Poly Lens token response had no access_token. Check the Token URL.');
-    this.token = body.access_token;
+    const token = tokenFrom(body);
+    if (!token) throw new Error(polyNoTokenError(res, body, text, this.authUrl));
+    this.token = token;
+    body.expires_in = body.expires_in ?? body.expiresIn ?? body.data?.expires_in;
     this.tokenExpires = Date.now() + (body.expires_in ?? 3600) * 1000;
     return this.token;
   }

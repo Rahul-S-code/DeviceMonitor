@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { PolyLensConnector, PolyLensHttpTransport, POLY_DEFAULTS, polyAuthError, safeUrl } from '../server/connectors/poly-lens/index.js';
+import { PolyLensConnector, PolyLensHttpTransport, POLY_DEFAULTS, polyAuthError, safeUrl, tokenFrom } from '../server/connectors/poly-lens/index.js';
 import { PolyLensMockTransport } from '../server/connectors/poly-lens/mock.js';
 import { LogitechSyncConnector } from '../server/connectors/logitech-sync/index.js';
 import { CONNECTORS } from '../server/connectors/registry.js';
@@ -161,4 +161,17 @@ test('Poly Lens ignores a Token URL that is not an https URL', () => {
   assert.equal(safeUrl(' https://login.silica-prod01.io.lens.poly.com/oauth/token ', 'x'), POLY_DEFAULTS.authUrl);
   const c = new PolyLensConnector({ connection: conn('poly-lens', { mode: 'live', settings: { authUrl: 'someone@example.com' } }), credentials: { clientId: 'a', clientSecret: 'b' } });
   assert.equal(c.transport.authUrl, POLY_DEFAULTS.authUrl);
+});
+
+test('Poly Lens token: accepts documented and variant shapes, explains an HTML reply', async () => {
+  assert.equal(tokenFrom({ access_token: 'a', token_type: 'Bearer', expires_in: 86400 }), 'a');
+  assert.equal(tokenFrom({ accessToken: 'b' }), 'b');
+  assert.equal(tokenFrom({ data: { access_token: 'c' } }), 'c');
+  assert.equal(tokenFrom({}), null);
+  const html = async () => ({ ok: true, status: 200, headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }), text: async () => '<!doctype html><html>Sign in</html>' });
+  const t = new PolyLensHttpTransport({ clientId: 'a', clientSecret: 'b', ...POLY_DEFAULTS, fetchImpl: html });
+  await assert.rejects(() => t.getToken(), (e) => /text\/html/.test(e.message) && /web page/.test(e.message) && !/Sign in/.test(e.message));
+  const odd = async () => ({ ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }), text: async () => JSON.stringify({ id_token: 'SECRET', scope: 'x' }) });
+  const t2 = new PolyLensHttpTransport({ clientId: 'a', clientSecret: 'b', ...POLY_DEFAULTS, fetchImpl: odd });
+  await assert.rejects(() => t2.getToken(), (e) => /id_token, scope/.test(e.message) && !/SECRET/.test(e.message));
 });
