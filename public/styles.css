@@ -580,3 +580,7 @@ label.chk { display: flex; gap: 8px; align-items: center; font-size: 13px; margi
   .doc-grid { grid-template-columns: 1fr; }
 }
 .doc-sec a { overflow-wrap: anywhere; }
+
+/* Masked secret fields without type=password, so password managers leave them alone. */
+.secret-input { -webkit-text-security: disc; text-security: disc; font-family: monospace; letter-spacing: 1px; }
+.secret-input::placeholder { font-family: inherit; letter-spacing: normal; }

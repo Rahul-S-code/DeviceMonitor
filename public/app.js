@@ -907,10 +907,22 @@ function connCard(c) {
 
 // Keeps browsers and password managers from filling connection fields
 // (autofill once put a sign-in email into the Poly Lens Token URL).
-const NO_AUTOFILL = 'autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"';
+const NO_AUTOFILL = 'autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" readonly data-noauto="1"';
+// Browsers (Edge especially) fill password fields and the text field before them
+// on Save, which overwrote the Poly Lens Client ID and Token URL. So: no
+// type=password (masked with CSS instead), fields readonly until focused, and
+// only values the person actually typed or pasted are sent.
+function guardAutofill(w) {
+  w.querySelectorAll('[data-noauto]').forEach((i) => {
+    i.addEventListener('focus', () => { if (!i.dataset.touched && i.value !== i.defaultValue) i.value = i.defaultValue; i.removeAttribute('readonly'); });
+    i.addEventListener('blur', () => i.setAttribute('readonly', ''));
+    for (const ev of ['keydown', 'paste', 'cut', 'drop']) i.addEventListener(ev, () => { i.dataset.touched = '1'; });
+  });
+}
 const isUrlSetting = (f) => f.type === 'url' || /Url$/.test(f.key);
 function urlSettingError(w) {
   for (const i of w.querySelectorAll('[data-url]')) {
+    if (!i.dataset.touched) continue;
     const v = i.value.trim();
     if (!v) continue;
     let ok = false; try { ok = new URL(v).protocol === 'https:' && !v.includes('@'); } catch { /* invalid */ }
@@ -944,7 +956,7 @@ function openConnection(conn, preset = {}) {
       <div id="connMsg"></div>
       ${creating ? `<div class="field"><label>Customer</label><select id="cCust">${S.customers.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div>
         <div class="field"><label>Source</label><select id="cOem">${['oem', 'platform'].map((k) => `<optgroup label="${k === 'oem' ? 'Manufacturer clouds' : 'Meeting-platform portals'}">${S.connectors.filter((x) => x.kind === k).map((x) => `<option value="${x.oem}" ${x.oem === oem ? 'selected' : ''}>${esc(x.displayName)}</option>`).join('')}</optgroup>`).join('')}</select></div>` : ''}
-      <div class="field"><label>Connection name</label><input id="cName" value="${esc(conn?.name || '')}" placeholder="e.g. Helix Financial · ${esc(C.displayName)}"></div>
+      <div class="field"><label>Connection name</label><input id="cName" type="text" autocomplete="off" ${NO_AUTOFILL} name="em-name-${Math.random().toString(36).slice(2, 8)}" value="${esc(conn?.name || '')}" placeholder="e.g. Helix Financial · ${esc(C.displayName)}"></div>
       <div class="field"><label>Data source</label><div class="seg" id="cMode"><button data-m="mock" class="${mode === 'mock' ? 'on' : ''}">Mock data</button><button data-m="live" class="${mode === 'live' ? 'on' : ''}" ${C.liveSupported === false ? 'disabled title="No public API available"' : ''}>Live API</button></div>
         <div class="help">${mode === 'mock' ? 'Uses built-in sample data in the same format as the real API. No keys needed.' : `Calls the real ${esc(C.displayName)} API with the credentials below.`}</div></div>
       ${C.liveSupported === false ? `<div class="notice info">${esc(C.liveNote)}</div>` : `<div class="section-title">How to get credentials</div>
@@ -958,18 +970,20 @@ function openConnection(conn, preset = {}) {
     const stored = conn?.credentials?.[f.key];
     const ph = stored ? 'Stored. Leave blank to keep the current value.' : '';
     return `<div class="field"><label for="k_${f.key}">${esc(f.label)}${f.required ? ' *' : ''} ${stored ? '<span class="stored">✓ stored</span>' : ''}</label>
-          ${f.multiline ? `<textarea id="k_${f.key}" data-cred="${f.key}" autocomplete="off" ${NO_AUTOFILL} placeholder="${esc(ph || '-----BEGIN ...-----')}" spellcheck="false"></textarea>` : `<input id="k_${f.key}" data-cred="${f.key}" type="password" autocomplete="new-password" ${NO_AUTOFILL} name="em-key-${f.key}-${Math.random().toString(36).slice(2, 8)}" placeholder="${esc(ph)}">`}
+          ${f.multiline ? `<textarea id="k_${f.key}" data-cred="${f.key}" autocomplete="off" ${NO_AUTOFILL} placeholder="${esc(ph || '-----BEGIN ...-----')}" spellcheck="false"></textarea>` : `<input id="k_${f.key}" data-cred="${f.key}" type="text" class="secret-input" autocomplete="off" ${NO_AUTOFILL} name="em-key-${f.key}-${Math.random().toString(36).slice(2, 8)}" placeholder="${esc(ph)}">`}
           ${f.help ? `<div class="help">${esc(f.help)}</div>` : ''}</div>`;
   }).join('')}`;
     const foot = `${!creating ? '<button class="btn btn-danger" id="cDel" style="margin-right:auto">Remove</button>' : ''}
       ${!creating ? '<button class="btn btn-outline" id="cTest">Test connection</button>' : ''}
       <button class="btn btn-primary" id="cSave">${creating ? 'Create connection' : 'Save'}</button>`;
     const w = drawer(creating ? 'Add OEM connection' : conn.name, creating ? 'Connect a manufacturer cloud to a customer' : `${esc(C.displayName)} · ${esc(conn.customerName)}`, body, foot);
+    guardAutofill(w);
     const collect = () => ({
-      name: $('#cName', w).value.trim() || undefined,
+      name: ($('#cName', w).dataset.touched && $('#cName', w).value.trim()) || undefined,
       mode,
-      settings: Object.fromEntries([...w.querySelectorAll('[data-setting]')].map((i) => [i.dataset.setting, i.value])),
-      credentials: Object.fromEntries([...w.querySelectorAll('[data-cred]')].map((i) => [i.dataset.cred, i.value]).filter(([, v]) => v.trim())),
+      // Untouched settings keep their saved value, whatever the browser put in the box.
+      settings: Object.fromEntries([...w.querySelectorAll('[data-setting]')].map((i) => [i.dataset.setting, i.dataset.touched ? i.value : (conn?.settings?.[i.dataset.setting] ?? '')])),
+      credentials: Object.fromEntries([...w.querySelectorAll('[data-cred]')].filter((i) => i.dataset.touched).map((i) => [i.dataset.cred, i.value]).filter(([, v]) => v.trim())),
     });
     const msg = (kind, text) => { $('#connMsg', w).innerHTML = `<div class="notice ${kind}">${esc(text)}</div>`; w.querySelector('.drawer-body').scrollTop = 0; };
     $('#cOem', w)?.addEventListener('change', (e) => { oem = e.target.value; render(); });
@@ -977,9 +991,9 @@ function openConnection(conn, preset = {}) {
       // Preserve typed values across re-render.
       const keep = collect();
       mode = b.dataset.m; render();
-      for (const [k, v] of Object.entries(keep.settings)) { const i = document.querySelector(`[data-setting="${k}"]`); if (i) i.value = v; }
-      for (const [k, v] of Object.entries(keep.credentials)) { const i = document.querySelector(`[data-cred="${k}"]`); if (i) i.value = v; }
-      if (keep.name) $('#cName').value = keep.name;
+      for (const [k, v] of Object.entries(keep.settings)) { const i = document.querySelector(`[data-setting="${k}"]`); if (i && v !== (conn?.settings?.[k] ?? '')) { i.value = v; i.dataset.touched = '1'; } }
+      for (const [k, v] of Object.entries(keep.credentials)) { const i = document.querySelector(`[data-cred="${k}"]`); if (i) { i.value = v; i.dataset.touched = '1'; } }
+      if (keep.name) { $('#cName').value = keep.name; $('#cName').dataset.touched = '1'; }
     }));
     $('#cTest', w)?.addEventListener('click', async (e) => {
       const bad = urlSettingError(w); if (bad) return msg('err', bad);
