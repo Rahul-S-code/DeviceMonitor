@@ -31,6 +31,15 @@ const TEAMS_CODE = { critical: 'EM-SW-001', nonUrgent: 'EM-SW-002', offline: 'EM
 export class TeamsRoomsConnector extends BaseConnector {
   static oem = 'teams-rooms';
   static displayName = 'Teams Rooms';
+  static short = 'TR';
+  static guide = {
+    summary: "Microsoft Teams Rooms on Windows and Android.",
+    needs: [
+      "Nothing: demo data only"
+    ],
+    health: "Demo data only. Teams Rooms hardware is monitored live through its maker's cloud (Poly Lens, Logitech Sync, Yealink, Neat).",
+    location: "Demo rooms."
+  };
   static make = 'Microsoft';
   static kind = 'platform';
   static platform = 'Microsoft Teams';

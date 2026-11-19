@@ -10,9 +10,10 @@
 // available (Poly Lens for a Poly device), fills gaps from other sources, and
 // takes the most severe health so a problem seen by any source is not hidden.
 import { normaliseSerial, normaliseMac, HEALTH_RANK } from '../lib/device-model.js';
-import { getConnectorClass } from '../connectors/registry.js';
+import { getConnectorClass, CONNECTORS } from '../connectors/registry.js';
 
-const OEM_MAKE = { 'poly-lens': 'Poly', 'logitech-sync': 'Logitech' };
+// The manufacturer each OEM cloud speaks for: its record wins when sources merge.
+const OEM_MAKE = Object.fromEntries(CONNECTORS.filter((C) => C.kind === 'oem' && C.oem !== 'domotz').map((C) => [C.oem, C.make]));
 
 function modelKey(m) {
   return String(m || '').toLowerCase().replace(/^(poly|logitech|logi)\s+/, '').replace(/[^a-z0-9]/g, '');

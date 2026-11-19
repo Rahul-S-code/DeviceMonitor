@@ -18,6 +18,15 @@ import { platformRooms, simulatedState } from '../../mock/estate.js';
 export class GoogleMeetConnector extends BaseConnector {
   static oem = 'google-meet-hardware';
   static displayName = 'Google Meet hardware';
+  static short = 'GM';
+  static guide = {
+    summary: "Google Meet hardware (Series One and certified Logitech, Poly and ASUS kits).",
+    needs: [
+      "Nothing: demo data only"
+    ],
+    health: "Demo data only. Meet hardware is monitored live through its maker's cloud.",
+    location: "Demo rooms."
+  };
   static make = 'Google';
   static kind = 'platform';
   static platform = 'Google Meet';

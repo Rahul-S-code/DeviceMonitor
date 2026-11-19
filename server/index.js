@@ -15,6 +15,7 @@ import { SyncService } from './services/sync.js';
 import { History, slaReport, WINDOWS } from './services/history.js';
 import { CONNECTORS, getConnectorClass, createConnector } from './connectors/registry.js';
 import { PLATFORMS } from './lib/device-model.js';
+import { csvObjects, toCsv } from './lib/csv.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -58,6 +59,8 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
+  // CSV imports can be larger than other requests; body-parser skips a body already parsed.
+  app.use('/api/manual-devices/import', express.json({ limit: '2mb' }));
   app.use(express.json({ limit: '256kb' }));
   app.use((req, res, next) => {
     res.set({
@@ -154,7 +157,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const C = getConnectorClass(src.oem);
     const conn = store.connections.find((c) => c.id === src.connectionId);
     return {
-      oem: C.oem, displayName: C.displayName, kind: C.kind, apiSet: C.kind === 'platform' ? 'Meeting platform API' : 'OEM device cloud API',
+      oem: C.oem, displayName: C.displayName, kind: C.kind, apiSet: C.apiSetLabel || (C.kind === 'platform' ? 'Meeting platform API' : 'OEM device cloud API'),
       connectionId: src.connectionId, connectionName: conn?.name || null, mode: conn?.mode || null,
       actions: conn ? C.actions.filter((a) => C.actionApplies(a, d, src)) : [],
       note: !conn ? 'The connection that reported this device has been removed.' : C.actions.length ? (C.actions.some((a) => C.actionApplies(a, d, src)) ? null : `${C.displayName} actions don't apply to this device.`) : C.actionsNote,
@@ -261,6 +264,43 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       audit(req, 'device.manual_add', { customerId: d.customerId, target: manualLabel(d), details: { serial: d.serial, mac: d.mac } });
       res.status(201).json(inventory.devices.find((x) => x.manualId === d.id || x.id === d.id) || d);
     } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  // Bulk add from CSV: download the template, preview (commit=false), then import (commit=true).
+  const BULK_COLUMNS = ['customer', 'site', 'room', 'make', 'model', 'device_type', 'serial', 'mac', 'firmware', 'platform', 'asset_tag', 'warranty_end', 'warranty_type', 'notes'];
+  const MAX_IMPORT_ROWS = 2000;
+  app.get('/api/manual-devices/template.csv', requireAdmin, (req, res) => {
+    const custs = store.customers.filter((c) => inScope(req, c.id));
+    const models = [...store.models].sort((a, b) => `${a.make}${a.model}`.localeCompare(`${b.make}${b.model}`));
+    const ex = (i) => models[i % Math.max(models.length, 1)];
+    const rows = [BULK_COLUMNS];
+    if (models.length) {
+      rows.push([custs[0]?.name || '', 'London HQ', 'Atlas 4.01', ex(0).make, ex(0).model, '', 'SERIAL001', '00:11:22:33:44:55', ex(0).baseline || '', 'Microsoft Teams', 'ASSET-0001', '2028-03-31', 'Standard', 'Example row: delete before importing']);
+    }
+    rows.push([]);
+    rows.push(['# Allowed make and model pairs (from the model master). Delete these lines before importing.']);
+    for (const m of models) rows.push(['#', '', '', m.make, m.model, m.deviceType]);
+    res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="estate-monitor-devices-template.csv"' });
+    res.send(toCsv(rows));
+  });
+  app.post('/api/manual-devices/import', requireAdmin, requireJson, (req, res) => {
+    const { csv, customerId = null, commit = false, allowUnlisted = false } = req.body || {};
+    if (typeof csv !== 'string' || !csv.trim()) return res.status(400).json({ error: 'Choose a CSV file' });
+    if (customerId && !inScope(req, customerId)) return res.status(400).json({ error: 'Pick a customer' });
+    let parsed;
+    try { parsed = csvObjects(csv); } catch (e) { return res.status(400).json({ error: e.message }); }
+    const missing = ['site', 'room', 'make', 'model'].filter((c) => !parsed.headers.includes(c));
+    if (missing.length) return res.status(400).json({ error: `The CSV needs a header row with these columns: ${missing.join(', ')}. Download the template to start from.` });
+    const records = parsed.records.filter((r) => !String(r.values[parsed.headers[0]] || '').startsWith('#'));
+    if (!records.length) return res.status(400).json({ error: 'The CSV has no device rows' });
+    if (records.length > MAX_IMPORT_ROWS) return res.status(400).json({ error: `Up to ${MAX_IMPORT_ROWS} rows per file. Split the file and import each part.` });
+    const out = store.importManualDevices(records, { customerIds: scope(req), defaultCustomerId: customerId, commit: !!commit, allowUnlisted: !!allowUnlisted, by: req.user.email });
+    if (commit && out.added.length) {
+      sync.refresh();
+      const byCust = new Map();
+      for (const d of out.added) byCust.set(d.customerId, (byCust.get(d.customerId) || 0) + 1);
+      for (const [cid, n] of byCust) audit(req, 'device.bulk_import', { customerId: cid, target: `${n} devices from CSV`, details: { rows: out.rows.length, added: n, skipped: out.invalid } });
+    }
+    res.json({ rows: out.rows, valid: out.valid, invalid: out.invalid, added: commit ? out.added.length : 0, committed: !!commit });
   });
   app.put('/api/manual-devices/:id', requireAdmin, requireJson, (req, res) => {
     const cur = manualOf(req);

@@ -99,6 +99,17 @@ export class PolyLensHttpTransport {
 export class PolyLensConnector extends BaseConnector {
   static oem = 'poly-lens';
   static displayName = 'Poly Lens';
+  static short = 'PL';
+  static guide = {
+    summary: "Poly Lens is HP Poly's device cloud for Studio video bars, G7500, TC8/TC10 controllers, Trio and CCX phones.",
+    needs: [
+      "A Poly Lens tenant admin account",
+      "An API credential (client ID and secret) from Integrations > API Credentials"
+    ],
+    health: "Poly Lens reports connected or disconnected. Firmware older than the newest in your estate (or the approved baseline) shows amber.",
+    location: "Poly Lens sites become sites and rooms become rooms. The meeting platform comes from the device's active application."
+  };
+  static setupSteps = ["Sign in to Poly Lens as a tenant admin.", "Open Integrations › API Credentials and create a new credential.", "Copy the client ID and client secret (the secret is shown once).", "Paste them below, press Test connection, then switch to Live and save."];
   static make = 'Poly';
   static nativeHealth = false;
   static docsUrl = 'https://lensapidocsdev.z19.web.core.windows.net/docs/graphql/how-to-get-started';

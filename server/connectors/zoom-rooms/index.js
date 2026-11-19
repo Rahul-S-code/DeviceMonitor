@@ -74,6 +74,16 @@ export class ZoomHttpTransport {
 export class ZoomRoomsConnector extends BaseConnector {
   static oem = 'zoom-rooms';
   static displayName = 'Zoom Rooms';
+  static short = 'ZR';
+  static guide = {
+    summary: "The Zoom Rooms API lists every Zoom Room and the devices in it (controller, scheduling display, room PC or appliance).",
+    needs: [
+      "A Server-to-Server OAuth app in the Zoom App Marketplace",
+      "Scope room:read:admin (room:write:admin for restart)"
+    ],
+    health: "Zoom reports online or offline only.",
+    location: "Zoom Room locations give the site; the Zoom Room name is the room."
+  };
   static make = 'Zoom';
   static kind = 'platform';
   static platform = 'Zoom';

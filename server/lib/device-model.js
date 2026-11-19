@@ -78,17 +78,23 @@ export function normalisePlatform(name) {
 // Model-name → device type catalogue. Neither OEM API returns a device
 // category field, so we classify by product name.
 const TYPE_RULES = [
-  [/tap|tc8|tc10|controller/i, 'Touch controller'],
+  [/signage|xt\d{3,4}|xd\d{3,4}|hd\d{3,4}|ls\d{3,4}|media player/i, 'Signage player'],
+  [/switch\b|m4250|m4300|m4350|network switch/i, 'Network switch'],
+  [/tesira|forte|core nano|core \d{2,3}|intellimix|p300|dsp|audio processor/i, 'Audio DSP'],
+  [/mxa\d|tcm|parl[eé]|ceiling mic|microphone/i, 'Microphone'],
+  [/nv-\d+|encoder|decoder|video switcher|hd-md|dm-nvx|switcher/i, 'AV switcher'],
+  [/\bcp[34]n?\b|rmc\d|control system|processor/i, 'Control processor'],
+  [/tap|tc8|tc10|controller|tsw-|ts-\d|touchpanel|touch panel|neat pad|ctp\d|roompanel|room panel/i, 'Touch controller'],
   [/scribe/i, 'Whiteboard camera'],
   [/spot|sensor/i, 'Room sensor'],
-  [/sight|e70|e60|eagleeye|camera|brio/i, 'Camera'],
-  [/rally bar|studio x|meetup|roommate|studio r30|studio a2|studio usb|^poly studio$|video bar/i, 'Video bar'],
+  [/sight|e70|e60|eagleeye|camera|brio|ptz/i, 'Camera'],
+  [/rally bar|studio x|meetup|roommate|studio r30|studio a2|studio usb|^poly studio$|video bar|meetingbar|neat bar/i, 'Video bar'],
   [/g7500|codec|rally$|^rally\b(?! bar)/i, 'Video system'],
-  [/trio|conference phone|c60/i, 'Conference phone'],
+  [/trio|conference phone|c60|cp9\d\d/i, 'Conference phone'],
   [/ccx|vvx|desk phone/i, 'Desk phone'],
   [/dock/i, 'Desk dock'],
   [/voyager|zone|headset/i, 'Headset'],
-  [/tv|display|board/i, 'Display'],
+  [/tv|display|board|bravia/i, 'Display'],
   [/desktop-|nuc|pc|computer|thinksmart core|room kit core/i, 'Room PC'],
 ];
 

@@ -9,6 +9,12 @@ export class BaseConnector {
   static oem = 'base';
   /** Name shown in the UI. */
   static displayName = 'Base';
+  /** Two-letter badge shown beside devices and connections. */
+  static short = '?';
+  /** Product documentation shown on the Documentation page: summary, needs[], health, location. */
+  static guide = null;
+  /** Overrides the "OEM device cloud API" label on device actions (e.g. a network monitor). */
+  static apiSetLabel = '';
   /** Manufacturer name written to device.make. */
   static make = 'Unknown';
   /** Link to the official API documentation the connector was built from. */
@@ -119,6 +125,8 @@ export class BaseConnector {
     return {
       oem: this.oem,
       displayName: this.displayName,
+      short: this.short,
+      guide: this.guide,
       make: this.make,
       docsUrl: this.docsUrl,
       kind: this.kind,
@@ -127,6 +135,7 @@ export class BaseConnector {
       setupSteps: this.setupSteps,
       actions: this.actions,
       actionsNote: this.actionsNote,
+      apis: this.apis.map(({ id, name, method, url, purpose, auth, availability }) => ({ id, name, method, url, purpose, auth, availability })),
       settingFields: this.settingFields,
       credentialFields: this.credentialFields.map(({ key, label, multiline, required, help }) => ({ key, label, multiline, required, help })),
     };

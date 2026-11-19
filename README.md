@@ -92,7 +92,26 @@ Actions are confirmed with a second click, limited to one per device per minute,
 
 ## Adding devices by hand
 
-Admins can add devices that no API reports (Devices › **+ Add device**, or **+ Add device** on a room page). Make and model are picked from the model master; for kit the master doesn't list, choose **Other** and type the manufacturer, model and device type. Devices with no API connector for their model (including everything entered under Other) are tagged **Not monitored**, and typed-in models appear on the Models tab for the super admin to catalogue. All manual devices show health **Not monitored**: they count in the inventory, lifecycle and warranty views but not in health alerts or SLA. If a connected API later reports the same serial number or MAC address, the records merge: live health and the OEM's location take over, and the asset tag, notes and warranty you entered are kept. Bulk upload from a CSV or Excel template is planned next.
+Admins can add devices that no API reports (Devices › **+ Add device**, or **+ Add device** on a room page). Make and model are picked from the model master; for kit the master doesn't list, choose **Other** and type the manufacturer, model and device type. Devices with no API connector for their model (including everything entered under Other) are tagged **Not monitored**, and typed-in models appear on the Models tab for the super admin to catalogue. All manual devices show health **Not monitored**: they count in the inventory, lifecycle and warranty views but not in health alerts or SLA. If a connected API later reports the same serial number or MAC address, the records merge: live health and the OEM's location take over, and the asset tag, notes and warranty you entered are kept. 
+
+**Bulk add from CSV**: Devices › **Bulk add (CSV)**. Download the template (columns `customer, site, room, make, model, device_type, serial, mac, firmware, platform, asset_tag, warranty_end, warranty_type, notes`, plus every make and model in the model master as `#` comment lines), fill it, and choose the file. The preview checks every row with the same rules as a single add (required fields, model master match, MAC and date formats, serials already used for that customer or earlier in the file) and shows each row's error. **Import** adds the valid rows and skips the rest; the import is audited. Up to 2,000 rows and 2 MB per file. Make and model must be in the model master unless "Allow models that are not in the model master" is ticked.
+
+## AV and network connectors
+
+| Connector | Live API | Auth | Data | Actions |
+| --- | --- | --- | --- | --- |
+| Yealink YMCS | Yes | AccessKey ID/Secret → `POST /v2/token` (Basic), Bearer, `timestamp` + `nonce` headers | `POST /v2/dm/listDevices`, `listSites`, `listAlarms`, `GET /v2/dm/models` | Reboot (`POST /v2/dm/device/reboot`) |
+| Neat Pulse | Yes | Bearer API key + org ID | `GET /v1/orgs/{orgId}/endpoints`, `rooms`, `locations`, `endpoints/apps` | Reboot |
+| Crestron XiO Cloud | Yes | `XiO-subscription-key` header + account ID | `GET /v2/device/accountid/{id}/pageno/{n}/pagesize/{s}/status`, `GET /v1/group/accountid/{id}/groups` | None (read-only API) |
+| Q-SYS Reflect | Yes | Bearer API token (US, EMEA or APAC server) | `GET /systems`, `GET /systems/{id}/items` | None (read-only API) |
+| Domotz | Yes | `X-Api-Key` + regional endpoint | `GET /agent`, `GET /agent/{id}/device` | Software reboot, PoE/PDU power cycle |
+| BrightSign BSN.cloud | Yes | Client credentials token, `PUT /Self/Session/Network` | `GET /2022/06/REST/Devices/` (marker paging) | None yet |
+| Sony BRAVIA Cloud | Yes | API key + access key | `GET /devices`, `GET /devices/{id}/online-status` | Reboot, screen on/off |
+| Biamp Workplace | Demo only | GraphQL needs a user sign-in (OAuth PKCE); no machine credentials yet | | |
+| ShureCloud | Demo only | CloudAPI is in private beta | | |
+| NETGEAR Insight | Demo only | No REST API (NETGEAR confirmed); monitor switches live through Domotz | | |
+
+Cisco Control Hub is the Webex admin portal and is covered by the **Cisco Control Hub (Webex)** connector. Domotz reports network-attached kit by MAC address, so it merges with the vendor record of the same device (a Sony display, a NETGEAR switch). Every connector has a demo (mock) mode returning its API's own JSON shape. The in-app **Documentation** page (Help › Documentation) has the full setup guide for each connector, built from the connectors' own metadata.
 
 ## Publish it online (Render)
 

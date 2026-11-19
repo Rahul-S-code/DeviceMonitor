@@ -71,6 +71,17 @@ export class LogitechSyncHttpTransport {
 export class LogitechSyncConnector extends BaseConnector {
   static oem = 'logitech-sync';
   static displayName = 'Logitech Sync';
+  static short = 'LS';
+  static guide = {
+    summary: "Logitech Sync covers Rally, Rally Bar, Tap, Scribe, Sight and the room PC, plus third-party USB peripherals plugged into it.",
+    needs: [
+      "A Select, Essential or Sync Plus licence",
+      "A Sync Cloud API certificate (certificate.pem and privateKey.pem) and the Organization ID"
+    ],
+    health: "Sync's own health (no issues, warning, error) and status (online, in use, offline), with missing peripherals (camera, mic pod, hub) named.",
+    location: "The Sync group path gives region and site; the place name is the room. Sync has no meeting-platform field, so set it per room."
+  };
+  static setupSteps = ["In the Sync Portal open Settings › Sync Cloud API (needs a Select, Essential or Sync Plus licence).", "Copy the Organization ID and the API Server shown there.", "Generate a certificate and download certificate.pem and privateKey.pem.", "Paste both PEM files below, press Test connection, then switch to Live and save."];
   static make = 'Logitech';
   static nativeHealth = true;
   static docsUrl = 'https://hub.sync.logitech.com/syncguides/post/1-8-getting-started---api-quick-start-guide-QOU16rRoLmzBP9F';

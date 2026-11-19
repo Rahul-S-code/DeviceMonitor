@@ -7,6 +7,8 @@ import crypto from 'node:crypto';
 import { MOCK_CUSTOMERS, buildEstate, registerMockCustomer, unregisterMockCustomer, demoModels } from '../mock/estate.js';
 import { modelKey, cleanModel, cleanRelease, sortReleases } from './models.js';
 import { classifyDeviceType } from './device-model.js';
+import { avDemoModels } from '../mock/av-estate.js';
+import { CONNECTORS, AV_DEMO_OEMS } from '../connectors/registry.js';
 import { hashPassword } from './auth.js';
 
 const EMPTY = {
@@ -18,7 +20,7 @@ const MAX_AUDIT = 5000;
 export const DEFAULT_SLA_TARGET = 99.5;
 // Platform-side connections the demo customers get, by meeting platform.
 const PLATFORM_OEM = { 'Microsoft Teams': 'teams-rooms', Zoom: 'zoom-rooms', 'Cisco Webex': 'webex-control-hub', 'Google Meet': 'google-meet-hardware' };
-const OEM_LABEL = { 'poly-lens': 'Poly Lens', 'logitech-sync': 'Logitech Sync', 'teams-rooms': 'Teams Rooms', 'zoom-rooms': 'Zoom Rooms', 'webex-control-hub': 'Webex Control Hub', 'google-meet-hardware': 'Google Meet hardware' };
+const OEM_LABEL = Object.fromEntries(CONNECTORS.map((C) => [C.oem, C.displayName]));
 
 export const roomKey = (customerId, site, room) => `${customerId}|${site}|${room}`;
 
@@ -206,7 +208,24 @@ export class Store {
       m.releases = d.versions.map((v) => ({ version: v, releasedAt: null, notesUrl: null, notes: null, source: 'fleet', firstSeenAt: now, addedAt: now }));
       this.models.push(m);
     }
+    this.seedAvModels();
     return true;
+  }
+
+  /** Demo catalogue entries for the AV and network kit (added once, with the AV demo connections). */
+  seedAvModels() {
+    const now = new Date().toISOString();
+    for (const d of avDemoModels()) {
+      if (this.findModel(d.make, d.model)) continue;
+      const m = cleanModel({ make: d.make, model: d.model, deviceType: classifyDeviceType(d.model), monitoredBy: d.monitoredBy, baseline: d.versions[0], notes: 'Demo entry: baseline set to the newest mock firmware.' });
+      m.releases = d.versions.map((v) => ({ version: v, releasedAt: null, notesUrl: null, notes: null, source: 'fleet', firstSeenAt: now, addedAt: now }));
+      this.models.push(m);
+    }
+  }
+
+  /** Demo connections for the AV and network sources (Yealink, Neat, Crestron, Q-SYS, Domotz...). */
+  addAvConnections(c) {
+    for (const oem of AV_DEMO_OEMS) if (!this.connections.some((x) => x.customerId === c.id && x.oem === oem)) this.addMockConnection(c, oem);
   }
 
   // --- devices added by hand (kit with no API, or not yet connected) ------
@@ -263,6 +282,48 @@ export class Store {
     this.manualDevices.push(d);
     this.save();
     return d;
+  }
+
+  /**
+   * Bulk import from CSV records (see BULK_COLUMNS). Each row is checked with
+   * the same rules as a single manual add, and against the rows before it.
+   * Without commit nothing is saved: the result is the preview.
+   */
+  importManualDevices(records, { customerIds, defaultCustomerId = null, commit = false, allowUnlisted = false, by = null }) {
+    const allowed = this.customers.filter((c) => customerIds.includes(c.id));
+    const results = [];
+    const added = [];
+    const start = this.manualDevices.length;
+    for (const { line, values: v } of records) {
+      const r = { line, customer: v.customer || null, site: v.site, room: v.room, make: v.make, model: v.model, serial: v.serial || null, ok: false };
+      try {
+        let cust = defaultCustomerId ? allowed.find((c) => c.id === defaultCustomerId) : null;
+        if (v.customer) {
+          cust = allowed.find((c) => c.id === v.customer || c.name.toLowerCase() === v.customer.toLowerCase());
+          if (!cust) throw new Error(`Customer "${v.customer}" not found`);
+        }
+        if (!cust) throw new Error('No customer: pick one above, or fill the customer column');
+        if (!v.make || !v.model) throw new Error('Make and model are required');
+        const model = this.findModel(v.make, v.model);
+        if (!model && !allowUnlisted) throw new Error(`${v.make} ${v.model} is not in the model master. Add it under Models, or allow unlisted models`);
+        const d = this.cleanManualDevice({
+          customerId: cust.id, site: v.site, room: v.room,
+          ...(model ? { modelId: model.id } : { make: v.make, model: v.model, deviceType: v.devicetype || v.type }),
+          serial: v.serial, mac: v.mac, firmware: v.firmware, platform: v.platform, assetTag: v.assettag,
+          warrantyExpires: v.warrantyend || v.warrantyexpires, warrantyType: v.warrantytype, notes: v.notes, createdBy: by,
+        });
+        // Held in the list so later rows see it (duplicate serials within the file).
+        this.manualDevices.push(d);
+        added.push(d);
+        Object.assign(r, { ok: true, customer: cust.name, make: model?.make ?? d.make, model: model?.model ?? d.model, deviceType: model?.deviceType ?? d.deviceType, linked: !!model });
+      } catch (e) {
+        r.error = e.message;
+      }
+      results.push(r);
+    }
+    if (commit && added.length) this.save();
+    else this.manualDevices.splice(start);
+    return { rows: results, valid: added.length, invalid: results.length - added.length, added: commit ? added : [] };
   }
 
   updateManualDevice(id, input) {
@@ -390,10 +451,12 @@ export class Store {
         if (r.oem !== 'poly') this.data.roomDirectory[roomKey(c.id, r.site, r.room)] = r.platform;
       }
       for (const oem of ['poly-lens', 'logitech-sync']) this.addMockConnection(c, oem);
+      this.addAvConnections(c);
       this.addPlatformConnections(c);
     }
     this.seedModels();
     this.data.phase3 = true;
+    this.data.phase5 = true;
     const pw = hashPassword(demoPassword);
     this.users.push({ id: 'u-admin', email: 'admin@provider.example', name: 'Service Desk Admin', role: 'provider_admin', customerId: null, password: pw });
     for (const c of MOCK_CUSTOMERS) {
@@ -439,6 +502,17 @@ export class Store {
         if (c) this.addPlatformConnections({ ...c, platforms: m.platforms });
       }
       this.data.phase3 = true;
+      changed = true;
+    }
+    // Phase 5: AV and network demo connections (Yealink, Neat, Crestron, Q-SYS, Biamp, Shure,
+    // BrightSign, Sony, NETGEAR, Domotz) and their models. Once only, like phase 3.
+    if (!this.data.phase5) {
+      for (const m of MOCK_CUSTOMERS) {
+        const c = this.customers.find((x) => x.id === m.id);
+        if (c) this.addAvConnections(c);
+      }
+      if (this.models.length) this.seedAvModels();
+      this.data.phase5 = true;
       changed = true;
     }
     if (changed) this.flush();

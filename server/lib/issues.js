@@ -41,6 +41,22 @@ export const ERROR_CODES = {
       'If it was reset, re-register it with a new activation code',
     ],
   },
+  'EM-NET-003': {
+    title: 'Not answering on the network',
+    area: 'Network and power',
+    meaning: 'A network monitor (such as Domotz) can no longer reach the device on the local network, although the monitor itself is online.',
+    causes: [
+      'Device switched off or lost power (check the PoE port or PDU outlet)',
+      'Network cable unplugged, or the switch port is down',
+      'The device\'s IP address changed (DHCP) and the monitor still looks at the old one',
+      'Device has hung and stopped answering',
+    ],
+    checks: [
+      'Check the device\'s power and link lights',
+      'Look up its MAC address on the switch to find the port and its current IP',
+      'Power-cycle the port or outlet from the monitor (device panel, Remote actions)',
+    ],
+  },
   'EM-PWR-001': {
     title: 'Device asleep (power saving)',
     area: 'Network and power',

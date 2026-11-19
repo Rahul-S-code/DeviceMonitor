@@ -1,3 +1,4 @@
+import { docSections } from './docs.js';
 // Estate Monitor front end. Plain ES modules, no build step.
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -6,8 +7,9 @@ const HEALTH = ['healthy', 'warning', 'critical', 'offline'];
 // Includes devices added by hand, which have no live health.
 const HEALTH_BARS = [...HEALTH, 'unmonitored'];
 const HLABEL = { healthy: 'Healthy', warning: 'Warning', critical: 'Critical', offline: 'Offline', unmonitored: 'Not monitored' };
-const OEM_SHORT = { manual: 'MN', 'poly-lens': 'PL', 'logitech-sync': 'LS', 'zoom-rooms': 'ZR', 'webex-control-hub': 'WX', 'teams-rooms': 'TR', 'google-meet-hardware': 'GM' };
-const OEM_NAME = { manual: 'Manual entry', 'poly-lens': 'Poly Lens', 'logitech-sync': 'Logitech Sync', 'zoom-rooms': 'Zoom Rooms', 'webex-control-hub': 'Webex Control Hub', 'teams-rooms': 'Teams Rooms', 'google-meet-hardware': 'Google Meet hardware' };
+// Badge and name per source, filled from /api/connectors once signed in.
+const OEM_SHORT = { manual: 'MN' };
+const OEM_NAME = { manual: 'Manual entry' };
 const FILTER_KEYS = [
   ['customer', 'Customer'], ['region', 'Region'], ['site', 'Site'], ['platform', 'Platform'],
   ['oem', 'Source'], ['deviceType', 'Device type'], ['health', 'Health'],
@@ -142,15 +144,17 @@ const NAV_ICON = {
   audit: '<path d="M4 1.5h6l3 3V14.5H4z"/><path d="M6.5 8h4M6.5 10.5h4M6.5 5.5h2"/>',
   apis: '<path d="M1.5 8h3l2-5 3 10 2-5h3"/>',
   errors: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 10.8v.4"/>',
+  docs: '<path d="M3 2.5h7l3 3v8H3z"/><path d="M10 2.5v3h3M5.5 8h5M5.5 10.5h5"/>',
 };
 const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
-const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes' };
+const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation' };
 
 function navGroups() {
   return [
     ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts']],
     ['Service', ['sla', 'lifecycle', 'errors']],
     ['Configure', ['connections', ...(isAdmin() ? ['models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['apis', 'audit'] : [])]],
+    ['Help', ['docs']],
   ];
 }
 
@@ -232,6 +236,7 @@ async function navigate() {
     else if (r.name === 'audit' && isAdmin()) await viewAudit();
     else if (r.name === 'apis' && isAdmin()) await viewApis();
     else if (r.name === 'errors') await viewErrorCodes();
+    else if (r.name === 'docs') viewDocs(r.args);
     else location.hash = '#/overview';
   } catch (e) {
     if (e.message !== 'Signed out') $('#view').innerHTML = `<div class="card"><div class="notice err">${esc(e.message)}</div></div>`;
@@ -547,7 +552,7 @@ function roomTile(r, href) {
 // ------------------------------------------------------------------ devices table
 const COLS = {
   health: ['Health', (d) => status(d.health), (d) => ['unmonitored', 'healthy', 'warning', 'offline', 'critical'].indexOf(d.health)],
-  device: ['Device', (d) => `<b>${esc(d.make)}</b> ${esc(d.model.replace(new RegExp(`^${d.make}\\s+`), ''))}${mockTag(d)}`, (d) => `${d.make} ${d.model}`],
+  device: ['Device', (d) => `<b>${esc(d.make)}</b> ${esc(shortModel(d.make, d.model))}${mockTag(d)}`, (d) => `${d.make} ${d.model}`],
   deviceType: ['Type', (d) => esc(d.deviceType), (d) => d.deviceType],
   customer: ['Customer', (d) => esc(d.customerName), (d) => d.customerName],
   site: ['Site', (d) => esc(d.site), (d) => d.site],
@@ -597,9 +602,99 @@ async function viewDevices() {
   const cols = ['health', 'device', 'deviceType', ...(isAdmin() && !acting() ? ['customer'] : []), 'site', 'room', 'platform', 'serial', 'firmware', 'warranty', 'lastSeen', 'sources'];
   const known = new Set(devices.map((d) => d.id));
   for (const id of [...S.selected]) if (!known.has(id)) S.selected.delete(id);
-  $('#view').innerHTML = `${isAdmin() ? `<div class="toolbar"><span class="muted">Tick devices to group them into a room or update them in bulk.</span><button class="btn btn-grad btn-sm" id="addDev">+ Add device</button></div>` : ''}<div class="card">${deviceTable(devices, cols, true)}</div>`;
+  $('#view').innerHTML = `${isAdmin() ? `<div class="toolbar"><span class="muted">Tick devices to group them into a room or update them in bulk.</span><span style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="bulkDev">Bulk add (CSV)</button><button class="btn btn-grad btn-sm" id="addDev">+ Add device</button></span></div>` : ''}<div class="card">${deviceTable(devices, cols, true)}</div>`;
   bindDeviceTable();
   $('#addDev')?.addEventListener('click', () => openManualDevice(null));
+  $('#bulkDev')?.addEventListener('click', () => openBulkImport());
+}
+
+// ------------------------------------------------------------------ documentation
+function viewDocs(args = []) {
+  const sections = docSections({ connectors: S.connectors, role: S.me.role, status });
+  hero('Documentation', 'How to use Estate Monitor, and how to set up each connector.');
+  $('#view').innerHTML = `<div class="docs">
+    <nav class="docs-toc card" aria-label="Contents">
+      <div class="docs-search"><input id="docQ" placeholder="Search the docs" aria-label="Search the docs"></div>
+      ${sections.map((x) => `<a href="#/docs/${x.id}" data-doc="doc-${x.id}">${esc(x.title)}</a>${x.id === 'connectors' ? `<div class="docs-sub">${S.connectors.map((c) => `<a href="#/docs/conn-${esc(c.oem)}" data-doc="doc-conn-${esc(c.oem)}">${esc(c.displayName)}</a>`).join('')}</div>` : ''}`).join('')}
+    </nav>
+    <div class="docs-body">${sections.map((x) => `<article class="card doc-sec" id="doc-${x.id}"><h2>${esc(x.title)}</h2>${x.html}</article>`).join('')}<div class="card empty" id="docNone" hidden>Nothing in the documentation matches that search.</div></div>
+  </div>`;
+  const go = (id, smooth = true) => { const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' }); };
+  // In-page links keep the URL shareable without re-rendering the page.
+  $('.docs').addEventListener('click', (e) => {
+    const a = e.target.closest('a[data-doc]');
+    if (!a) return;
+    e.preventDefault();
+    history.replaceState(null, '', a.getAttribute('href'));
+    go(a.dataset.doc);
+  });
+  $('#docQ').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll('.doc-sec').forEach((sec) => {
+      const parts = sec.querySelectorAll('.doc-conn');
+      if (parts.length) parts.forEach((p) => { p.hidden = !!q && !p.textContent.toLowerCase().includes(q); });
+      const hit = !q || sec.textContent.toLowerCase().includes(q);
+      sec.hidden = !hit; if (hit) shown++;
+    });
+    $('#docNone').hidden = shown > 0;
+  });
+  const target = args[0] ? `doc-${args[0]}` : null;
+  if (target) requestAnimationFrame(() => go(target, false));
+}
+
+// Bulk add from CSV: template, preview with per-row errors, then import the valid rows.
+function openBulkImport() {
+  let csv = null;
+  let fileName = '';
+  const custOpts = `<option value="">Use the customer column in the file</option>${S.customers.map((c) => `<option value="${esc(c.id)}" ${c.id === (acting() || '') ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}`;
+  const w = drawer('Bulk add devices', 'Import kit from a CSV file. Devices are added as manual records, like + Add device.', `
+    <ol class="steps">
+      <li><a href="/api/manual-devices/template.csv" download>Download the CSV template</a>. It lists the columns and every make and model in the model master.</li>
+      <li>Fill one row per device. <b>site</b>, <b>room</b>, <b>make</b> and <b>model</b> are required; make and model must match the model master.</li>
+      <li>Choose the file, check the preview, then import. Rows with errors are skipped.</li>
+    </ol>
+    <div class="field"><label for="bkCust">Customer</label><select id="bkCust">${custOpts}</select><div class="help">Rows with a customer column use that instead.</div></div>
+    <div class="field"><label for="bkFile">CSV file</label><input type="file" id="bkFile" accept=".csv,text/csv"><div class="help">Up to 2,000 rows and 2 MB. Save from Excel as "CSV UTF-8".</div></div>
+    <label class="chk"><input type="checkbox" id="bkOther"> Allow models that are not in the model master (added as "Other")</label>
+    <div id="bkMsg"></div><div id="bkPreview"></div>`,
+  '<button class="btn btn-outline" data-closedrawer>Cancel</button><button class="btn btn-outline" id="bkCheck" disabled>Preview</button><button class="btn btn-primary" id="bkGo" disabled>Import</button>');
+  const msg = (cls, text) => { $('#bkMsg', w).innerHTML = text ? `<div class="notice ${cls}">${esc(text)}</div>` : ''; };
+  const body = (commit) => ({ csv, customerId: $('#bkCust', w).value || null, allowUnlisted: $('#bkOther', w).checked, commit });
+  const preview = async () => {
+    msg('', ''); $('#bkGo', w).disabled = true;
+    try {
+      const r = await api('/api/manual-devices/import', { method: 'POST', body: body(false) });
+      $('#bkPreview', w).innerHTML = `<div class="bulk-sum"><span class="pill live">${r.valid} ready</span>${r.invalid ? `<span class="pill bad">${r.invalid} with errors</span>` : ''}<span class="muted">${esc(fileName)}</span></div>
+        <div class="table-wrap flat"><table class="bulk-tbl"><thead><tr><th>Line</th><th></th><th>Customer</th><th>Site / room</th><th>Device</th><th>Serial</th></tr></thead><tbody>
+        ${r.rows.map((x) => `<tr class="${x.ok ? '' : 'bad'}"><td class="mono">${x.line}</td><td>${x.ok ? '<span class="ok-dot" title="Ready">✓</span>' : '<span class="bad-dot" title="Error">!</span>'}</td><td>${esc(x.customer || '')}</td><td>${esc(x.site || '')} / ${esc(x.room || '')}</td>
+          <td>${esc(`${x.make || ''} ${shortModel(x.make, x.model || '')}`)}${x.ok && !x.linked ? ' <span class="muted">(Other)</span>' : ''}${x.ok ? '' : `<div class="err-line">${esc(x.error)}</div>`}</td><td class="mono">${esc(x.serial || '')}</td></tr>`).join('')}
+        </tbody></table></div>`;
+      $('#bkGo', w).disabled = !r.valid;
+      $('#bkGo', w).textContent = r.valid ? `Import ${r.valid} device${r.valid === 1 ? '' : 's'}` : 'Import';
+    } catch (e) { $('#bkPreview', w).innerHTML = ''; msg('err', e.message); }
+  };
+  $('#bkFile', w).addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    csv = null; $('#bkCheck', w).disabled = true; $('#bkGo', w).disabled = true; $('#bkPreview', w).innerHTML = ''; msg('', '');
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) { msg('err', 'That file is over 2 MB. Split it and import each part.'); return; }
+    csv = await f.text(); fileName = f.name;
+    $('#bkCheck', w).disabled = false;
+    preview();
+  });
+  for (const id of ['#bkCust', '#bkOther']) $(id, w).addEventListener('change', () => { if (csv) preview(); });
+  $('#bkCheck', w).addEventListener('click', preview);
+  $('#bkGo', w).addEventListener('click', async () => {
+    $('#bkGo', w).disabled = true;
+    try {
+      const r = await api('/api/manual-devices/import', { method: 'POST', body: body(true) });
+      closeDrawer();
+      toast(ICONS.resolved, `Added ${r.added} device${r.added === 1 ? '' : 's'}${r.invalid ? `. ${r.invalid} rows skipped` : ''}`);
+      S.options = await api('/api/filters').catch(() => S.options);
+      navigate();
+    } catch (e) { msg('err', e.message); $('#bkGo', w).disabled = false; }
+  });
 }
 
 // ------------------------------------------------------------------ device drawer
@@ -607,7 +702,7 @@ async function openDevice(id) {
   let d;
   try { d = await api(`/api/devices/${encodeURIComponent(id)}`); } catch (e) { toast(ICONS.warning, e.message); return; }
   const roomHref = `#/estate/${encodeURIComponent(d.customerId)}/${encodeURIComponent(d.site)}/${encodeURIComponent(d.room)}`;
-  drawer(`${d.make} ${d.model.replace(new RegExp(`^${d.make}\\s+`), '')}`, `${esc(d.deviceType)} · ${esc(d.room)}, ${esc(d.site)}`, `
+  drawer(`${d.make} ${shortModel(d.make, d.model)}`, `${esc(d.deviceType)} · ${esc(d.room)}, ${esc(d.site)}`, `
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">${status(d.health)}${mockTag(d)}${d.inUse ? '<span class="pill blue">In a meeting</span>' : ''}</div>
     ${d.healthReason && d.health !== 'unmonitored' ? `<div class="notice ${d.health === 'healthy' ? 'ok' : d.health === 'warning' ? 'info' : 'err'}">${esc(d.healthReason)}</div>` : ''}
     ${d.diagnosis?.length ? diagnosisSection(d) : ''}
@@ -763,7 +858,7 @@ async function viewAlerts() {
   const match = (a) => f === 'all' || (f === 'sync' ? a.kind === 'sync' : a.severity === f);
   const list = S.alerts.filter(match);
   $('#view').innerHTML = `<div class="card">
-    <div class="card-head"><div class="seg" id="alertSeg">${[['all', 'All'], ['critical', 'Critical'], ['warning', 'Warning'], ['resolved', 'Resolved'], ['sync', 'Sync']].map(([k, l]) => `<button data-f="${k}" class="${f === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="card-head" style="flex-wrap:wrap"><div class="seg" id="alertSeg">${[['all', 'All'], ['critical', 'Critical'], ['warning', 'Warning'], ['resolved', 'Resolved'], ['sync', 'Sync']].map(([k, l]) => `<button data-f="${k}" class="${f === k ? 'on' : ''}">${l}</button>`).join('')}</div>
       <span class="muted">${list.length} alerts</span></div>
     <div class="feed" style="max-height:none" id="alertList">${list.map((a) => feedItem(a)).join('') || '<div class="empty">No alerts</div>'}</div></div>`;
   document.querySelectorAll('#alertSeg button').forEach((b) => b.addEventListener('click', () => { S.alertFilter = b.dataset.f; viewAlerts(); }));
@@ -944,6 +1039,7 @@ async function boot() {
   try { S.me = await api('/api/me'); } catch { renderLogin(); return; }
   const [options, connectors, alerts, customers] = await Promise.all([api('/api/filters'), api('/api/connectors'), api('/api/alerts?limit=100'), api('/api/customers')]);
   Object.assign(S, { options, connectors, alerts, customers });
+  for (const c of connectors) { OEM_SHORT[c.oem] = c.short || c.displayName.slice(0, 2).toUpperCase(); OEM_NAME[c.oem] = c.displayName; }
   // Drop saved filter values the user can no longer see.
   for (const [k] of FILTER_KEYS) {
     const allowed = (options[k] || []).map((x) => (typeof x === 'string' ? x : x.value));
@@ -1004,7 +1100,7 @@ async function bulkAction(act) {
   };
   if (act === 'reset') { await run({ reset: true }, 'Reset to OEM values'); return; }
   const custs = [...new Set(devs.map((d) => d.customerId))];
-  const list = `<div class="muted" style="margin-bottom:12px">${devs.slice(0, 8).map((d) => `${esc(d.make)} ${esc(d.model.replace(new RegExp(`^${d.make}\\s+`), ''))} · ${esc(d.room)}`).join('<br>')}${devs.length > 8 ? `<br>…and ${devs.length - 8} more` : ''}</div>`;
+  const list = `<div class="muted" style="margin-bottom:12px">${devs.slice(0, 8).map((d) => `${esc(d.make)} ${esc(shortModel(d.make, d.model))} · ${esc(d.room)}`).join('<br>')}${devs.length > 8 ? `<br>…and ${devs.length - 8} more` : ''}</div>`;
   if (act === 'room') {
     if (custs.length > 1) { toast(ICONS.warning, 'Pick devices from one customer to group them into a room.'); return; }
     const tree = await api(`/api/tree?customer=${encodeURIComponent(custs[0])}`);
@@ -1835,7 +1931,7 @@ function openOnboarding() {
     <div id="obUsers"></div><button class="btn btn-outline btn-sm" id="obAddUser">Add user</button>
     <div class="step"><span>4</span>Connections</div>
     <div class="help" style="margin-bottom:6px">Manufacturer clouds</div>
-    <div class="chk-row">${S.connectors.filter((c) => c.kind !== 'platform').map((c) => `<label><input type="checkbox" class="obConn" value="${c.oem}" checked> ${esc(c.displayName)}</label>`).join('')}</div>
+    <div class="chk-row">${S.connectors.filter((c) => c.kind !== 'platform').map((c) => `<label><input type="checkbox" class="obConn" value="${c.oem}" ${['poly-lens', 'logitech-sync'].includes(c.oem) ? 'checked' : ''}> ${esc(c.displayName)}${c.liveSupported === false ? ' <span class="muted">(demo only)</span>' : ''}</label>`).join('')}</div>
     <div class="help" style="margin:10px 0 6px">Meeting-platform portals</div>
     <div class="chk-row">${S.connectors.filter((c) => c.kind === 'platform').map((c) => `<label><input type="checkbox" class="obConn" value="${c.oem}" checked> ${esc(c.displayName)}${c.liveSupported === false ? ' <span class="muted">(mock only)</span>' : ''}</label>`).join('')}</div>
     <div class="help">Connections start on mock data. Add the API keys afterwards on the Connections page to go live.</div>
@@ -1956,7 +2052,11 @@ const fmtDate = (v) => {
   return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', ...(String(v).length === 10 ? { timeZone: 'UTC' } : {}) });
 };
 const fmtDateTime = (v) => new Date(v).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-const shortModel = (make, model) => String(model).replace(new RegExp(`^${make}\\s+`, 'i'), '');
+function shortModel(make, model) {
+  const m = String(model ?? '');
+  const k = String(make ?? '');
+  return k && m.toLowerCase().startsWith(`${k.toLowerCase()} `) ? m.slice(k.length + 1) : m;
+}
 function cmpVer(a, b) {
   const pa = String(a).split(/[^0-9]+/).filter(Boolean).map(Number);
   const pb = String(b).split(/[^0-9]+/).filter(Boolean).map(Number);
@@ -2191,7 +2291,7 @@ const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 
 const AUDIT_LABEL = {
   'auth.login': 'Signed in', 'auth.login_failed': 'Failed sign-in', 'auth.logout': 'Signed out',
   'session.enter_customer': 'Entered customer', 'session.exit_customer': 'Left customer',
-  'device.bulk_update': 'Updated devices', 'device.manual_add': 'Added device manually', 'device.manual_update': 'Edited manual device', 'device.manual_delete': 'Removed manual device', 'device.reset': 'Reset devices to OEM values',
+  'device.bulk_update': 'Updated devices', 'device.manual_add': 'Added device manually', 'device.bulk_import': 'Bulk added devices (CSV)', 'device.manual_update': 'Edited manual device', 'device.manual_delete': 'Removed manual device', 'device.reset': 'Reset devices to OEM values',
   'device.action': 'Ran a device action', 'device.action_failed': 'Device action failed', 'room.schematic_saved': 'Saved room schematic', 'room.design_uploaded': 'Uploaded room design document', 'room.design_removed': 'Removed room design document', 'api.check': 'Ran API check', 'room.schematic_removed': 'Removed room schematic', 'room.platform': 'Changed room platform',
   'customer.onboard': 'Onboarded customer', 'customer.update': 'Updated customer', 'customer.delete': 'Deleted customer',
   'user.create': 'Added user', 'user.delete': 'Removed user',

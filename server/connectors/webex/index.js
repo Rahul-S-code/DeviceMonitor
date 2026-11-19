@@ -85,7 +85,17 @@ function webexIssues(d, source) {
 
 export class WebexConnector extends BaseConnector {
   static oem = 'webex-control-hub';
-  static displayName = 'Webex Control Hub';
+  static displayName = 'Cisco Control Hub (Webex)';
+  static short = 'WX';
+  static guide = {
+    summary: "Cisco Control Hub (the Webex admin portal) holds every Cisco Room, Board and Desk device, plus Webex-registered third-party devices, with detailed status and error codes.",
+    needs: [
+      "A Control Hub admin integration or service app token",
+      "Scopes spark-admin:devices_read and spark-admin:workspaces_read (spark:xapi_commands for actions)"
+    ],
+    health: "Connected is healthy; connected with issues shows the Webex error codes (camera, display, temperature...); disconnected is offline.",
+    location: "Control Hub locations become sites and workspaces become rooms."
+  };
   static make = 'Cisco';
   static kind = 'platform';
   static platform = 'Cisco Webex';
