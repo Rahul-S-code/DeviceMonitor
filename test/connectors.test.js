@@ -175,3 +175,9 @@ test('Poly Lens token: accepts documented and variant shapes, explains an HTML r
   const t2 = new PolyLensHttpTransport({ clientId: 'a', clientSecret: 'b', ...POLY_DEFAULTS, fetchImpl: odd });
   await assert.rejects(() => t2.getToken(), (e) => /id_token, scope/.test(e.message) && !/SECRET/.test(e.message));
 });
+
+test('Poly Lens token: a 200 with only a message is reported as a rejected credential', async () => {
+  const f = async () => ({ ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }), text: async () => JSON.stringify({ message: 'Failed%20to%20authorize%20request' }) });
+  const t = new PolyLensHttpTransport({ clientId: 'a', clientSecret: 'b', ...POLY_DEFAULTS, fetchImpl: f });
+  await assert.rejects(() => t.getToken(), (e) => /rejected the client ID and secret/.test(e.message) && /"Failed to authorize request"/.test(e.message) && !/Clear the Token URL/.test(e.message));
+});

@@ -90,7 +90,13 @@ export function polyNoTokenError(res, body, text, authUrl) {
   const ct = (res.headers?.get?.('content-type') || '').split(';')[0].trim() || 'unknown';
   const isHtml = /html/i.test(ct) || /^\s*</.test(text || '');
   const keys = body && typeof body === 'object' ? Object.keys(body).slice(0, 10) : [];
-  const said = body?.error_description || body?.error || body?.message;
+  const raw = body?.error_description || body?.error || body?.message;
+  let said = raw ? String(raw) : '';
+  try { said = decodeURIComponent(said.replace(/\+/g, ' ')); } catch { /* keep as is */ }
+  // Poly answers a rejected credential with HTTP 200 and { message: "Failed to authorize request" }.
+  if (!isHtml && said) {
+    return `Poly Lens rejected the client ID and secret (HTTP ${res.status}, Poly says "${said.slice(0, 160)}"). The Token URL is fine. In Poly Lens open Integrations › API Credentials, check the credential still exists, or create a new one, then paste the client ID and the client secret again (the secret is shown only once) and test.`;
+  }
   let what;
   if (isHtml) what = 'it returned a web page, not a token. The Token URL is pointing at a sign-in or web page instead of the token endpoint';
   else if (!text) what = 'the reply was empty';
