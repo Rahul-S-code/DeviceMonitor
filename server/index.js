@@ -42,6 +42,16 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const superPassword = process.env.SUPERADMIN_PASSWORD || (production ? randomPw() : demoPassword);
   if (store.seedIfEmpty(demoPassword)) console.log(`[seed] Demo data created. Demo users' password: ${process.env.DEMO_PASSWORD ? '(DEMO_PASSWORD)' : demoPassword}`);
   if (store.migrate(superPassword, demoPassword)) console.log(`[seed] Super admin created: superadmin@provider.example / ${process.env.SUPERADMIN_PASSWORD ? '(SUPERADMIN_PASSWORD)' : superPassword}`);
+  // SUPERADMIN_PASSWORD is the source of truth: if it was missing or different when the
+  // super admin was first created, setting it later (and restarting) applies it.
+  if (process.env.SUPERADMIN_PASSWORD) {
+    const su = store.users.find((u) => u.role === 'super_admin' && u.email === 'superadmin@provider.example');
+    if (su && !verifyPassword(process.env.SUPERADMIN_PASSWORD, su.password)) {
+      su.password = hashPassword(process.env.SUPERADMIN_PASSWORD);
+      store.save();
+      console.log('[seed] Super admin password updated from SUPERADMIN_PASSWORD');
+    }
+  }
   // Map base layers. OpenStreetMap's own tiles by default; MAP_TILE_URL adds a
   // self-hosted or other open tile server (e.g. https://tiles.example.com/{z}/{x}/{y}.png).
   const mapLayers = [
