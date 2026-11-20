@@ -19,7 +19,7 @@ const cleanContact = (input) => {
   return { name: name || null, email, phone: phone || null };
 };
 
-export function registerInbox(app, { store, inventory, sync, mailer, checks, scope, inScope, audit, actorOf, requireJson, lastAction }) {
+export function registerInbox(app, { store, inventory, sync, mailer, checks, tickets = null, scope, inScope, audit, actorOf, requireJson, lastAction }) {
   const view = requirePermission('inbox.view');
   const decide = requirePermission('inbox.decide');
 
@@ -32,8 +32,11 @@ export function registerInbox(app, { store, inventory, sync, mailer, checks, sco
     count: live(a).length, total: a.items.length, createdAt: a.createdAt, updatedAt: a.updatedAt, lastCheckedAt: a.lastCheckedAt,
     snoozeUntil: a.snoozeUntil ?? null, decidedBy: a.decidedBy ?? null,
   });
-  const full = (a) => ({ ...brief(a), items: a.items.slice(0, 500), moreItems: Math.max(0, a.items.length - 500), history: a.history, result: a.result ?? null, dispatch: a.dispatch ?? null, recipient: recipientFor(a) });
+  const ticketOf = (a) => { const t = tickets?.latestFor(`action:${a.id}`); return t ? tickets.view(t) : null; };
+  const full = (a) => ({ ...brief(a), ticket: ticketOf(a), items: a.items.slice(0, 500), moreItems: Math.max(0, a.items.length - 500), history: a.history, result: a.result ?? null, dispatch: a.dispatch ?? null, recipient: recipientFor(a) });
 
+  // ServiceNow: an approved dispatch or task raises an incident, Done resolves it (when set up for the customer).
+  const ticket = (a, event) => { tickets?.onAction(a, event).catch((e) => console.error(`[servicenow] ${a.ref}: ${e.message}`)); };
   const setStatus = (req, a, status, note = null, extra = {}) => {
     const at = new Date().toISOString();
     a.status = status; a.updatedAt = at;
@@ -215,6 +218,7 @@ export function registerInbox(app, { store, inventory, sync, mailer, checks, sco
       try {
         const r = await mailer.send({ to, cc: ccClean, subject, text });
         setStatus(req, a, 'sent', `Emailed to ${to}${ccClean.length ? ` (cc ${ccClean.join(', ')})` : ''}`, { dispatch: { ...dispatch, sentAt: new Date().toISOString(), via: mailer.status().provider, messageId: r?.id || null } });
+        ticket(a, 'approved');
         audit(req, 'inbox.dispatch_sent', { customerId: a.customerId, target: `${a.ref} ${a.title}`, details: { to, cc: ccClean, subject, provider: mailer.status().provider } });
         return res.json({ action: full(a), sent: true });
       } catch (e) {
@@ -225,6 +229,7 @@ export function registerInbox(app, { store, inventory, sync, mailer, checks, sco
     // No provider (or the admin chose their own mail app): approved, waiting for "Mark as sent".
     setStatus(req, a, 'approved', `Approved; email prepared for ${to}, to send from the admin's own mail app`, { dispatch });
     audit(req, 'inbox.approve', { customerId: a.customerId, target: `${a.ref} ${a.title}`, details: { rule: a.rule, to, mail: 'not configured: mailto fallback' } });
+    ticket(a, 'approved');
     return res.json({ action: full(a), sent: false, mailto: mailtoLink({ to, subject, body: text }), text, subject });
   });
 
@@ -255,6 +260,7 @@ export function registerInbox(app, { store, inventory, sync, mailer, checks, sco
     if (!OPEN.has(a.status)) return res.status(409).json({ error: `This action is already ${a.status}` });
     const note = String(req.body?.note || '').trim().slice(0, 500) || null;
     setStatus(req, a, 'done', note ? `Marked done: ${note}` : 'Marked done');
+    ticket(a, 'done');
     audit(req, 'inbox.done', { customerId: a.customerId, target: `${a.ref} ${a.title}`, details: { note } });
     res.json({ action: full(a) });
   });

@@ -26,6 +26,8 @@ import { cleanWebUrl } from './lib/device-ui.js';
 import { Mailer } from './lib/mailer.js';
 import { ChecksService } from './services/checks.js';
 import { registerInbox } from './routes/inbox.js';
+import { registerItsm, deviceTicket } from './routes/itsm.js';
+import { TicketService } from './services/tickets.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -78,6 +80,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const sessions = new Sessions();
   mailer ||= new Mailer();
   const checks = new ChecksService({ store, inventory, history, sync, minDownMs: checksMinDownMs ?? 15 * 60_000 });
+  const tickets = new TicketService({ store, vault, inventory, sync });
   const apiTracker = new ApiTracker({ store, sync, mapLayers, intervalMinutes: Number(process.env.API_CHECK_MINUTES ?? 30) });
 
   const app = express();
@@ -242,7 +245,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const visibleDevice = (req, id) => { const d = inventory.get(id); return d && inScope(req, d.customerId) ? d : null; };
   app.get('/api/devices/:id', requireUser, (req, res) => {
     const d = visibleDevice(req, req.params.id);
-    return d ? res.json(d) : res.status(404).json({ error: 'Not found' });
+    return d ? res.json({ ...d, itsm: deviceTicket(tickets, d, req.user) }) : res.status(404).json({ error: 'Not found' });
   });
   // --- device actions (admins): run through the vendor API that reports the device
   const actionSets = (d) => d.sources.filter((src) => src.oem !== 'manual').map((src) => {
@@ -833,7 +836,8 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   app.get('/api/alerts', requireUser, (req, res) => {
     const allowed = new Set(scope(req));
     const limit = Math.min(Number(req.query.limit) || 100, 500);
-    res.json(store.data.alerts.filter((a) => allowed.has(a.customerId)).slice(0, limit));
+    const tix = tickets.byAlert([...allowed]);
+    res.json(store.data.alerts.filter((a) => allowed.has(a.customerId)).slice(0, limit).map((a) => (tix.has(a.id) ? { ...a, ticket: tix.get(a.id) } : a)));
   });
 
   // Room platform directory (Logitech Sync does not report a meeting platform).
@@ -1247,13 +1251,15 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   // --- action inbox: daily proactive checks, decisions, dispatch -----------
-  registerInbox(app, { store, inventory, sync, mailer, checks, scope, inScope, audit, actorOf, requireJson, lastAction });
+  registerInbox(app, { store, inventory, sync, mailer, checks, tickets, scope, inScope, audit, actorOf, requireJson, lastAction });
+  // --- ServiceNow incidents, set up per customer -----------------------------
+  registerItsm(app, { store, inventory, tickets, scope, inScope, audit, requireJson });
 
   app.use(express.static(path.join(ROOT, 'public'), { index: 'index.html' }));
   app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 
-  if (autoStart) { sync.start(); apiTracker.start(); checks.start(); }
-  return { app, store, sync, inventory, vault, history, apiTracker, checks, mailer };
+  if (autoStart) { sync.start(); apiTracker.start(); checks.start(); tickets.start(); }
+  return { app, store, sync, inventory, vault, history, apiTracker, checks, mailer, tickets };
 }
 
 /** Start the server: Postgres when DATABASE_URL is set, otherwise JSON files in the data folder. */
@@ -1269,7 +1275,7 @@ export async function startServer({ port = Number(process.env.PORT || 8080) } = 
     if (stopping) return;
     stopping = true;
     console.log(`[shutdown] ${signal}: saving data`);
-    ctx.sync.stop(); ctx.apiTracker.stop?.(); ctx.checks.stop();
+    ctx.sync.stop(); ctx.apiTracker.stop?.(); ctx.checks.stop(); ctx.tickets.stop();
     try { ctx.store.flush(); ctx.history.flush(); await persistence.close(); } catch (e) { console.error(`[shutdown] ${e.message}`); }
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 5000).unref();

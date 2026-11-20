@@ -158,16 +158,17 @@ const NAV_ICON = {
   docs: '<path d="M3 2.5h7l3 3v8H3z"/><path d="M10 2.5v3h3M5.5 8h5M5.5 10.5h5"/>',
   sync: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.5 1.5"/>',
   inbox: '<path d="M2 9.5l1.8-6h8.4l1.8 6V13.5H2z"/><path d="M2 9.5h3.5l1 1.8h3l1-1.8H14"/>',
+  servicenow: '<path d="M3 2.5h10v11H3z"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3"/><circle cx="12.5" cy="12.5" r="2.3"/>',
 };
 const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
-const ROUTE_TITLE = { msps: 'MSPs', users: 'Users', roles: 'Roles & permissions', sites: 'Sites', inbox: 'Action inbox', overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation', sync: 'Sync schedule' };
+const ROUTE_TITLE = { msps: 'MSPs', users: 'Users', roles: 'Roles & permissions', sites: 'Sites', inbox: 'Action inbox', overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation', sync: 'Sync schedule', servicenow: 'ServiceNow' };
 
 function navGroups() {
   return [
     ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts', ...(can('inbox.view') ? ['inbox'] : [])]],
     ...(can('service.view') ? [['Service', ['sla', 'lifecycle', 'baselines', 'errors']]] : []),
     ['Configure', [
-      ...(can('connections.view') ? ['connections'] : []), ...(can('connections.manage') ? ['sync'] : []), ...(seesModels() ? ['models'] : []),
+      ...(can('connections.view') ? ['connections'] : []), ...(can('connections.manage') ? ['sync', 'servicenow'] : []), ...(seesModels() ? ['models'] : []),
       ...(isSuper() ? ['msps'] : []), ...(can('customers.manage') ? ['customers'] : []), ...(can('sites.manage') && !multi() ? ['sites'] : []),
       ...(can('users.manage') ? ['users'] : []), 'roles', ...(can('apis.view') ? ['apis'] : []), ...(can('audit.view') ? ['audit'] : []),
     ]],
@@ -268,6 +269,7 @@ async function navigate() {
     else if (r.name === 'sync' && can('connections.manage')) await viewSyncSchedule();
     else if (r.name === 'errors' && can('service.view')) await viewErrorCodes();
     else if (r.name === 'inbox' && can('inbox.view')) await viewInbox(r.args);
+    else if (r.name === 'servicenow' && can('connections.manage')) await viewServiceNow(r.args);
     else if (r.name === 'docs') viewDocs(r.args);
     else location.hash = '#/overview';
   } catch (e) {
@@ -462,7 +464,7 @@ function feedItem(a, fresh) {
   const cust = S.options?.customer.find((c) => c.value === a.customerId)?.label;
   return `<div class="feed-item ${fresh ? 'new' : ''}" data-dev="${esc(a.deviceId || '')}" data-conn="${esc(a.connectionId || '')}">
     <div class="sev-dot">${alertIcon(a)}</div>
-    <div><div class="feed-msg">${esc(a.message)}${(a.errorCodes || []).map((c) => ` <span class="code-chip">${esc(c)}</span>`).join('')}</div>
+    <div><div class="feed-msg">${esc(a.message)}${(a.errorCodes || []).map((c) => ` <span class="code-chip">${esc(c)}</span>`).join('')}${a.ticket ? ` ${ticketChip(a.ticket)}` : ''}</div>
       <div class="feed-meta"><span>${ago(a.at)}</span>${a.site ? `<span>${esc(a.site)}</span>` : ''}${multi() && cust ? `<span>${esc(cust)}</span>` : ''}${a.platform && a.platform !== 'Unassigned' ? `<span>${esc(a.platform)}</span>` : ''}${a.initial ? '<span>at startup</span>' : ''}</div></div>
   </div>`;
 }
@@ -793,6 +795,7 @@ async function openDevice(id) {
     ${d.manualId ? `<div class="notice ${d.health === 'unmonitored' ? 'info' : 'ok'}" style="margin-top:14px">${d.health === 'unmonitored' ? `${esc(d.healthReason || 'Added manually.')} It has no live health.` : 'Added manually and now also reported by a connected API, which provides its live health.'}
       ${can('estate.edit') ? `<div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mEdit">Edit manual record</button><button class="btn btn-danger btn-sm" id="mDel">Remove manual record</button></div>` : ''}</div>` : ''}
     ${lifecycleSection(d)}
+    ${d.itsm?.enabled ? `<div class="section-title">ServiceNow</div><div id="devTicket">${deviceTicketHTML(d)}</div>` : ''}
     ${reportIssueHTML()}
     ${can('devices.actions') && d.sources.some((x) => x.oem !== 'manual') ? '<div class="section-title">Remote actions</div><div id="devActions"><div class="muted">Loading…</div></div>' : ''}
     ${d.overridden?.length ? `<div class="notice info" style="margin-top:14px">Manually changed: ${d.overridden.map(esc).join(', ')}. The OEM reports this device in <b>${esc(d.reportedRoom)}</b>, ${esc(d.reportedSite)}.</div>` : ''}
@@ -822,6 +825,7 @@ async function openDevice(id) {
         ${s.health ? status(s.health) : ''}</div>`;
   }).join('')}</div>`);
   if ($('#devActions')) mountDeviceActions($('#devActions'), d);
+  if ($('#devTicket')) bindDeviceTicket($('#devTicket'), d);
   if ($('#diagCables')) mountDiagCables($('#diagCables'), d);
   bindReportIssue(document.querySelector('.drawer'), { deviceId: d.id });
   // The link opens the device directly; this only records who opened it.
@@ -3334,6 +3338,7 @@ async function openAction(id) {
     <p style="margin-top:0">${esc(a.reason)}</p>
     <div class="act-exec" style="margin-bottom:14px">${execLine(a)}</div>
     ${a.result?.results?.length ? `<h3 class="dr-h">Result</h3><ul class="act-results">${a.result.results.map((r) => `<li class="${r.ok ? 'ok' : 'bad'}"><b>${esc(r.label)}</b>: ${esc(r.message)}</li>`).join('')}</ul>` : ''}
+    ${a.ticket ? `<h3 class="dr-h">ServiceNow</h3><p>${ticketChip(a.ticket, true)} ${esc(TICKET_STATE[a.ticket.state] || a.ticket.state)}${a.ticket.error ? ` <span class="muted">${esc(a.ticket.error)}</span>` : ''}</p>` : ''}
     ${a.dispatch ? `<h3 class="dr-h">Email</h3><dl class="kv"><dt>To</dt><dd>${esc(a.dispatch.to)}${a.dispatch.cc?.length ? ` (cc ${esc(a.dispatch.cc.join(', '))})` : ''}</dd><dt>Subject</dt><dd>${esc(a.dispatch.subject)}</dd><dt>Sent</dt><dd>${a.dispatch.sentAt ? `${fmtDateTime(a.dispatch.sentAt)} via ${esc(a.dispatch.via)}` : 'Not yet'}</dd></dl>` : ''}
     <h3 class="dr-h">Affected (${a.items.length})</h3>
     <div class="table-wrap flat"><table><thead><tr><th>${a.items.some(isDev) ? 'Device' : 'Item'}</th><th>${a.items.some(isDev) ? 'Room' : ''}</th><th>Detail</th><th>Now</th></tr></thead><tbody>${rows}</tbody></table></div>
@@ -3408,4 +3413,115 @@ function deviceUiHTML(d) {
   return `<div class="section-title">Device web interface</div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><a class="btn btn-primary btn-sm" id="openUi" href="${esc(ui.url)}" target="_blank" rel="noopener noreferrer">Open device UI</a><span class="mono muted" style="font-size:12px">${esc(ui.url)}</span>${ui.source === 'manual' ? '<span class="chip mute">set by hand</span>' : ''}</div>
     <div class="help">Opens the device's own admin page in a new tab. It works only from a computer on the same network as the device (or over VPN), and you sign in with the device's own admin password. Your browser may warn about the device's self-signed certificate.</div>`;
+}
+
+
+// ------------------------------------------------------------------ ServiceNow
+const TICKET_STATE = { open: 'Open', resolved: 'Resolved', closed: 'Closed in ServiceNow', failed: 'Not raised yet', cancelled: 'Not needed' };
+const TICKET_KIND = { device: 'Device fault', report: 'User report', action: 'Inbox action' };
+function ticketChip(t, big) {
+  if (!t?.number) return t?.state === 'failed' ? '<span class="sn-chip failed" title="ServiceNow incident not raised yet">INC pending</span>' : '';
+  const cls = `sn-chip ${t.state === 'open' ? 'open' : 'done'}${big ? ' big' : ''}`;
+  const label = `${esc(t.number)}${t.state !== 'open' ? ` · ${esc(TICKET_STATE[t.state] || t.state)}` : ''}`;
+  return t.url ? `<a class="${cls}" href="${esc(t.url)}" target="_blank" rel="noopener" title="Open in ServiceNow" data-stop>${label}</a>` : `<span class="${cls}" title="ServiceNow incident${t.mode === 'mock' ? ' (mock)' : ''}">${label}</span>`;
+}
+function deviceTicketHTML(d) {
+  const t = d.itsm.ticket;
+  const live = t && ['open', 'failed'].includes(t.state);
+  return `${t ? `<p style="margin:0 0 8px">${ticketChip(t, true)} ${esc(TICKET_STATE[t.state] || t.state)}${t.mode === 'mock' ? ' <span class="pill">Mock</span>' : ''} <span class="muted">${esc(t.title)}, ${ago(t.updatedAt)}</span></p>${t.error ? `<div class="notice err">${esc(t.error)}</div>` : ''}` : '<p class="muted" style="margin:0 0 8px">No incident for this device.</p>'}
+    ${d.itsm.canRaise && !(t?.state === 'open') ? `<div class="field"><input id="snNote" maxlength="1000" placeholder="Note for the incident (optional)"></div><button class="btn btn-outline btn-sm" id="snRaise">${live ? 'Try again now' : 'Raise incident'}</button><div id="snMsg"></div>` : ''}`;
+}
+function bindDeviceTicket(root, d) {
+  root.querySelector('#snRaise')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      const t = await api(`/api/devices/${encodeURIComponent(d.id)}/incident`, { method: 'POST', body: { note: root.querySelector('#snNote')?.value || '' } });
+      d.itsm.ticket = t; root.innerHTML = deviceTicketHTML(d); bindDeviceTicket(root, d);
+      toast(ICONS.resolved, `ServiceNow incident ${t.number} raised`);
+    } catch (err) { root.querySelector('#snMsg').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; e.target.disabled = false; }
+  });
+}
+document.addEventListener('click', (e) => { if (e.target.closest('[data-stop]')) e.stopPropagation(); }, true);
+
+async function viewServiceNow(args = []) {
+  const list = await api('/api/itsm');
+  const cid = acting() || (list.some((x) => x.customerId === args[0]) ? args[0] : null) || S.snCustomer || list[0]?.customerId;
+  S.snCustomer = cid;
+  hero('ServiceNow', 'Raise ServiceNow incidents for device faults, user reports and approved Action inbox dispatches, set up per customer. Incidents are updated, not duplicated, and resolved when the device recovers.');
+  if (!cid) { $('#view').innerHTML = '<div class="card"><div class="empty">No customers</div></div>'; return; }
+  const [c, tix] = await Promise.all([api(`/api/itsm/${encodeURIComponent(cid)}`), api(`/api/tickets?customer=${encodeURIComponent(cid)}&limit=200`)]);
+  const P = (k) => `<select data-pri="${k}" aria-label="Priority">${[1, 2, 3, 4, 5].map((p) => `<option value="${p}" ${c.priorities[k] === p ? 'selected' : ''}>P${p}</option>`).join('')}</select>`;
+  const trig = [['offline', 'Device offline', 'offline'], ['critical', 'Device critical', 'critical'], ['warning', 'Device warning (amber)', 'warning'], ['reports', 'Issue reported by a user', 'report'], ['dispatches', 'Action inbox dispatch or task approved', 'dispatch']];
+  const status = !c.enabled ? 'Off' : c.mode === 'live' ? 'Live' : 'Mock';
+  const openN = tix.filter((t) => t.state === 'open').length;
+  const failN = tix.filter((t) => t.state === 'failed').length;
+  $('#view').innerHTML = `
+    ${multi() && !acting() ? `<div class="card" style="margin-bottom:18px"><div class="field" style="margin:0"><label for="snCust">Customer</label><select id="snCust">${list.map((x) => `<option value="${esc(x.customerId)}" ${x.customerId === cid ? 'selected' : ''}>${esc(x.customerName)} · ${!x.enabled ? 'off' : x.mode === 'live' ? 'live' : 'mock'}${x.openTickets ? `, ${x.openTickets} open` : ''}</option>`).join('')}</select></div></div>` : ''}
+    <div class="stats">
+      ${statTile('Status', status, c.enabled ? (c.mode === 'live' ? esc(c.instanceUrl) : 'Simulated incidents, nothing sent') : 'Not raising incidents', c.enabled ? 'good' : '')}
+      ${statTile('Open incidents', openN, 'Raised by Estate Monitor', '')}
+      ${statTile('Not raised yet', failN, failN ? 'Retried automatically' : 'None waiting', failN ? 'crit' : 'good')}
+      ${statTile('Last test', c.lastTest ? (c.lastTest.ok ? 'Passed' : 'Failed') : 'Never', c.lastTest ? ago(c.lastTest.at) : 'Press Test connection', c.lastTest ? (c.lastTest.ok ? 'good' : 'crit') : '')}
+    </div>
+    <div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Settings for ${esc(c.customerName)}</h2><div class="card-sub">${c.updatedAt ? `Last changed ${ago(c.updatedAt)}${c.updatedBy ? ` by ${esc(c.updatedBy)}` : ''}.` : 'Not set up yet.'} <a href="#/docs/servicenow">How to set up ServiceNow</a></div></div></div>
+      <div id="snMsg"></div>
+      <label class="check"><input type="checkbox" id="snOn" ${c.enabled ? 'checked' : ''}> Raise ServiceNow incidents for this customer</label>
+      <div class="field" style="margin-top:12px"><label>Data source</label><div class="seg" id="snMode"><button data-m="mock" class="${c.mode !== 'live' ? 'on' : ''}">Mock</button><button data-m="live" class="${c.mode === 'live' ? 'on' : ''}">Live ServiceNow</button></div>
+        <div class="help">Mock simulates incidents inside Estate Monitor so you can see the flow. Live sends them to your instance.</div></div>
+      <div class="grid cols-2 sn-live" style="gap:10px">
+        <div class="field"><label for="snUrl">Instance URL</label><input id="snUrl" type="url" inputmode="url" autocomplete="off" ${NO_AUTOFILL} name="sn-url-${Math.random().toString(36).slice(2, 8)}" value="${esc(c.instanceUrl)}" placeholder="https://yourcompany.service-now.com"></div>
+        <div class="field"><label for="snUser">User name</label><input id="snUser" type="text" autocomplete="off" ${NO_AUTOFILL} name="sn-user-${Math.random().toString(36).slice(2, 8)}" value="${esc(c.username)}" placeholder="estate.monitor"><div class="help">An integration user with the itil role and "Web service access only".</div></div>
+        <div class="field"><label for="snPw">Password ${c.hasPassword ? '<span class="stored">✓ stored</span>' : ''}</label><input id="snPw" type="text" class="secret-input" autocomplete="off" ${NO_AUTOFILL} name="sn-key-${Math.random().toString(36).slice(2, 8)}" placeholder="${c.hasPassword ? 'Stored. Leave blank to keep it.' : ''}"><div class="help">Encrypted at rest. Changing the instance or user name needs the password again.</div></div>
+        <div class="field"><label for="snGroup">Assignment group</label><input id="snGroup" type="text" autocomplete="off" ${NO_AUTOFILL} value="${esc(c.assignmentGroup)}" placeholder="e.g. Service Desk"><div class="help">The group's name exactly as in ServiceNow. Test connection checks it.</div></div>
+        <div class="field"><label for="snCat">Category</label><input id="snCat" type="text" autocomplete="off" ${NO_AUTOFILL} value="${esc(c.category)}" placeholder="hardware"></div>
+        <div class="field"><label for="snCaller">Caller</label><input id="snCaller" type="text" autocomplete="off" ${NO_AUTOFILL} value="${esc(c.callerId)}" placeholder="Full name of a ServiceNow user (optional)"></div>
+        <div class="field"><label for="snClose">Resolution code</label><input id="snClose" type="text" autocomplete="off" ${NO_AUTOFILL} value="${esc(c.closeCode)}" placeholder="Solution provided"><div class="help">Used when a device recovers. Must be one of your instance's resolution codes.</div></div>
+        <div class="field"><label for="snDelay">Wait before raising (minutes)</label><input id="snDelay" type="number" min="0" max="1440" value="${c.delayMinutes}"><div class="help">A device must stay faulty this long, so short blips don't open tickets.</div></div>
+      </div>
+      <div class="section-title">Raise an incident when</div>
+      <div class="sn-trig">${trig.map(([k, l, pk]) => `<div class="sn-trig-row"><label class="check"><input type="checkbox" data-trig="${k}" ${c.triggers[k] ? 'checked' : ''}> ${esc(l)}</label>${P(pk)}</div>`).join('')}</div>
+      <div class="help">P1 to P5 set impact and urgency on ServiceNow's default priority matrix (P2 = high impact, medium urgency).</div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="snAuto" ${c.autoResolve ? 'checked' : ''}> Resolve the incident when the device recovers</label>
+      <label class="check"><input type="checkbox" id="snExisting" ${c.includeExisting ? 'checked' : ''}> When switching on, also raise incidents for faults that are already open${c.enabled && c.skipped ? ` <span class="muted">(${c.skipped} skipped now)</span>` : ''}</label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn btn-outline" id="snTest">Test connection</button><button class="btn btn-primary" id="snSave">Save</button></div>
+    </div>
+    <div class="card"><div class="card-head"><div><h2>Incidents</h2><div class="card-sub">Newest first. Resolved and closed ones are kept for 180 days.</div></div></div>
+      <div class="table-wrap flat"><table><thead><tr><th>Incident</th><th>What</th><th>Status</th><th>Priority</th><th>Raised</th><th></th></tr></thead><tbody>
+      ${tix.map((t) => `<tr><td>${ticketChip(t) || '—'}</td><td><b>${esc(t.title)}</b><div class="muted">${esc(TICKET_KIND[t.kind] || t.kind)}${t.manual ? ', raised by hand' : ''}${t.mode === 'mock' ? ' · Mock' : ''}</div>${t.error ? `<div class="muted sn-err">${esc(t.error)}</div>` : ''}</td>
+        <td>${esc(TICKET_STATE[t.state] || t.state)}${t.snStateLabel && t.state === 'open' ? `<div class="muted">${esc(t.snStateLabel)}</div>` : ''}</td><td>P${t.priority || 3}</td><td>${ago(t.createdAt)}</td>
+        <td>${t.state === 'failed' ? `<button class="btn btn-outline btn-sm" data-retry="${esc(t.id)}">Retry now</button>` : t.deviceId ? `<button class="linkbtn" data-dev="${esc(t.deviceId)}">Device</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No incidents yet</td></tr>'}
+      </tbody></table></div></div>`;
+  const w = $('#view');
+  guardAutofill(w);
+  let mode = c.mode;
+  const showLive = () => w.querySelectorAll('.sn-live input').forEach((i) => { i.closest('.field').classList.toggle('muted-field', mode !== 'live'); });
+  showLive();
+  w.querySelectorAll('#snMode button').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.m; w.querySelectorAll('#snMode button').forEach((x) => x.classList.toggle('on', x === b)); showLive(); }));
+  $('#snCust')?.addEventListener('change', (e) => { location.hash = `#/servicenow/${encodeURIComponent(e.target.value)}`; });
+  const val = (id) => { const i = $(`#${id}`); return i.dataset.noauto && !i.dataset.touched ? i.defaultValue : i.value; };
+  const collect = () => {
+    const pw = $('#snPw').dataset.touched ? $('#snPw').value : '';
+    return {
+      enabled: $('#snOn').checked, mode, instanceUrl: val('snUrl'), username: val('snUser'), assignmentGroup: val('snGroup'), category: val('snCat'), callerId: val('snCaller'), closeCode: val('snClose'),
+      delayMinutes: Number($('#snDelay').value), autoResolve: $('#snAuto').checked, includeExisting: $('#snExisting').checked,
+      triggers: Object.fromEntries([...w.querySelectorAll('[data-trig]')].map((i) => [i.dataset.trig, i.checked])),
+      priorities: Object.fromEntries([...w.querySelectorAll('[data-pri]')].map((i) => [i.dataset.pri, Number(i.value)])),
+      ...(pw ? { password: pw } : {}),
+    };
+  };
+  const msg = (kind, text) => { $('#snMsg').innerHTML = `<div class="notice ${kind}">${esc(text)}</div>`; $('#snMsg').scrollIntoView({ block: 'nearest' }); };
+  $('#snTest').addEventListener('click', async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Testing…';
+    try { const r = await api(`/api/itsm/${encodeURIComponent(cid)}/test`, { method: 'POST', body: collect() }); msg(r.ok ? 'ok' : 'err', r.message); } catch (err) { msg('err', err.message); }
+    e.target.disabled = false; e.target.textContent = 'Test connection';
+  });
+  $('#snSave').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try { const r = await api(`/api/itsm/${encodeURIComponent(cid)}`, { method: 'PUT', body: collect() }); toast(ICONS.resolved, r.enabled ? `ServiceNow is on for ${c.customerName} (${r.mode === 'live' ? 'live' : 'mock'})` : 'ServiceNow settings saved'); viewServiceNow([cid]); } catch (err) { msg('err', err.message); e.target.disabled = false; }
+  });
+  w.querySelectorAll('[data-retry]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try { const t = await api(`/api/tickets/${encodeURIComponent(b.dataset.retry)}/retry`, { method: 'POST', body: {} }); toast(t?.state === 'open' ? ICONS.resolved : ICONS.warning, t?.state === 'open' ? `Raised ${t.number}` : `Still not raised: ${t?.error || 'unknown error'}`); viewServiceNow([cid]); } catch (err) { toast(ICONS.critical, err.message); b.disabled = false; }
+  }));
+  w.querySelectorAll('button[data-dev]').forEach((b) => b.addEventListener('click', () => openDevice(b.dataset.dev)));
 }

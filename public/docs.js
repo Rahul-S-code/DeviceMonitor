@@ -192,6 +192,51 @@ export function docSections({ connectors = [], role = 'end_user', perms = null, 
       <p>The checks run every day at 06:00 UTC by default. The super admin changes the time or switches them off with <b>Change</b> beside the schedule. Anyone who can decide actions can press <b>Run checks now</b> for the customers they look after.</p>
       ${note('By default MSP admins, customer admins and technical users see the Action inbox and decide its actions; end users don\'t. Site contacts are edited by admins. The checks schedule is set by the super admin. An admin who has entered a customer sees and decides only that customer\'s actions.')}`,
     }] : []),
+    ...(has('connections.manage', 'msp_admin') ? [{
+      id: 'servicenow', title: 'ServiceNow incidents',
+      html: `<p>Estate Monitor can raise incidents in ServiceNow for each customer, so faults reach the service desk without anyone retyping them. Each customer has its own settings (its own instance, group and rules) under ${link('servicenow', 'Configure › ServiceNow')}.</p>
+      <h4>What raises an incident</h4>
+      ${table(['Event', 'Default', 'What happens next'], [
+        ['A device <b>offline</b> for longer than the wait (default 10 minutes)', 'On, P2', 'Updated with a work note if it changes (for example critical to offline). Resolved when the device recovers.'],
+        ['A device <b>critical</b> for longer than the wait', 'On, P3', 'The same.'],
+        ['A device <b>warning</b> (amber) for longer than the wait', 'Off, P4', 'The same.'],
+        ['An issue <b>reported by a user</b>', 'On, P3', 'Raised straight away. Resolved in ServiceNow by the service desk.'],
+        ['An Action inbox <b>dispatch or task approved</b>', 'On, P3', 'Resolved when the action is marked done, or clears.'],
+        ['<b>Raise incident</b> on the device panel', 'Technical users and above', 'Raised straight away, with an optional note.'],
+      ])}
+      ${list([
+        'One fault gets one incident. Estate Monitor tags each incident with a correlation ID, so after a restart it finds the open incident again instead of raising another.',
+        'If someone resolves or closes the incident in ServiceNow while the device is still faulty, no new incident is raised until the device recovers and fails again.',
+        'Faults that are already open when you switch it on are skipped, unless you tick <b>also raise incidents for faults that are already open</b>.',
+        'At most 20 new incidents per customer per minute, so a site outage can\'t flood the queue.',
+        'If ServiceNow can\'t be reached, the incident shows <b>Not raised yet</b> with the reason and is retried after 1, 5, 15 and then every 60 minutes. <b>Retry now</b> tries straight away.',
+        'Incident numbers show in the alert feed, on the device panel and on Action inbox items. In live mode they link to the incident in ServiceNow.',
+      ])}
+      <h4>Set up ServiceNow</h4>
+      ${list([
+        'Use your company instance, or a free Personal Developer Instance from developer.servicenow.com for testing (it sleeps after about 10 days without use; wake it there).',
+        'In ServiceNow open <b>User Administration › Users</b> (or go to <span class="mono">/sys_user.do?sys_id=-1</span> on your instance) and create a user such as <span class="mono">estate.monitor</span>. Tick <b>Web service access only</b> (called <b>Internal Integration User</b> on newer releases), save, press <b>Set Password</b>, and on the <b>Roles</b> tab add <b>itil</b>.',
+        'Optional: note the assignment group that should get the incidents (for example <b>Service Desk</b>).',
+        `In Estate Monitor open ${link('servicenow', 'Configure › ServiceNow')}, pick the customer, choose <b>Live ServiceNow</b>, enter the instance URL (<span class="mono">https://yourcompany.service-now.com</span>), the user name and password, the assignment group and the rules, press <b>Test connection</b>, tick <b>Raise ServiceNow incidents for this customer</b> and <b>Save</b>.`,
+      ], 'ol')}
+      ${table(['Field', 'Notes'], [
+        ['Instance URL', 'Just the address of the instance. Anything after it is ignored.'],
+        ['User name and password', 'HTTP Basic authentication. The password is encrypted at rest and never shown again. Changing the instance or user name needs the password again.'],
+        ['Assignment group, category, caller', 'Sent as names (display values). Test connection checks that the group exists. Caller is a user\'s full name.'],
+        ['Resolution code', 'Used when an incident is resolved automatically. It must be one of your instance\'s resolution codes (out of the box: <b>Solution provided</b>). If ServiceNow refuses it, the incident gets a work note instead and the page shows why.'],
+        ['Priorities', 'P1 to P5 are sent as impact and urgency on ServiceNow\'s default priority matrix: P1 = 1/1, P2 = 1/2, P3 = 2/2, P4 = 2/3, P5 = 3/3.'],
+      ])}
+      <h4>API calls</h4>
+      ${table(['Call', 'Used for'], [
+        ['<span class="mono">GET /api/now/table/incident?sysparm_limit=1</span>', 'Test connection'],
+        ['<span class="mono">GET /api/now/table/sys_user_group?sysparm_query=name=…</span>', 'Checks the assignment group'],
+        ['<span class="mono">GET /api/now/table/incident?sysparm_query=correlation_id=…^active=true</span>', 'Finds an incident it raised before'],
+        ['<span class="mono">POST /api/now/table/incident?sysparm_input_display_value=true</span>', 'Raises the incident'],
+        ['<span class="mono">PATCH /api/now/table/incident/{sys_id}</span>', 'Work notes and resolving'],
+        ['<span class="mono">GET /api/now/table/incident?sysparm_query=sys_idIN…</span>', 'Every 5 minutes: notices incidents resolved or closed in ServiceNow'],
+      ])}
+      ${note('Mock mode simulates incidents inside Estate Monitor (numbers like INC0010001) and sends nothing, so you can see the flow before connecting an instance. By default MSP admins configure ServiceNow; give customer admins <b>Manage connections and API keys</b> under Roles if they should set it up themselves. Every settings change, test and incident is in the audit log, never the password.')}`,
+    }] : []),
     ...(admin ? [{
       id: 'configure', title: 'Configuration',
       html: `<h4>${link('connections', 'Connections')}</h4>
@@ -243,6 +288,7 @@ export function docSections({ connectors = [], role = 'end_user', perms = null, 
         ['<span class="mono">RESEND_API_KEY</span>, <span class="mono">SENDGRID_API_KEY</span> or <span class="mono">SMTP_URL</span>', 'How Action inbox emails are sent: Resend or SendGrid over HTTPS (best on Railway, which blocks outbound SMTP on its lower plans), or SMTP (<span class="mono">smtps://user:pass@host:465</span>, or <span class="mono">smtp://…:587</span> with STARTTLS). Without one, emails open in the admin\'s own email app.'],
         ['<span class="mono">MAIL_REPLY_TO</span>, <span class="mono">DISPATCH_SIGNATURE</span>', 'Optional Reply-To address for dispatch emails, and the sign-off name (default "The IT support team").'],
         ['<span class="mono">ACTION_RETENTION_DAYS</span>', 'Days closed Action inbox actions are kept (default 180).'],
+        ['<span class="mono">PUBLIC_URL</span>', 'The app\'s own address, put in ServiceNow incident descriptions as a link back (on Railway the public domain is used automatically).'],
         ['<span class="mono">MAP_TILE_URL</span>, <span class="mono">MAP_TILE_NAME</span>, <span class="mono">MAP_TILE_ATTRIBUTION</span>', 'Your own map tile server.'],
         ['<span class="mono">DATA_DIR</span>', 'Where the store, history and documents are kept (default ./data).'],
       ])}`,

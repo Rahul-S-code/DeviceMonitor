@@ -668,6 +668,8 @@ export class Store {
     delete this.baselines.customers[id];
     if (this.data.contacts) delete this.data.contacts[id];
     this.data.actions = this.actions.filter((a) => a.customerId !== id);
+    if (this.data.itsm) delete this.data.itsm[id];
+    if (this.data.tickets) this.data.tickets = this.data.tickets.filter((t) => t.customerId !== id);
     for (const d of this.data.designs.filter((x) => x.customerId === id)) this.removeDesign(d.id);
     unregisterMockCustomer(id);
     this.save();

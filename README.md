@@ -137,6 +137,24 @@ Monitor › **Action inbox** (MSP admins, customer admins and technical users by
 - **Access**: scoped like every other page (an MSP admin sees only its customers; an admin inside one customer sees only that customer). `server/lib/permissions.js` maps the inbox checks onto the role matrix: `inbox.view`, `inbox.decide` (matrix *Decide inbox actions*), `inbox.run`, `contacts.view`, `contacts.edit` (*Manage sites and contacts*), `checks.schedule` (super admin).
 - **Code**: rules and dedupe in `server/services/checks.js`, routes in `server/routes/inbox.js`, email in `server/lib/mailer.js`. No AI is needed; an AI summary or ranking can be added on top later.
 
+## ServiceNow incidents (per customer)
+
+Configure › **ServiceNow** (MSP admins by default; give customer admins *Manage connections and API keys* to let them set it up). Each customer has its own settings: on/off, **Mock** (simulated incidents, nothing sent) or **Live**, instance URL, integration user and password (encrypted), assignment group, category, caller, resolution code, which events raise incidents and their priority, the wait before raising, and auto-resolve.
+
+| Event | Default | Then |
+| --- | --- | --- |
+| Device offline / critical for longer than the wait (10 min) | On, P2 / P3 | Work note when it changes; resolved when the device recovers |
+| Device warning | Off, P4 | Same |
+| Issue reported by a user | On, P3 | Raised at once |
+| Action inbox dispatch or task approved | On, P3 | Resolved when the action is done or clears |
+| **Raise incident** on the device panel (technical users and up) | | Raised at once, with an optional note |
+
+- One fault, one incident: each incident carries `correlation_id` `estate-monitor:<key>`, so a restart finds the open one instead of raising another. An incident resolved or closed in ServiceNow while the device is still down is respected until the device recovers. Faults already open when it's switched on are skipped unless *include existing faults* is ticked. At most 20 new incidents per customer per minute.
+- Failures (instance asleep, wrong password, unreachable) are shown with the reason and retried after 1, 5, 15, then every 60 minutes; **Retry now** on the page. Incident numbers show in the alert feed, on the device panel and on inbox items, linking to ServiceNow in live mode.
+- ServiceNow side: an integration user with the **itil** role and *Web service access only*. A free Personal Developer Instance (developer.servicenow.com) works for testing.
+- Table API calls: `GET /api/now/table/incident` (test, find by correlation id, state poll every 5 min), `GET /api/now/table/sys_user_group` (group check), `POST /api/now/table/incident?sysparm_input_display_value=true` (create), `PATCH /api/now/table/incident/{sys_id}` (work notes, resolve with `state=6`, `close_code`, `close_notes`). Priority P1–P5 maps to impact/urgency on the default matrix.
+- Code: client in `server/lib/servicenow.js`, logic in `server/services/tickets.js`, routes in `server/routes/itsm.js`, tests in `test/servicenow.test.js`. Settings in `data.itsm[customerId]`, incidents in `data.tickets`.
+
 ## Adding devices by hand
 
 Admins can add devices that no API reports (Devices › **+ Add device**, or **+ Add device** on a room page). Make and model are picked from the model master; for kit the master doesn't list, choose **Other** and type the manufacturer, model and device type. Devices with no API connector for their model (including everything entered under Other) are tagged **Not monitored**, and typed-in models appear on the Models tab for the super admin to catalogue. All manual devices show health **Not monitored**: they count in the inventory, lifecycle and warranty views but not in health alerts or SLA. If a connected API later reports the same serial number or MAC address, the records merge: live health and the OEM's location take over, and the asset tag, notes and warranty you entered are kept. 
@@ -285,6 +303,7 @@ are git-ignored.
 ## API references used
 
 - Poly Lens: [How to get started](https://lensapidocsdev.z19.web.core.windows.net/docs/graphql/how-to-get-started), [Getting started](https://lensapidocsdev.z19.web.core.windows.net/docs/graphql/getting-started), [Inventory reporting](https://lensapidocsdev.z19.web.core.windows.net/docs/graphql/Example%20Queries/inventory-reporting)
+- ServiceNow: [Table API](https://www.servicenow.com/docs/bundle/zurich-api-reference/page/integrate/inbound-rest/concept/c_TableAPI.html)
 - Logitech Sync: [API quick start guide](https://hub.sync.logitech.com/syncguides/post/1-8-getting-started---api-quick-start-guide-QOU16rRoLmzBP9F) and the Sync Cloud API OpenAPI definition v0.1.4 (download it from Sync Portal › Settings › Sync Cloud API)
 
 - Zoom Rooms: [Rooms API](https://developers.zoom.us/docs/api/rooms/), [Server-to-Server OAuth](https://developers.zoom.us/docs/internal-apps/s2s-oauth/). Scope `room:read:admin`.
@@ -301,8 +320,7 @@ Things to confirm against a real tenant when going live:
 
 ## Later phases
 
-Alert rules, ServiceNow ticket creation, scheduled uptime reports, Microsoft
-Entra ID sign-in, and bulk device upload with "Not monitored" inventory. The alert generator in `services/sync.js` and the session layer in
+Alert rules, scheduled uptime reports and Microsoft Entra ID sign-in. (ServiceNow incidents and bulk device upload are built; see above.) The alert generator in `services/sync.js` and the session layer in
 `lib/auth.js` are the hooks for these.
 
 ## Adding an OEM
