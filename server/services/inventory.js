@@ -134,7 +134,11 @@ export class Inventory {
       else if (!m.baseline) d.firmwareStatus = 'no-baseline';
       else d.firmwareStatus = compareVersions(d.firmware, m.baseline) < 0 ? 'behind' : compareVersions(d.firmware, m.baseline) > 0 ? 'ahead' : 'compliant';
       const lc = lifecycleStage(m, now);
-      d.lifecycle = { ...lc, endOfSale: m?.endOfSale ?? null, endOfSupport: m?.endOfSupport ?? null, endOfLife: m?.endOfLife ?? null };
+      d.lifecycle = {
+        ...lc, endOfSale: m?.endOfSale ?? null, endOfSupport: m?.endOfSupport ?? null, endOfLife: m?.endOfLife ?? null,
+        status: m?.lifecycleStatus ?? null, note: m?.lifecycleNote ?? null, url: m?.lifecycleUrl ?? null,
+        refs: m?.lifecycleRefs ?? [], checkedAt: m?.lifecycleCheckedAt ?? null,
+      };
       d.warrantyStatus = warrantyStatus(d.warrantyExpires, now);
 
       // Derived health for sources without native health (Poly Lens, Zoom).
@@ -173,7 +177,7 @@ export class Inventory {
       if (d.firmwareStatus === 'behind') m.behind++;
       if (d.firmware) m.versions[d.firmware] = (m.versions[d.firmware] || 0) + 1;
     }
-    const attention = devs.filter((d) => d.firmwareStatus === 'behind' || ['expired', 'expiring'].includes(d.warrantyStatus) || ['eol', 'eos', 'eosale', 'soon'].includes(d.lifecycle?.stage));
+    const attention = devs.filter((d) => d.firmwareStatus === 'behind' || ['expired', 'expiring'].includes(d.warrantyStatus) || ['eol', 'eos', 'eosale', 'soon', 'discontinued'].includes(d.lifecycle?.stage));
     return {
       total: devs.length,
       firmware: count((d) => d.firmwareStatus),

@@ -43,6 +43,13 @@ const version = (v) => {
   return s;
 };
 
+export const LIFECYCLE_STATUSES = ['announced', 'discontinued', 'not-announced'];
+const status = (v) => {
+  if (!LIFECYCLE_STATUSES.includes(v)) throw new Error('Lifecycle status must be announced, discontinued or not-announced');
+  return v;
+};
+const LIFECYCLE_FIELDS = ['endOfSale', 'endOfSupport', 'endOfLife', 'lifecycleUrl', 'lifecycleStatus', 'lifecycleNote'];
+
 /** Validate and normalise a model record from the API. */
 export function cleanModel(input, existing = null) {
   const make = String(input.make ?? existing?.make ?? '').trim().slice(0, 40);
@@ -60,6 +67,11 @@ export function cleanModel(input, existing = null) {
     endOfSupport: pick('endOfSupport', (v) => date(v, 'End of support')),
     endOfLife: pick('endOfLife', (v) => date(v, 'End of life')),
     lifecycleUrl: pick('lifecycleUrl', url),
+    lifecycleStatus: pick('lifecycleStatus', (v) => (v ? status(v) : null)),
+    lifecycleNote: pick('lifecycleNote', (v) => (v ? String(v).trim().slice(0, 600) : null)),
+    lifecycleRefs: existing?.lifecycleRefs ?? [],
+    lifecycleCheckedAt: existing?.lifecycleCheckedAt ?? null,
+    lifecycleSource: LIFECYCLE_FIELDS.some((k) => input[k] !== undefined && (input[k] ?? null) !== (existing?.[k] ?? null)) ? 'admin' : existing?.lifecycleSource ?? null,
     notes: pick('notes', (v) => (v ? String(v).trim().slice(0, 500) : null)),
     releases: existing?.releases ?? [],
     createdAt: existing?.createdAt || new Date().toISOString(),
@@ -95,7 +107,11 @@ export function lifecycleStage(m, now = Date.now()) {
   if (past(m.endOfSale)) return { stage: 'eosale', label: 'End of sale', date: m.endOfSale };
   const next = [['endOfSale', 'End of sale'], ['endOfSupport', 'End of support'], ['endOfLife', 'End of life']].find(([k]) => m[k] && Date.parse(m[k]) - now < 365 * DAY);
   if (next) return { stage: 'soon', label: `${next[1]} within 12 months`, date: m[next[0]] };
-  if (!m.endOfSale && !m.endOfSupport && !m.endOfLife) return { stage: 'nodates', label: 'No lifecycle dates' };
+  if (!m.endOfSale && !m.endOfSupport && !m.endOfLife) {
+    if (m.lifecycleStatus === 'discontinued') return { stage: 'discontinued', label: 'Discontinued (no dates published)' };
+    if (m.lifecycleStatus === 'not-announced') return { stage: 'notannounced', label: 'EOL not announced' };
+    return { stage: 'nodates', label: 'No lifecycle dates' };
+  }
   return { stage: 'supported', label: 'Supported' };
 }
 

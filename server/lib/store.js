@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { MOCK_CUSTOMERS, RETIRED_DEMO_IDS, buildEstate, registerMockCustomer, unregisterMockCustomer, demoModels } from '../mock/estate.js';
 import { modelKey, cleanModel, cleanRelease, sortReleases } from './models.js';
+import { applyLifecycle } from './lifecycle-catalogue.js';
 import { classifyDeviceType } from './device-model.js';
 import { avDemoModels } from '../mock/av-estate.js';
 import { CONNECTORS, AV_DEMO_OEMS } from '../connectors/registry.js';
@@ -133,6 +134,7 @@ export class Store {
   createModel(input) {
     const m = cleanModel(input);
     if (this.findModel(m.make, m.model)) throw new Error(`${m.make} ${m.model} is already in the model master`);
+    applyLifecycle(m);
     this.models.push(m);
     this.save();
     return m;
@@ -206,6 +208,7 @@ export class Store {
     for (const d of demoModels()) {
       const m = cleanModel({ make: d.make, model: d.model, deviceType: classifyDeviceType(d.model), monitoredBy: [d.make === 'Poly' ? 'poly-lens' : 'logitech-sync'], baseline: d.versions[0], notes: 'Demo entry: baseline set to the newest mock firmware.' });
       m.releases = d.versions.map((v) => ({ version: v, releasedAt: null, notesUrl: null, notes: null, source: 'fleet', firstSeenAt: now, addedAt: now }));
+      applyLifecycle(m);
       this.models.push(m);
     }
     this.seedAvModels();
@@ -219,6 +222,7 @@ export class Store {
       if (this.findModel(d.make, d.model)) continue;
       const m = cleanModel({ make: d.make, model: d.model, deviceType: classifyDeviceType(d.model), monitoredBy: d.monitoredBy, baseline: d.versions[0], notes: 'Demo entry: baseline set to the newest mock firmware.' });
       m.releases = d.versions.map((v) => ({ version: v, releasedAt: null, notesUrl: null, notes: null, source: 'fleet', firstSeenAt: now, addedAt: now }));
+      applyLifecycle(m);
       this.models.push(m);
     }
   }
@@ -553,6 +557,9 @@ export class Store {
       this.data.phase6 = true;
       changed = true;
     }
+    // Lifecycle catalogue: official EOS/EOL status for models that have none yet.
+    // Runs on every start so new catalogue entries reach existing data; admin edits are kept.
+    for (const m of this.models) if (applyLifecycle(m)) changed = true;
     if (changed) this.flush();
     return changed;
   }

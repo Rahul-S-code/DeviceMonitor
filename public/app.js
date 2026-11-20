@@ -2118,8 +2118,15 @@ const FW_LABEL = { compliant: 'At baseline', ahead: 'Ahead of baseline', behind:
 const FW_TONE = { compliant: 'good', ahead: 'good', behind: 'crit', 'no-baseline': 'mute', uncatalogued: 'mute', unknown: 'mute' };
 const W_LABEL = { active: 'In warranty', expiring: 'Expires within 90 days', expired: 'Expired', unknown: 'Not recorded' };
 const W_TONE = { active: 'good', expiring: 'warn', expired: 'crit', unknown: 'mute' };
-const LC_LABEL = { supported: 'Supported', soon: 'Milestone within 12 months', eosale: 'End of sale', eos: 'End of support', eol: 'End of life', nodates: 'No lifecycle dates', unknown: 'Not in model master' };
-const LC_TONE = { supported: 'good', soon: 'warn', eosale: 'warn', eos: 'crit', eol: 'crit', nodates: 'mute', unknown: 'mute' };
+const LC_LABEL = { supported: 'Supported', soon: 'Milestone within 12 months', eosale: 'End of sale', eos: 'End of support', eol: 'End of life', nodates: 'No lifecycle dates', notannounced: 'EOL not announced', discontinued: 'Discontinued, no dates', unknown: 'Not in model master' };
+const LC_TONE = { supported: 'good', soon: 'warn', eosale: 'warn', eos: 'crit', eol: 'crit', nodates: 'mute', notannounced: 'mute', discontinued: 'warn', unknown: 'mute' };
+// A lifecycle date, or "Not announced" when the manufacturer has published none.
+const lcDate = (v, status) => (v ? fmtDate(v) : status === 'not-announced' || status === 'discontinued' ? '<span class="muted">Not announced</span>' : '—');
+const LC_STATUS = { announced: 'Dates announced', discontinued: 'Discontinued, no dates published', 'not-announced': 'Not announced' };
+function lcSources(refs, url) {
+  const list = (refs && refs.length ? refs : url ? [{ label: 'Manufacturer notice', url }] : []);
+  return list.map((r) => `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.label)}</a>`).join('<br>');
+}
 const chip = (text, tone) => `<span class="chip ${tone || 'mute'}">${esc(text)}</span>`;
 const fmtDate = (v) => {
   if (!v) return '—';
@@ -2156,9 +2163,11 @@ function lifecycleSection(d) {
       ${d.contractRef ? `<dt>Contract</dt><dd class="mono">${esc(d.contractRef)}</dd>` : ''}
       ${d.purchaseDate ? `<dt>Purchased</dt><dd>${fmtDate(d.purchaseDate)}</dd>` : ''}
       <dt>Lifecycle</dt><dd>${chip(lc.label || 'Unknown', LC_TONE[lc.stage])}</dd>
-      <dt>End of sale</dt><dd>${fmtDate(lc.endOfSale)}</dd>
-      <dt>End of support</dt><dd>${fmtDate(lc.endOfSupport)}</dd>
-      <dt>End of life</dt><dd>${fmtDate(lc.endOfLife)}</dd>
+      <dt>End of sale</dt><dd>${lcDate(lc.endOfSale, lc.status)}</dd>
+      <dt>End of support</dt><dd>${lcDate(lc.endOfSupport, lc.status)}</dd>
+      <dt>End of life</dt><dd>${lcDate(lc.endOfLife, lc.status)}</dd>
+      ${lc.note ? `<dt>Lifecycle note</dt><dd style="font-size:13px">${esc(lc.note)}</dd>` : ''}
+      ${lc.refs?.length || lc.url ? `<dt>Source</dt><dd style="font-size:13px">${lcSources(lc.refs, lc.url)}${lc.checkedAt ? `<div class="muted" style="font-size:12px">Checked ${fmtDate(lc.checkedAt)}</div>` : ''}</dd>` : ''}
     </dl>`;
 }
 
@@ -2187,7 +2196,7 @@ async function viewLifecycle() {
       <div class="card"><div class="card-head"><div><h2>Warranty</h2><div class="card-sub">From Logitech Sync where it reports it, otherwise entered on the device</div></div></div>
         ${barList(['active', 'expiring', 'expired', 'unknown'].map((k) => ({ label: W_LABEL[k], n: n(w, k), tone: W_TONE[k] })), lc.total)}
         <div class="section-title">Model lifecycle stage</div>
-        ${barList(['supported', 'soon', 'eosale', 'eos', 'eol', 'nodates', 'unknown'].map((k) => ({ label: LC_LABEL[k], n: n(l, k), tone: LC_TONE[k] })).filter((x) => x.n), lc.total)}
+        ${barList(['supported', 'soon', 'eosale', 'eos', 'eol', 'discontinued', 'notannounced', 'nodates', 'unknown'].map((k) => ({ label: LC_LABEL[k], n: n(l, k), tone: LC_TONE[k] })).filter((x) => x.n), lc.total)}
       </div>
     </div>
     <div class="card"><div class="card-head"><div><h2>Devices needing attention</h2><div class="card-sub">${lc.attentionTotal} devices below baseline, out of warranty or past a lifecycle milestone${lc.attentionTotal > lc.attention.length ? ` (first ${lc.attention.length} shown)` : ''}</div></div></div>
@@ -2280,11 +2289,12 @@ async function viewModels() {
     ${r.uncatalogued.length ? `<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Models in the estate but not in the master</h2><div class="card-sub">${r.uncatalogued.reduce((a, u) => a + u.devices, 0)} devices can't be checked for firmware compliance or lifecycle</div></div>${isSuper() ? '<button class="btn btn-primary btn-sm" id="mImport">Add all to the master</button>' : ''}</div>
       <div class="chips">${r.uncatalogued.map((u, i) => `<button class="pill" data-unc="${i}" ${isSuper() ? '' : 'disabled'}>${esc(u.make)} ${esc(shortModel(u.make, u.model))} · ${u.devices}</button>`).join('')}</div></div>` : ''}
     <div class="card"><div class="card-head"><div><h2>${r.models.length} models</h2><div class="card-sub">Click a model to ${isSuper() ? 'edit it and its releases' : 'see its releases'}</div></div></div>
-      <div class="table-wrap"><table><thead><tr><th>Make</th><th>Model</th><th>Type</th><th>Monitored by</th><th>Baseline</th><th>Newest known</th><th>End of sale</th><th>End of support</th><th>End of life</th><th>Devices</th><th>Below baseline</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Make</th><th>Model</th><th>Type</th><th>Monitored by</th><th>Baseline</th><th>Newest known</th><th>End of sale</th><th>End of support</th><th>End of life</th><th>Source</th><th>Devices</th><th>Below baseline</th></tr></thead><tbody>
       ${r.models.map((m) => `<tr data-model="${esc(m.id)}"><td><b>${esc(m.make)}</b></td><td>${esc(shortModel(m.make, m.model))}</td><td>${esc(m.deviceType)}</td>
         <td><span class="src-tags">${(m.monitoredBy || []).map((o) => `<span class="pill" title="${esc(OEM_NAME[o] || o)}">${OEM_SHORT[o] || esc(o)}</span>`).join('') || '<span class="muted">Not monitored</span>'}</span></td>
         <td class="mono">${esc(m.baseline || '—')}</td><td class="mono">${esc(m.latest || '—')}${m.latest && m.baseline && cmpVer(m.latest, m.baseline) > 0 ? ` ${chip('newer', 'warn')}` : ''}</td>
-        <td>${fmtDate(m.endOfSale)}</td><td>${fmtDate(m.endOfSupport)}</td><td>${fmtDate(m.endOfLife)}</td><td>${m.devices}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td></tr>`).join('') || '<tr><td colspan="11" class="empty">No models yet</td></tr>'}
+        <td>${lcDate(m.endOfSale, m.lifecycleStatus)}</td><td>${lcDate(m.endOfSupport, m.lifecycleStatus)}</td><td>${lcDate(m.endOfLife, m.lifecycleStatus)}</td>
+        <td>${(m.lifecycleRefs?.[0] || m.lifecycleUrl) ? `<a href="${esc(m.lifecycleRefs?.[0]?.url || m.lifecycleUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${m.lifecycleStatus === 'discontinued' ? 'Discontinued' : 'Vendor page'}</a>` : m.lifecycleStatus ? '<span class="muted">No notice</span>' : '—'}</td><td>${m.devices}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td></tr>`).join('') || '<tr><td colspan="12" class="empty">No models yet</td></tr>'}
       </tbody></table></div></div>`;
   document.querySelectorAll('tr[data-model]').forEach((tr) => tr.addEventListener('click', () => openModel(S.modelList.find((m) => m.id === tr.dataset.model))));
   $('#mAdd')?.addEventListener('click', () => openModel(null));
@@ -2319,8 +2329,11 @@ function openModel(m, preset = {}) {
       <div class="field"><label>End of support</label><input id="mEos" type="date" value="${v('endOfSupport')}" ${dis}></div>
       <div class="field"><label>End of life</label><input id="mEol" type="date" value="${v('endOfLife')}" ${dis}></div>
       <div class="field"><label>Manufacturer notice (link)</label><input id="mUrl" value="${v('lifecycleUrl')}" ${dis} placeholder="https://"></div>
+      <div class="field"><label>Status</label><select id="mLcStatus" ${dis}><option value="">Not checked</option>${Object.entries(LC_STATUS).map(([k, l]) => `<option value="${k}" ${m?.lifecycleStatus === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     </div>
-    <div class="help block" style="margin:-4px 0 10px">Take these from the manufacturer's end-of-life notice. They are not filled in automatically.</div>
+    <div class="field"><label>Lifecycle note</label><textarea id="mLcNote" rows="3" ${dis}>${v('lifecycleNote')}</textarea></div>
+    ${m?.lifecycleRefs?.length ? `<div class="help block" style="margin:-4px 0 6px"><b>Sources checked${m.lifecycleCheckedAt ? ` ${fmtDate(m.lifecycleCheckedAt)}` : ''}:</b><br>${lcSources(m.lifecycleRefs)}</div>` : ''}
+    <div class="help block" style="margin:-4px 0 10px">Dates come only from official manufacturer notices${m?.lifecycleSource === 'catalogue' ? ' (pre-filled from the built-in lifecycle catalogue)' : ''}. Where none is published, leave them blank and set the status to "Not announced".</div>
     <div class="field"><label>Notes</label><input id="mNotes" value="${v('notes')}" ${dis}></div>
     ${creating ? '' : `<div class="section-title">Firmware releases</div>
       <div class="help block" style="margin-bottom:8px">Versions seen in the fleet are added automatically (marked "seen in fleet"). Add official releases with their release notes so a new version is known before devices take it.</div>
@@ -2340,6 +2353,7 @@ function openModel(m, preset = {}) {
       monitoredBy: [...w.querySelectorAll('.mMon:checked')].map((c) => c.value), baseline: $('#mBase', w).value.trim() || null,
       endOfSale: $('#mEosale', w).value || null, endOfSupport: $('#mEos', w).value || null, endOfLife: $('#mEol', w).value || null,
       lifecycleUrl: $('#mUrl', w).value.trim() || null, notes: $('#mNotes', w).value.trim() || null,
+      lifecycleStatus: $('#mLcStatus', w).value || null, lifecycleNote: $('#mLcNote', w).value.trim() || null,
     };
     try {
       await api(creating ? '/api/models' : `/api/models/${m.id}`, { method: creating ? 'POST' : 'PUT', body });
