@@ -107,3 +107,39 @@ test('room schematics are saved, validated and scoped', async (t) => {
   const other = await login('it@northwind.example');
   assert.equal((await other(`/api/rooms/schematic?${q}`)).status, 404);
 });
+
+test('mock data switch: a customer onboarded with it off has no devices, and switching it off clears mock devices', async (t) => {
+  const { ctx, login } = await startApp(t);
+  const sup = await login('superadmin@provider.example');
+  const res = await sup('/api/admin/customers', { method: 'POST', body: JSON.stringify({
+    name: 'Fabrikam', platforms: ['Zoom'], mockData: false,
+    sites: [{ name: 'Leeds', region: 'EMEA', mockRooms: 5 }],
+    connections: ['poly-lens', 'logitech-sync'],
+  }) });
+  assert.equal(res.status, 201);
+  const c = await res.json();
+  assert.equal(c.mockData, false);
+  assert.equal(c.deviceCount, 0, 'no mock devices');
+  assert.ok(c.connections.every((x) => x.status.mockOff && x.status.deviceCount === 0));
+  assert.equal((await sup.json('/api/tree')).filter((s) => s.customerId === c.id).flatMap((s) => s.rooms).length, 0, 'no mock rooms');
+
+  // A manual device still shows up.
+  const add = await sup('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: c.id, site: 'Leeds', room: 'Board 1', make: 'Acme', model: 'Projector X', deviceType: 'Display', serial: 'FAB-1' }) });
+  assert.ok(add.status === 201 || add.status === 200, `manual add ${add.status}`);
+
+  // Switch mock data off on a demo customer: its mock devices and mock alerts go.
+  const before = ctx.inventory.devices.filter((d) => d.customerId === 'cust-helix').length;
+  assert.ok(before > 0);
+  const off = await sup('/api/admin/customers/cust-helix', { method: 'PUT', body: JSON.stringify({ mockData: false }) });
+  assert.equal(off.status, 200);
+  const offBody = await off.json();
+  assert.equal(offBody.mockData, false);
+  assert.equal(offBody.deviceCount, 0);
+  assert.ok(!ctx.store.data.alerts.some((a) => a.customerId === 'cust-helix' && a.kind === 'device'));
+  assert.ok(ctx.inventory.devices.some((d) => d.customerId === 'cust-northwind'), 'other customers keep their mock data');
+
+  // And back on.
+  const on = await (await sup('/api/admin/customers/cust-helix', { method: 'PUT', body: JSON.stringify({ mockData: true }) })).json();
+  assert.equal(on.deviceCount, before);
+  assert.equal(ctx.inventory.devices.filter((d) => d.customerId === c.id).length, 1, 'manual device kept with mock data off');
+});

@@ -344,6 +344,26 @@ export class Store {
     return d;
   }
 
+  /** Whether this customer gets mock (demo) data. Customers created before the switch existed default to on. */
+  mockEnabled(customerId) {
+    return this.customers.find((c) => c.id === customerId)?.mockData !== false;
+  }
+
+  /** Mock Logitech rooms have no platform in the API; give them one from the customer's platforms. */
+  seedMockRoomPlatforms(id) {
+    for (const r of buildEstate(id).rooms) {
+      if (r.oem !== 'poly' && !this.roomPlatform(id, r.site, r.room)) this.data.roomDirectory[roomKey(id, r.site, r.room)] = r.platform;
+    }
+  }
+
+  /** Forget the room-directory entries the mock estate created, so empty mock rooms don't linger. Rooms with a schematic stay. */
+  clearMockRooms(id) {
+    for (const r of buildEstate(id).rooms) {
+      const k = roomKey(id, r.site, r.room);
+      if (!this.data.schematics[k]) delete this.data.roomDirectory[k];
+    }
+  }
+
   slaTarget(customerId) {
     const t = this.customers.find((c) => c.id === customerId)?.slaTarget;
     return typeof t === 'number' ? t : DEFAULT_SLA_TARGET;
@@ -353,6 +373,7 @@ export class Store {
   registerMocks() {
     for (const c of this.customers) {
       if (MOCK_CUSTOMERS.some((m) => m.id === c.id)) continue;
+      if (c.mockData === false) { unregisterMockCustomer(c.id); continue; }
       registerMockCustomer({
         id: c.id, name: c.name, platforms: c.platforms,
         sites: Object.entries(this.sitesFor(c.id)).map(([name, s]) => ({ name, ...s })),
@@ -361,14 +382,14 @@ export class Store {
   }
 
   /** Create a customer with sites, users, connections and rooms in one go (onboarding). */
-  onboardCustomer({ name, platforms = [], sites = [], users = [], connections = [], rooms = [] }) {
+  onboardCustomer({ name, platforms = [], sites = [], users = [], connections = [], rooms = [], mockData = true }) {
     const clean = String(name || '').trim().slice(0, 80);
     if (!clean) throw new Error('Customer name is required');
     if (this.customers.some((c) => c.name.toLowerCase() === clean.toLowerCase())) throw new Error('A customer with that name already exists');
     const slug = clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'customer';
     let id = `cust-${slug}`;
     while (this.customers.some((c) => c.id === id)) id = `cust-${slug}-${crypto.randomBytes(2).toString('hex')}`;
-    const customer = { id, name: clean, platforms: platforms.slice(0, 4), slaTarget: DEFAULT_SLA_TARGET, createdAt: new Date().toISOString() };
+    const customer = { id, name: clean, platforms: platforms.slice(0, 4), slaTarget: DEFAULT_SLA_TARGET, mockData: mockData !== false, createdAt: new Date().toISOString() };
     const siteDir = {};
     for (const s of sites) {
       const sname = String(s.name || '').trim().slice(0, 60);
@@ -396,17 +417,17 @@ export class Store {
       if (r.schematic) this.setSchematic(id, r.site, r.room, r.schematic);
     }
     this.registerMocks();
-    // Mock Logitech rooms have no platform in the API; give them one from the customer's platforms.
-    for (const r of buildEstate(id).rooms) {
-      if (r.oem !== 'poly' && !this.roomPlatform(id, r.site, r.room)) this.data.roomDirectory[roomKey(id, r.site, r.room)] = r.platform;
-    }
+    if (customer.mockData) this.seedMockRoomPlatforms(id);
     this.save();
     return { customer, connections: conns, users: newUsers.length };
   }
 
-  updateCustomer(id, { name, sites, platforms, slaTarget }) {
+  updateCustomer(id, { name, sites, platforms, slaTarget, mockData }) {
     const c = this.customers.find((x) => x.id === id);
     if (!c) throw new Error('Customer not found');
+    const wasMock = this.mockEnabled(id);
+    // Turning mock data off: drop the mock rooms while the mock estate can still list them.
+    if (mockData === false && wasMock) this.clearMockRooms(id);
     if (slaTarget !== undefined) {
       const t = Number(slaTarget);
       if (!Number.isFinite(t) || t < 50 || t > 100) throw new Error('SLA target must be between 50 and 100 percent');
@@ -419,8 +440,10 @@ export class Store {
       for (const s of sites) { const n = String(s.name || '').trim().slice(0, 60); if (n) dir[n] = cleanSite(s); }
       this.data.siteDirectory[id] = dir;
     }
+    if (typeof mockData === 'boolean') c.mockData = mockData;
     unregisterMockCustomer(id);
     this.registerMocks();
+    if (mockData === true && !wasMock) this.seedMockRoomPlatforms(id);
     this.save();
     return c;
   }

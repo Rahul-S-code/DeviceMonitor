@@ -464,7 +464,7 @@ function renderSyncList() {
     <div class="sync-item">
       <div class="oem-logo oem-${c.oem}">${OEM_SHORT[c.oem] || '?'}</div>
       <div><div class="sync-name">${esc(c.name)}</div>
-        <div class="sync-meta"><span class="pill ${c.mode}" style="padding:1px 7px">${c.mode === 'live' ? 'Live' : 'Mock'}</span> · ${c.status.deviceCount} devices · ${ago(c.status.lastSuccessAt)}</div>
+        <div class="sync-meta"><span class="pill ${c.mode}" style="padding:1px 7px">${c.mode === 'live' ? 'Live' : c.status.mockOff ? 'Not live' : 'Mock'}</span> · ${c.status.deviceCount} devices · ${ago(c.status.lastSuccessAt)}</div>
         ${c.status.error ? `<div class="err-line">${esc(c.status.error)}</div>` : ''}</div>
       ${syncState(c.status)}
     </div>`).join('') || '<div class="empty">No connections</div>';
@@ -897,9 +897,10 @@ function connCard(c) {
   return `<div class="conn-card">
     <div class="conn-top"><div class="oem-logo oem-${c.oem}">${OEM_SHORT[c.oem] || '?'}</div>
       <div><div class="sync-name">${esc(c.oemName)}</div><div class="sync-meta">${esc(c.name)}</div></div>
-      <span class="pill ${c.mode}">${c.mode === 'live' ? 'Live' : 'Mock data'}</span></div>
+      <span class="pill ${c.mode}">${c.mode === 'live' ? 'Live' : st.mockOff ? 'Not live' : 'Mock data'}</span></div>
     <div class="conn-stats"><div><span class="muted">Status</span>${syncState(st)}</div><div><span class="muted">Devices</span><b>${st.deviceCount}</b></div><div><span class="muted">Last sync</span><b>${ago(st.lastSuccessAt)}</b></div></div>
     ${st.error ? `<div class="err-line">${esc(st.error)}</div>` : ''}
+    ${st.mockOff ? '<div class="muted" style="font-size:12px">Mock data is off for this customer, so this connection shows no devices until it goes live.</div>' : ''}
     ${S.connectors.find((x) => x.oem === c.oem)?.liveSupported === false ? '<div class="muted" style="font-size:12px">Mock only: no public API for live data.</div>' : ''}
     ${isAdmin() ? `<div class="conn-actions"><button class="btn btn-primary btn-sm" data-cfg="${c.id}">${c.mode === 'live' || S.connectors.find((x) => x.oem === c.oem)?.liveSupported === false ? 'Configure' : 'Configure & go live'}</button><button class="btn btn-outline btn-sm" data-sync="${c.id}">Sync now</button></div>` : ''}
   </div>`;
@@ -1905,7 +1906,8 @@ async function viewCustomers() {
     <div class="conn-grid">${list.map((c) => `
       <div class="conn-card">
         <div class="conn-top"><div class="oem-logo" style="background:var(--grad)">${esc(c.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join(''))}</div>
-          <div><div class="sync-name">${esc(c.name)}</div><div class="sync-meta">${c.sites.length} sites · ${c.users.length} users · ${c.connections.length} connections</div></div>
+          <div><div class="sync-name">${esc(c.name)}</div><div class="sync-meta">${c.sites.length} sites · ${c.users.length} users · ${c.connections.length} connections</div>
+            <div style="margin-top:4px">${c.mockData === false ? '<span class="pill live" style="padding:1px 7px">Live and uploaded data only</span>' : '<span class="pill mock" style="padding:1px 7px">Mock data on</span>'}</div></div>
           ${status(c.health.total ? ['critical', 'offline', 'warning', 'healthy'].find((h) => c.health[h]) : 'none')}</div>
         <div class="brk-bar" style="height:8px">${HEALTH_BARS.filter((h) => c.health[h]).map((h) => `<span class="f-${h}" style="flex:${c.health[h]}"></span>`).join('')}</div>
         <div class="conn-stats"><div><span class="muted">Devices</span><b>${c.deviceCount}</b></div><div><span class="muted">Sites</span><b>${c.sites.length}</b></div><div><span class="muted">Platforms</span><b style="font-size:12px">${esc((c.platforms || []).join(', ') || '—')}</b></div></div>
@@ -1946,6 +1948,27 @@ function bindSiteRows(root, onChange) {
   });
 }
 
+/** The per-customer "Mock data" switch, shared by onboarding and the edit drawer. */
+function mockSwitch(id, on) {
+  return `<div class="mock-switch">
+    <label class="switch"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} role="switch"><span class="slider"></span></label>
+    <div><b>Mock data</b> <span class="muted" data-mock-state>${on ? 'On' : 'Off'}</span>
+      <div class="help" data-mock-help></div></div></div>`;
+}
+function bindMockSwitch(root, id, onChange) {
+  const box = $(`#${id}`, root);
+  const wrap = box.closest('.mock-switch');
+  const paint = () => {
+    wrap.querySelector('[data-mock-state]').textContent = box.checked ? 'On' : 'Off';
+    wrap.querySelector('[data-mock-help]').textContent = box.checked
+      ? 'Sample devices are generated for this customer\'s sites while its connections are in mock mode.'
+      : 'No sample devices. This customer only shows devices from live API connections and from manual or CSV uploads.';
+    onChange?.();
+  };
+  box.addEventListener('change', paint);
+  paint();
+}
+
 function openOnboarding() {
   const state = { sites: [{}], users: [{}], rooms: [] };
   const w = drawer('Onboard customer', 'Everything here can be changed later', `
@@ -1953,6 +1976,7 @@ function openOnboarding() {
     <div class="step"><span>1</span>Customer</div>
     <div class="field"><label>Customer name *</label><input id="obName" placeholder="e.g. Contoso Group"></div>
     <div class="field"><label>Meeting platforms used</label><div class="chk-row">${PLATFORM_LIST.filter((p) => p !== 'Unassigned').map((p) => `<label><input type="checkbox" class="obPlat" value="${p}" checked> ${p}</label>`).join('')}</div></div>
+    ${mockSwitch('obMock', true)}
     <div class="step"><span>2</span>Sites</div>
     <div class="help" style="margin-bottom:8px">Pick a city preset to fill in the map coordinates, or type them. Sites with coordinates appear on the map.</div>
     <div id="obSites"></div><button class="btn btn-outline btn-sm" id="obAddSite">Add site</button>
@@ -1964,12 +1988,20 @@ function openOnboarding() {
     <div class="chk-row">${S.connectors.filter((c) => c.kind !== 'platform').map((c) => `<label><input type="checkbox" class="obConn" value="${c.oem}" ${['poly-lens', 'logitech-sync'].includes(c.oem) ? 'checked' : ''}> ${esc(c.displayName)}${c.liveSupported === false ? ' <span class="muted">(demo only)</span>' : ''}</label>`).join('')}</div>
     <div class="help" style="margin:10px 0 6px">Meeting-platform portals</div>
     <div class="chk-row">${S.connectors.filter((c) => c.kind === 'platform').map((c) => `<label><input type="checkbox" class="obConn" value="${c.oem}" checked> ${esc(c.displayName)}${c.liveSupported === false ? ' <span class="muted">(mock only)</span>' : ''}</label>`).join('')}</div>
-    <div class="help">Connections start on mock data. Add the API keys afterwards on the Connections page to go live.</div>
+    <div class="help" id="obConnHelp">Connections start on mock data. Add the API keys afterwards on the Connections page to go live.</div>
     <div class="step"><span>5</span>Rooms and schematics (optional)</div>
     <div class="help" style="margin-bottom:8px">Pre-load rooms with their platform and cabling, from a template or a JSON file. Devices can be grouped into these rooms later.</div>
     <div id="obRooms"></div><button class="btn btn-outline btn-sm" id="obAddRoom">Add room</button>`,
   '<button class="btn btn-primary" id="obGo">Create customer</button>');
   w.querySelector('.drawer').classList.add('wide');
+  const syncMockUi = () => {
+    const on = $('#obMock', w).checked;
+    w.classList.toggle('mock-off', !on);
+    $('#obConnHelp', w).textContent = on
+      ? 'Connections start on mock data. Add the API keys afterwards on the Connections page to go live.'
+      : 'Mock data is off, so these connections show no devices until you add their API keys on the Connections page. You can also add devices by hand or by CSV upload.';
+  };
+  bindMockSwitch(w, 'obMock', syncMockUi);
   const renderSites = () => {
     const cur = $('#obSites', w).children.length ? readSitesAll() : state.sites;
     $('#obSites', w).innerHTML = cur.map((s, i) => siteRow(s, i)).join('');
@@ -2017,13 +2049,14 @@ function openOnboarding() {
         users: [...$('#obUsers', w).querySelectorAll('.user-row')].map((r) => Object.fromEntries([...r.querySelectorAll('[data-u]')].map((i) => [i.dataset.u, i.value.trim()]))).filter((u) => u.email),
         connections: [...w.querySelectorAll('.obConn:checked')].map((c) => c.value),
         rooms,
+        mockData: $('#obMock', w).checked,
       };
       if (!body.name) return msg('Enter the customer name.');
       if (!body.sites.length) return msg('Add at least one site.');
       e.target.disabled = true; e.target.textContent = 'Creating…';
       const c = await api('/api/admin/customers', { method: 'POST', body });
       closeDrawer();
-      toast(ICONS.resolved, `${c.name} onboarded with ${c.deviceCount} mock devices`);
+      toast(ICONS.resolved, c.mockData === false ? `${c.name} onboarded with no devices. Add API keys or upload devices to fill it.` : `${c.name} onboarded with ${c.deviceCount} mock devices`);
       S.customers = await api('/api/customers');
       S.options = await api('/api/filters');
       renderShell(); navigate();
@@ -2036,6 +2069,7 @@ function openCustomerEdit(c) {
     <div id="ceMsg"></div>
     <div class="grid cols-2" style="gap:10px"><div class="field"><label>Customer name</label><input id="ceName" value="${esc(c.name)}"></div>
       <div class="field"><label>SLA availability target (%)</label><input id="ceSla" type="number" step="0.01" min="50" max="100" value="${esc(c.slaTarget ?? 99.5)}"><div class="help">Shown against measured availability on the SLA tab.</div></div></div>
+    ${mockSwitch('ceMock', c.mockData !== false)}
     <div class="section-title">Sites</div>
     <div id="ceSites">${c.sites.map((s, i) => siteRow(s, i)).join('')}</div>
     <button class="btn btn-outline btn-sm" id="ceAddSite">Add site</button>
@@ -2043,15 +2077,28 @@ function openCustomerEdit(c) {
     ${c.users.map((u) => `<div class="side-row" style="cursor:default"><span class="grow">${esc(u.name)}<small>${esc(u.email)}</small></span><button class="linkbtn" data-deluser="${esc(u.id)}">Remove</button></div>`).join('') || '<div class="muted">No users yet</div>'}
     <div class="user-row" style="margin-top:10px"><input id="nuEmail" type="email" placeholder="Email"><input id="nuName" placeholder="Name"><input id="nuPw" type="password" placeholder="Password (8+ characters)" autocomplete="new-password"><button class="btn btn-outline btn-sm" id="nuAdd">Add user</button></div>
     <div class="section-title">Connections</div>
-    ${c.connections.map((x) => `<div class="side-row" style="cursor:default"><span class="grow">${esc(x.name)}<small>${x.mode === 'live' ? 'Live' : 'Mock data'} · ${x.status.deviceCount} devices</small></span>${syncState(x.status)}</div>`).join('')}
+    ${c.connections.map((x) => `<div class="side-row" style="cursor:default"><span class="grow">${esc(x.name)}<small>${x.mode === 'live' ? 'Live' : x.status.mockOff ? 'Awaiting API keys' : 'Mock data'} · ${x.status.deviceCount} devices</small></span>${syncState(x.status)}</div>`).join('')}
     <div class="help">Manage API keys on the Connections page.</div>`,
   `<button class="btn btn-danger" id="ceDel" style="margin-right:auto">Delete customer</button><button class="btn btn-primary" id="ceSave">Save</button>`);
   w.querySelector('.drawer').classList.add('wide');
   const msg = (t, ok) => { $('#ceMsg', w).innerHTML = `<div class="notice ${ok ? 'ok' : 'err'}">${esc(t)}</div>`; w.querySelector('.drawer-body').scrollTop = 0; };
   bindSiteRows($('#ceSites', w));
+  const syncCeMock = () => w.classList.toggle('mock-off', !$('#ceMock', w).checked);
+  bindMockSwitch(w, 'ceMock', syncCeMock);
   $('#ceAddSite', w).addEventListener('click', () => { $('#ceSites', w).insertAdjacentHTML('beforeend', siteRow({}, Date.now())); bindSiteRows($('#ceSites', w)); });
-  $('#ceSave', w).addEventListener('click', async () => {
-    try { await api(`/api/admin/customers/${c.id}`, { method: 'PUT', body: { name: $('#ceName', w).value, slaTarget: Number($('#ceSla', w).value), sites: readSites($('#ceSites', w)) } }); closeDrawer(); toast(ICONS.resolved, 'Customer saved'); S.customers = await api('/api/customers'); viewCustomers(); } catch (e) { msg(e.message); }
+  $('#ceSave', w).addEventListener('click', async (e) => {
+    const mockData = $('#ceMock', w).checked;
+    const turningOff = c.mockData !== false && !mockData;
+    if (turningOff && !e.currentTarget.dataset.confirm) {
+      e.currentTarget.dataset.confirm = 1; e.currentTarget.textContent = 'Click again to remove all mock devices';
+      return msg(`Turning mock data off removes every mock device, mock room and mock alert for ${c.name}. Devices from live API connections and manual or CSV uploads stay.`);
+    }
+    try {
+      const fresh = await api(`/api/admin/customers/${c.id}`, { method: 'PUT', body: { name: $('#ceName', w).value, slaTarget: Number($('#ceSla', w).value), sites: readSites($('#ceSites', w)), mockData } });
+      closeDrawer();
+      toast(ICONS.resolved, turningOff ? `Mock data off. ${fresh.name} now has ${fresh.deviceCount} devices.` : 'Customer saved');
+      S.customers = await api('/api/customers'); S.options = await api('/api/filters'); viewCustomers();
+    } catch (err) { msg(err.message); }
   });
   $('#nuAdd', w).addEventListener('click', async () => {
     try { const u = await api(`/api/admin/customers/${c.id}/users`, { method: 'POST', body: { email: $('#nuEmail', w).value, name: $('#nuName', w).value, password: $('#nuPw', w).value } }); openCustomerEdit(u); toast(ICONS.resolved, 'User added'); } catch (e) { msg(e.message); }

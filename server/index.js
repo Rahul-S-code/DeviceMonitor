@@ -415,6 +415,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const devs = inventory.devices.filter((d) => d.customerId === c.id);
     return {
       ...c,
+      mockData: store.mockEnabled(c.id),
       sites: Object.entries(store.sitesFor(c.id)).map(([name, s]) => ({ name, ...s })),
       users: store.users.filter((u) => u.customerId === c.id).map(({ id, email, name }) => ({ id, email, name })),
       connections: store.connections.filter((x) => x.customerId === c.id).map((x) => ({ id: x.id, oem: x.oem, name: x.name, mode: x.mode, status: sync.statusFor(x.id) })),
@@ -432,7 +433,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
         platform: PLATFORMS.includes(r.platform) && r.platform !== 'Unassigned' ? r.platform : null,
         schematic: r.schematic ? validateSchematic(r.schematic) : null,
       }));
-      const out = store.onboardCustomer({ ...b, platforms: (b.platforms || []).filter((p) => PLATFORMS.includes(p)), connections: conns, rooms });
+      const out = store.onboardCustomer({ ...b, mockData: b.mockData !== false, platforms: (b.platforms || []).filter((p) => PLATFORMS.includes(p)), connections: conns, rooms });
       await Promise.all(out.connections.map((c) => sync.syncConnection(c)));
       sync.refresh();
       audit(req, 'customer.onboard', { customerId: out.customer.id, target: out.customer.name, details: { sites: Object.keys(store.sitesFor(out.customer.id)).length, users: out.users, connections: out.connections.map((c) => c.oem), rooms: rooms.length } });
@@ -443,10 +444,20 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     try {
       const before = store.customers.find((x) => x.id === req.params.id);
       const prevTarget = before ? store.slaTarget(before.id) : null;
-      const c = store.updateCustomer(req.params.id, req.body || {});
-      audit(req, 'customer.update', { customerId: c.id, target: c.name, details: { fields: Object.keys(req.body || {}), ...(req.body?.slaTarget !== undefined ? { slaTarget: { from: prevTarget, to: c.slaTarget } } : {}) } });
+      const prevMock = before ? store.mockEnabled(before.id) : null;
+      const body = { ...(req.body || {}) };
+      if (body.mockData !== undefined) body.mockData = body.mockData !== false;
+      const c = store.updateCustomer(req.params.id, body);
+      const mockChanged = body.mockData !== undefined && prevMock !== c.mockData;
+      audit(req, 'customer.update', { customerId: c.id, target: c.name, details: { fields: Object.keys(req.body || {}), ...(req.body?.slaTarget !== undefined ? { slaTarget: { from: prevTarget, to: c.slaTarget } } : {}), ...(mockChanged ? { mockData: { from: prevMock, to: c.mockData } } : {}) } });
       await Promise.all(store.connections.filter((x) => x.customerId === c.id).map((x) => sync.syncConnection(x)));
       sync.refresh();
+      if (mockChanged && c.mockData === false) {
+        // Alerts raised by the mock devices that just went away.
+        const present = new Set(inventory.devices.map((d) => d.id));
+        store.data.alerts = store.data.alerts.filter((a) => a.customerId !== c.id || a.kind !== 'device' || present.has(a.deviceId));
+        store.save();
+      }
       res.json(customerSummary(c));
     } catch (e) { res.status(400).json({ error: e.message }); }
   });

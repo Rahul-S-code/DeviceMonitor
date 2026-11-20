@@ -32,9 +32,12 @@ export class SyncService extends EventEmitter {
     this.emit('sync', { connectionId: conn.id, ...this.statusFor(conn.id) });
     const started = Date.now();
     try {
-      const devices = await this.connectorFor(conn).sync();
+      // A customer with mock data switched off gets nothing from mock-mode connections:
+      // its devices come only from live APIs and manual or bulk uploads.
+      const mockOff = conn.mode !== 'live' && this.store.mockEnabled?.(conn.customerId) === false;
+      const devices = mockOff ? [] : await this.connectorFor(conn).sync();
       this.inventory.setConnectionDevices(conn.id, devices);
-      this.status.set(conn.id, { state: 'ok', mode: conn.mode, lastRunAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), durationMs: Date.now() - started, deviceCount: devices.length, error: null });
+      this.status.set(conn.id, { state: 'ok', mode: conn.mode, ...(mockOff ? { mockOff: true } : {}), lastRunAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), durationMs: Date.now() - started, deviceCount: devices.length, error: null });
       if (prev.state === 'error') this.raise({ kind: 'sync', severity: 'resolved', customerId: conn.customerId, connectionId: conn.id, message: `${conn.name}: sync recovered` });
     } catch (err) {
       // Keep the last good data so a flaky API doesn't blank the dashboard.
