@@ -115,6 +115,9 @@ test('Logitech Sync follows continuation pagination', async () => {
 });
 
 test('Logitech Sync live mode calls /org/{orgId}/place over mutual TLS', async (t) => {
+  // The test server listens on 127.0.0.1, which the outbound guard normally refuses.
+  process.env.ALLOW_PRIVATE_API_HOSTS = 'true';
+  t.after(() => { delete process.env.ALLOW_PRIVATE_API_HOSTS; });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mtls-'));
   const ssl = (...a) => execFileSync('openssl', a, { cwd: dir, stdio: 'pipe' });
   ssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.pem', '-days', '1', '-subj', '/CN=test-ca');

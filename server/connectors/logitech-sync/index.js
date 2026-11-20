@@ -17,6 +17,7 @@ import https from 'node:https';
 import { BaseConnector } from '../base.js';
 import { issue, classifyFault } from '../../lib/issues.js';
 import { recordCall } from '../../lib/api-calls.js';
+import { isBlockedHost, safeLookup } from '../../lib/net-guard.js';
 import { makeDevice, classifyDeviceType, splitPath } from '../../lib/device-model.js';
 import { LogitechSyncMockTransport } from './mock.js';
 
@@ -37,8 +38,12 @@ export class LogitechSyncHttpTransport {
     const started = Date.now();
     const track = (status, error) => { if (this.requestImpl === https.request) recordCall(url.href, { status, ms: Date.now() - started, error }); };
     return new Promise((resolve, reject) => {
+      if (this.requestImpl === https.request && isBlockedHost(url.hostname) && process.env.ALLOW_PRIVATE_API_HOSTS !== 'true') {
+        reject(new Error(`Refusing to call ${url.hostname}: internal and private addresses are not allowed`)); return;
+      }
       const req = this.requestImpl(url, {
         method: 'GET',
+        lookup: safeLookup,
         cert: this.certPem,
         key: this.keyPem,
         ...(this.caPem ? { ca: this.caPem } : {}),

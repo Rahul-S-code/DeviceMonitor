@@ -19,6 +19,7 @@ import { PLATFORMS } from './lib/device-model.js';
 import { csvObjects, toCsv } from './lib/csv.js';
 import { LEVELS, LIFECYCLE_LIMITS, resolveFirmware } from './lib/baselines.js';
 import { compareVersions } from './lib/models.js';
+import { isBlockedHost } from './lib/net-guard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -79,11 +80,18 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   app.use(express.json({ limit: '256kb' }));
   app.use((req, res, next) => {
     res.set({
-      'Content-Security-Policy': `default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: ${tileHosts}; connect-src 'self'`,
+      'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: ${tileHosts}; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Resource-Policy': 'same-origin',
     });
+    // Browsers must only ever use HTTPS for this site once they have seen it over HTTPS.
+    if (req.secure) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    // API answers hold customer data: never keep them in a browser or proxy cache.
+    if (req.path.startsWith('/api/') && !req.path.startsWith('/api/designs/')) res.set('Cache-Control', 'no-store');
     next();
   });
 
@@ -106,20 +114,36 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     actor: actorOf(req.user), actingCustomerId: req.session?.actingCustomerId || null, ip: req.ip, action, ...extra,
   });
 
+  // Sign-in throttling, per IP address and per account (so spreading a password
+  // guess across many IPs still locks the account). Lockouts double up to 15 minutes.
   const failures = new Map();
+  const LOGIN_MAX = 5;
+  const lockedFor = (key) => { const f = failures.get(key); return f && f.until > Date.now() ? f.until - Date.now() : 0; };
+  const noteFailure = (key) => {
+    const f = failures.get(key) || { n: 0, until: 0, strikes: 0, at: 0 };
+    f.n += 1; f.at = Date.now();
+    if (f.n >= LOGIN_MAX) { f.strikes += 1; f.until = Date.now() + Math.min(60_000 * 2 ** (f.strikes - 1), 15 * 60_000); f.n = 0; }
+    failures.set(key, f);
+  };
+  // Forget stale counters so the map cannot grow without limit.
+  const pruneFailures = setInterval(() => { const old = Date.now() - 60 * 60_000; for (const [k, f] of failures) if (f.at < old && f.until < Date.now()) failures.delete(k); }, 10 * 60_000);
+  pruneFailures.unref?.();
+  // Compare against a throwaway hash when the email is unknown, so timing does not reveal which emails exist.
+  const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
   app.post('/api/login', requireJson, (req, res) => {
     const ip = req.ip;
-    const f = failures.get(ip) || { n: 0, until: 0 };
-    if (f.until > Date.now()) return res.status(429).json({ error: 'Too many attempts. Try again in a minute.' });
     const { email, password } = req.body || {};
-    const user = store.users.find((u) => u.email.toLowerCase() === String(email || '').toLowerCase());
-    if (!user || !verifyPassword(String(password || ''), user.password)) {
-      f.n += 1; if (f.n >= 5) { f.until = Date.now() + 60_000; f.n = 0; }
-      failures.set(ip, f);
+    const acct = `acct:${String(email || '').trim().toLowerCase().slice(0, 200)}`;
+    const wait = Math.max(lockedFor(`ip:${ip}`), lockedFor(acct));
+    if (wait) { res.set('Retry-After', String(Math.ceil(wait / 1000))); return res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(wait / 60_000)} minute${wait > 60_000 ? 's' : ''}.` }); }
+    const user = store.users.find((u) => u.email.toLowerCase() === String(email || '').trim().toLowerCase());
+    const ok = verifyPassword(String(password || '').slice(0, 1024), user ? user.password : DUMMY_HASH);
+    if (!user || !ok) {
+      noteFailure(`ip:${ip}`); noteFailure(acct);
       store.audit({ actor: actorOf(user) || { id: null, email: String(email || '').slice(0, 120).toLowerCase(), name: null, role: null }, ip, action: 'auth.login_failed', customerId: user?.customerId || null });
       return res.status(401).json({ error: 'Email or password is incorrect' });
     }
-    failures.delete(ip);
+    failures.delete(`ip:${ip}`); failures.delete(acct);
     const token = sessions.create(user.id);
     store.audit({ actor: actorOf(user), ip, action: 'auth.login', customerId: user.customerId || null });
     res.cookie(COOKIE, token, { httpOnly: true, sameSite: 'strict', secure: req.secure, maxAge: 12 * 3600 * 1000, path: '/' });
@@ -563,8 +587,9 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.flushHeaders();
     const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     const onAlert = (a) => { if (allowed.has(a.customerId)) send('alert', a); };
-    const onAlerts = (x) => send('alerts', x); // a burst (e.g. first sync of a big estate): the page reloads its feed
-    const onInv = (d) => send('inventory', d);
+    // Counts span every customer, so only admins get them.
+    const onAlerts = (x) => send('alerts', isAdmin ? x : { at: x.at }); // a burst (e.g. first sync of a big estate): the page reloads its feed
+    const onInv = (d) => send('inventory', isAdmin ? d : { builtAt: d.builtAt });
     const onSync = (s) => {
       const conn = store.connections.find((c) => c.id === s.connectionId);
       if (conn && allowed.has(conn.customerId)) send('sync', isAdmin ? s : { ...s, error: s.error ? 'Sync error' : null });
@@ -603,8 +628,19 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       if (!v) continue;
       let u = null; try { u = new URL(v); } catch { /* invalid */ }
       if (!u || u.protocol !== 'https:' || /@/.test(v)) return `${f.label} must be a full https:// address${f.default ? `, for example ${f.default}` : ''}. Clear the field to use the default.`;
+      if (isBlockedHost(u.hostname) && process.env.ALLOW_PRIVATE_API_HOSTS !== 'true') return `${f.label} cannot point at an internal or private address.`;
     }
     return null;
+  };
+  // Stored credentials are only ever sent to the API hosts they were saved for. Changing a
+  // URL setting to another host needs the credentials typed again, so nobody can redirect
+  // saved secrets to a server they control.
+  const hostOf = (v) => { try { return new URL(v).host.toLowerCase(); } catch { return ''; } };
+  const urlHostsChanged = (C, before = {}, after = {}) => C.settingFields.filter(isUrlField)
+    .some((f) => hostOf(before[f.key] || f.default || '') !== hostOf(after[f.key] || f.default || ''));
+  const retypedAll = (C, box, input = {}) => {
+    const stored = box ? Object.keys(vault.decrypt(box)) : [];
+    return stored.every((k) => typeof input?.[k] === 'string' && input[k].trim() !== '');
   };
   const mergeSecrets = (C, existingBox, input = {}) => {
     const current = existingBox ? vault.decrypt(existingBox) : {};
@@ -643,6 +679,9 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const { name, settings, credentials, mode } = req.body || {};
     if (mode === 'live' && C.liveSupported === false) return res.status(400).json({ error: C.liveNote || `${C.displayName} has no live API` });
     const badSetting = settingsError(C, settings); if (badSetting) return res.status(400).json({ error: badSetting });
+    if (settings && conn.secret && urlHostsChanged(C, conn.settings, cleanSettings(C, settings)) && !retypedAll(C, conn.secret, credentials)) {
+      return res.status(400).json({ error: 'You changed an API address. Type the credentials again so the saved ones are not sent to the new server.' });
+    }
     let interval;
     if (req.body && 'syncIntervalSec' in req.body) { try { interval = cleanInterval(req.body.syncIntervalSec, { min: minIntervalFor(conn.oem) }); } catch (e) { return res.status(400).json({ error: e.message }); } }
     const before = { name: conn.name, mode: conn.mode, settings: JSON.stringify(conn.settings), syncIntervalSec: conn.syncIntervalSec ?? null };
@@ -673,7 +712,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const b = req.body || {};
     const badSetting = settingsError(C, b.settings); if (badSetting) return res.json({ ok: false, message: badSetting });
     const draft = { ...conn, mode: b.mode || conn.mode, settings: b.settings ? cleanSettings(C, b.settings) : conn.settings };
-    const creds = { ...(conn.secret ? vault.decrypt(conn.secret) : {}) };
+    const creds = { ...(conn.secret && !urlHostsChanged(C, conn.settings, draft.settings) ? vault.decrypt(conn.secret) : {}) };
     for (const f of C.credentialFields) if (typeof b.credentials?.[f.key] === 'string' && b.credentials[f.key].trim()) creds[f.key] = b.credentials[f.key].trim();
     try {
       const result = await createConnector(draft, draft.mode === 'live' ? creds : {}).testConnection();

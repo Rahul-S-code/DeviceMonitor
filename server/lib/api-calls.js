@@ -1,3 +1,4 @@
+import { assertPublicUrl } from './net-guard.js';
 // Counts the real outbound API calls the connectors make (live mode only),
 // so the API tracker can show call volume, errors and latency per endpoint.
 // In memory: the figures cover the time since the server last started.
@@ -33,11 +34,25 @@ export function callStats(id) {
 
 export function resetCallStats() { stats.clear(); }
 
-/** fetch() that records each call. Connectors use it for their live transports. */
-export async function trackedFetch(url, opts) {
+/**
+ * fetch() that records each call. Connectors use it for their live transports.
+ * Internal addresses are refused (see net-guard.js), and redirects are followed
+ * by hand (up to 3) so a vendor URL cannot bounce the request onto one.
+ */
+export async function trackedFetch(url, opts = {}) {
   const started = Date.now();
   try {
-    const res = await fetch(url, opts);
+    let target = String(url);
+    let init = { ...opts, redirect: 'manual' };
+    let res;
+    for (let hop = 0; ; hop++) {
+      await assertPublicUrl(target);
+      res = await fetch(target, init);
+      const loc = res.status >= 300 && res.status < 400 ? res.headers?.get?.('location') : null;
+      if (!loc || hop >= 3) break;
+      target = new URL(loc, target).href;
+      if (res.status !== 307 && res.status !== 308) { const { body, headers = {}, ...rest } = init; const { 'content-type': _ct, ...h } = headers; init = { ...rest, headers: h, method: 'GET' }; }
+    }
     recordCall(url, { status: res.status, ms: Date.now() - started });
     return res;
   } catch (e) {
