@@ -789,6 +789,7 @@ async function openDevice(id) {
       ${d.tags?.length ? `<dt>Tags</dt><dd>${d.tags.map((t) => `<span class="pill blue">${esc(t)}</span>`).join(' ')}</dd>` : ''}
       ${d.notes ? `<dt>Notes</dt><dd>${esc(d.notes)}</dd>` : ''}
     </dl>
+    ${deviceUiHTML(d)}
     ${d.manualId ? `<div class="notice ${d.health === 'unmonitored' ? 'info' : 'ok'}" style="margin-top:14px">${d.health === 'unmonitored' ? `${esc(d.healthReason || 'Added manually.')} It has no live health.` : 'Added manually and now also reported by a connected API, which provides its live health.'}
       ${can('estate.edit') ? `<div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mEdit">Edit manual record</button><button class="btn btn-danger btn-sm" id="mDel">Remove manual record</button></div>` : ''}</div>` : ''}
     ${lifecycleSection(d)}
@@ -809,6 +810,7 @@ async function openDevice(id) {
         <div class="field"><label>Warranty / support plan</label><input id="eWarrType" value="${esc(d.warrantyType || '')}" placeholder="e.g. Poly+ Premier, Logitech Select"></div>
         <div class="field"><label>Contract reference</label><input id="eContract" value="${esc(d.contractRef || '')}"></div>
         <div class="field"><label>Purchase date</label><input id="ePurchase" type="date" value="${esc(d.purchaseDate || '')}"></div>
+        <div class="field"><label>Device UI address</label><input id="eWebUrl" value="${esc(d.webUrl || '')}" placeholder="${esc(d.ip ? `Default https://${d.ip}/` : 'e.g. https://10.0.4.21/')}"><div class="help">Where its own web interface lives, if not https://&lt;IP&gt;/ (for example another port or http).</div></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" id="eSave">Save changes</button>${d.overridden?.length ? '<button class="btn btn-outline btn-sm" id="eReset">Reset to OEM values</button>' : ''}</div>` : ''}
     <div class="section-title">Reported by ${d.sources.length} source${d.sources.length > 1 ? 's' : ''}</div>
@@ -822,6 +824,8 @@ async function openDevice(id) {
   if ($('#devActions')) mountDeviceActions($('#devActions'), d);
   if ($('#diagCables')) mountDiagCables($('#diagCables'), d);
   bindReportIssue(document.querySelector('.drawer'), { deviceId: d.id });
+  // The link opens the device directly; this only records who opened it.
+  $('#openUi')?.addEventListener('click', () => { fetch(`/api/devices/${encodeURIComponent(d.id)}/webui`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', credentials: 'same-origin', keepalive: true }).catch(() => {}); });
   $('#eSave')?.addEventListener('click', async () => {
     const tags = $('#eTags').value.split(',').map((t) => t.trim()).filter(Boolean);
     const set = { site: $('#eSite').value, room: $('#eRoom').value, platform: $('#ePlat').value, assetTag: $('#eAsset').value || null, notes: $('#eNotes').value || null, removeTags: d.tags || [], addTags: tags };
@@ -830,6 +834,7 @@ async function openDevice(id) {
     set.warrantyType = changed('#eWarrType', d.warrantyType);
     set.contractRef = changed('#eContract', d.contractRef);
     set.purchaseDate = changed('#ePurchase', d.purchaseDate);
+    set.webUrl = changed('#eWebUrl', d.webUrl);
     if (set.site === d.reportedSite) set.site = null;
     if (set.room === d.reportedRoom) set.room = null;
     try { await api('/api/devices/bulk', { method: 'POST', body: { ids: [d.id], set } }); toast(ICONS.resolved, 'Device updated'); closeDrawer(); refreshView(); } catch (e) { toast(ICONS.critical, e.message); }
@@ -3393,4 +3398,14 @@ function updateInboxBadge(summary) {
   if (!el) return;
   const apply = (s) => { const n = Object.values(s || {}).reduce((t, x) => t + x.proposed, 0); el.hidden = !n; el.textContent = n > 99 ? '99+' : n; el.title = `${n} actions to decide`; };
   if (summary) apply(summary); else api('/api/actions/summary').then(apply).catch(() => {});
+}
+
+// ------------------------------------------------------------------ open device UI
+function deviceUiHTML(d) {
+  if (!can('devices.webui') || d.manualId && !d.webUi && !d.ip) return '';
+  const ui = d.webUi;
+  if (!ui) return `<div class="section-title">Device web interface</div><div class="muted" style="font-size:12.5px">No IP address is reported for this device.${can('estate.edit') ? ' Set a device UI address under Edit this device.' : ''}</div>`;
+  return `<div class="section-title">Device web interface</div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><a class="btn btn-primary btn-sm" id="openUi" href="${esc(ui.url)}" target="_blank" rel="noopener noreferrer">Open device UI</a><span class="mono muted" style="font-size:12px">${esc(ui.url)}</span>${ui.source === 'manual' ? '<span class="chip mute">set by hand</span>' : ''}</div>
+    <div class="help">Opens the device's own admin page in a new tab. It works only from a computer on the same network as the device (or over VPN), and you sign in with the device's own admin password. Your browser may warn about the device's self-signed certificate.</div>`;
 }

@@ -22,6 +22,7 @@ import { csvObjects, toCsv } from './lib/csv.js';
 import { LEVELS, LIFECYCLE_LIMITS, resolveFirmware } from './lib/baselines.js';
 import { compareVersions } from './lib/models.js';
 import { isBlockedHost } from './lib/net-guard.js';
+import { cleanWebUrl } from './lib/device-ui.js';
 import { Mailer } from './lib/mailer.js';
 import { ChecksService } from './services/checks.js';
 import { registerInbox } from './routes/inbox.js';
@@ -287,6 +288,14 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       res.status(502).json({ error: e.message });
     }
   });
+  // Open the device's own web UI. The browser goes straight to the device; this only records who opened it.
+  app.post('/api/devices/:id/webui', requirePerm('devices.webui'), requireJson, (req, res) => {
+    const d = visibleDevice(req, req.params.id);
+    if (!d) return res.status(404).json({ error: 'Not found' });
+    if (!d.webUi) return res.status(400).json({ error: 'No address is known for this device' });
+    audit(req, 'device.open_ui', { customerId: d.customerId, target: `${d.make} ${d.model} (${d.room}, ${d.site})`, details: { url: d.webUi.url, source: d.webUi.source } });
+    res.json(d.webUi);
+  });
   // Error code reference, with how many devices in scope have each code now.
   app.get('/api/error-codes', requirePerm('service.view'), (req, res) => {
     const counts = {};
@@ -309,7 +318,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       return String(v);
     };
     let dates;
-    try { dates = { warrantyExpires: isoDate(set.warrantyExpires, 'Warranty end'), purchaseDate: isoDate(set.purchaseDate, 'Purchase date') }; } catch (e) { return res.status(400).json({ error: e.message }); }
+    try { dates = { warrantyExpires: isoDate(set.warrantyExpires, 'Warranty end'), purchaseDate: isoDate(set.purchaseDate, 'Purchase date'), webUrl: cleanWebUrl(set.webUrl) }; } catch (e) { return res.status(400).json({ error: e.message }); }
     for (const d of targets) {
       if (reset) { store.clearOverride(d.id); continue; }
       const patch = {};
@@ -320,6 +329,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       if (set.assetTag !== undefined) patch.assetTag = text(set.assetTag, 60);
       if (dates.warrantyExpires !== undefined) patch.warrantyExpires = dates.warrantyExpires;
       if (dates.purchaseDate !== undefined) patch.purchaseDate = dates.purchaseDate;
+      if (dates.webUrl !== undefined) patch.webUrl = dates.webUrl;
       if (set.warrantyType !== undefined) patch.warrantyType = text(set.warrantyType, 40);
       if (set.contractRef !== undefined) patch.contractRef = text(set.contractRef, 60);
       if (Array.isArray(set.addTags) || Array.isArray(set.removeTags)) {

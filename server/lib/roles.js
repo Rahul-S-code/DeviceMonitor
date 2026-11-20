@@ -52,6 +52,7 @@ export const PERMISSIONS = [
   { key: 'issue.report', group: 'Monitoring', label: 'Report an issue', help: 'Raise a problem with a room or device. It appears in the alert feed.', min: 'end_user' },
   { key: 'connections.view', group: 'Monitoring', label: 'See connection status', help: 'The Connections page, without settings or keys.', min: 'end_user' },
   { key: 'devices.actions', group: 'Technical', label: 'Run remote actions', help: 'Reboot and other device actions through the vendor APIs.', min: 'technical_user' },
+  { key: 'devices.webui', group: 'Technical', label: 'Open device web UI', help: 'Open a device\'s own web interface (works from the same network or VPN).', min: 'technical_user' },
   { key: 'connections.sync', group: 'Technical', label: 'Sync connections now', help: 'Pull fresh data from a connection on demand.', min: 'technical_user' },
   { key: 'rooms.design', group: 'Technical', label: 'Edit room schematics and drawings', help: 'Cabling schematics and design file uploads.', min: 'technical_user' },
   { key: 'inbox.view', group: 'Technical', label: 'See the action inbox', help: 'Proposed actions from the daily checks.', min: 'technical_user' },
@@ -76,8 +77,8 @@ const ALL = PERMISSION_KEYS;
 export const DEFAULTS = {
   super_admin: ALL,
   msp_admin: ALL.filter((k) => k !== 'platform.manage'),
-  customer_admin: ['estate.view', 'service.view', 'issue.report', 'connections.view', 'devices.actions', 'connections.sync', 'rooms.design', 'inbox.view', 'inbox.approve', 'inbox.run', 'contacts.view', 'estate.edit', 'sites.manage', 'users.manage', 'roles.manage', 'audit.view'],
-  technical_user: ['estate.view', 'service.view', 'issue.report', 'connections.view', 'devices.actions', 'connections.sync', 'rooms.design', 'inbox.view', 'inbox.approve', 'inbox.run', 'contacts.view'],
+  customer_admin: ['estate.view', 'service.view', 'issue.report', 'connections.view', 'devices.actions', 'devices.webui', 'connections.sync', 'rooms.design', 'inbox.view', 'inbox.approve', 'inbox.run', 'contacts.view', 'estate.edit', 'sites.manage', 'users.manage', 'roles.manage', 'audit.view'],
+  technical_user: ['estate.view', 'service.view', 'issue.report', 'connections.view', 'devices.actions', 'devices.webui', 'connections.sync', 'rooms.design', 'inbox.view', 'inbox.approve', 'inbox.run', 'contacts.view'],
   end_user: ['estate.view', 'service.view', 'issue.report'],
 };
 

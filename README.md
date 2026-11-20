@@ -77,6 +77,10 @@ The **Design documents** card holds uploaded drawings for the room (PDF, PNG, JP
 
 **Configure › API tracker** (admins) lists every external API the tool uses: each OEM and platform endpoint, the map tile servers and Google Fonts, with the customers and connections that use it. The super admin's **Check all APIs** (or **Check** on one row) calls each endpoint without credentials and times the answer (a 401 or 403 counts as up, since it means the service answered), and tests every customer connection with its own credentials. Results keep the last 48 checks per API (response time chart, average, p95, uptime). Live connector traffic is also counted per endpoint (calls, errors, average time) since the server started. Checks run automatically every `API_CHECK_MINUTES` (default 30, 0 turns it off).
 
+## Open device UI
+
+The device panel has **Open device UI**, a link to the device's own web interface: `https://<IP the vendor reports>/` by default, or a **Device UI address** set under Edit this device (stored as a device override, http or https only, no credentials). The browser opens the device directly, so it works only from a computer on the same network as the device or over VPN; Estate Monitor never proxies to customer networks. Opens are audited (`device.open_ui`). Permission `devices.webui` (Technical user and above by default). Code: `server/lib/device-ui.js`.
+
 ## Remote device actions
 
 Admins see **Remote actions** in a device's panel. Every action runs through the API of one named service, and the panel says which: the **OEM device cloud API** (the manufacturer, e.g. Poly Lens) or the **meeting platform API** (e.g. Webex Control Hub, Zoom). When both report a device, both are listed and you pick one. Each action shows the exact endpoint and the permission the credentials need.

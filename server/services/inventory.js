@@ -6,6 +6,7 @@
 // customer, and a snapshot identical to the last one rebuilds nothing.
 // Reads (paged device lists, summaries, filters) are answered from cached,
 // indexed results that are thrown away whenever the inventory changes.
+import { deviceUi } from '../lib/device-ui.js';
 import crypto from 'node:crypto';
 import { dedupeDevices } from './dedupe.js';
 import { HEALTH_ORDER } from '../lib/device-model.js';
@@ -196,7 +197,9 @@ export class Inventory {
       if (o.warrantyType) d.warrantyType = o.warrantyType;
       if (o.contractRef) d.contractRef = o.contractRef;
       if (o.purchaseDate) d.purchaseDate = o.purchaseDate;
+      if (o.webUrl) d.webUrl = o.webUrl;
     }
+    for (const d of devices) d.webUi = deviceUi(d);
     const { modeOf } = ctx;
     // Region and customer name from the site directory.
     for (const d of devices) {
