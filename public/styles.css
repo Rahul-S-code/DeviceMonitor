@@ -600,3 +600,18 @@ label.chk { display: flex; gap: 8px; align-items: center; font-size: 13px; margi
 /* Baselines: checkbox beside its label */
 label.inline-chk { display: flex; align-items: center; gap: 8px; }
 label.inline-chk input[type=checkbox] { width: auto; margin: 0; }
+
+/* ---------- paging, large lists, sync schedule ---------- */
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 4px 2px; }
+.pager-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pager-size select { margin-left: 6px; padding: 4px 6px; border-radius: 8px; }
+.more-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.sync-default { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.sync-default .field { margin: 0; min-width: 180px; }
+.sync-table select { min-width: 170px; }
+.sync-table td { vertical-align: top; }
+.sy-filter { max-width: 240px; width: 100%; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--page); font: inherit; }
+@media (max-width: 640px) {
+  .pager { justify-content: center; }
+  .sy-filter { max-width: none; }
+}

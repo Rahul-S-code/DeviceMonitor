@@ -1,6 +1,8 @@
-// Small JSON-file store for configuration (customers, users, connections,
-// directories, device overrides, room schematics, recent alerts). Device
-// inventory itself is rebuilt from the connectors on every sync.
+// Configuration store (customers, users, connections, directories, device
+// overrides, room schematics, recent alerts, settings). Held in memory and
+// written through a persistence backend: a JSON file in data/ by default, or
+// Postgres when DATABASE_URL is set (see lib/persistence.js). Device inventory
+// itself comes from connection snapshots, not from this store.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -12,13 +14,17 @@ import { avDemoModels } from '../mock/av-estate.js';
 import { CONNECTORS, AV_DEMO_OEMS } from '../connectors/registry.js';
 import { hashPassword } from './auth.js';
 import { cleanPolicy, cleanCustomerBaseline, DEFAULT_ADVISORY_POLICY } from './baselines.js';
+import { FilePersistence } from './persistence.js';
 
 const EMPTY = {
   customers: [], users: [], connections: [], siteDirectory: {}, roomDirectory: {},
   schematics: {}, deviceOverrides: {}, alerts: [], models: [], audit: [], manualDevices: [],
-  designs: [], apiChecks: {}, baselines: { advisory: [], customers: {} },
+  designs: [], apiChecks: {}, baselines: { advisory: [], customers: {} }, settings: {},
 };
 const MAX_AUDIT = 5000;
+// Alert retention: newest ALERT_MAX alerts, none older than ALERT_RETENTION_DAYS.
+const ALERT_MAX = Math.max(100, Number(process.env.ALERT_MAX) || 10_000);
+const ALERT_RETENTION_DAYS = Math.max(1, Number(process.env.ALERT_RETENTION_DAYS) || 30);
 export const DEFAULT_SLA_TARGET = 99.5;
 // Platform-side connections the demo customers get, by meeting platform.
 const PLATFORM_OEM = { 'Microsoft Teams': 'teams-rooms', Zoom: 'zoom-rooms', 'Cisco Webex': 'webex-control-hub', 'Google Meet': 'google-meet-hardware' };
@@ -27,27 +33,64 @@ const OEM_LABEL = Object.fromEntries(CONNECTORS.map((C) => [C.oem, C.displayName
 export const roomKey = (customerId, site, room) => `${customerId}|${site}|${room}`;
 
 export class Store {
-  constructor(dataDir) {
-    this.file = path.join(dataDir, 'store.json');
+  constructor(dataDir, { persistence = null } = {}) {
     this.designDir = path.join(dataDir, 'designs');
     fs.mkdirSync(dataDir, { recursive: true });
-    this.data = fs.existsSync(this.file) ? { ...structuredClone(EMPTY), ...JSON.parse(fs.readFileSync(this.file, 'utf8')) } : structuredClone(EMPTY);
+    this.persistence = persistence || new FilePersistence(dataDir);
+    const saved = this.persistence.loadStore();
+    this.data = saved ? { ...structuredClone(EMPTY), ...saved } : structuredClone(EMPTY);
     this.timer = null;
+    this.firstPending = 0;
     this.registerMocks();
   }
 
+  /** Debounced write: 200 ms after the last change, and at least every 2 seconds while changes keep coming. */
   save() {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.flush(), 200);
+    const now = Date.now();
+    if (!this.firstPending) this.firstPending = now;
+    const wait = now - this.firstPending > 2000 ? 0 : 200;
+    this.timer = setTimeout(() => this.flush(), wait);
+    this.timer.unref?.();
   }
 
   close() { clearTimeout(this.timer); this.timer = null; }
 
+  /** The JSON file behind the file backend (null on Postgres). */
+  get file() { return this.persistence.storeFile ?? null; }
+
   flush() {
     clearTimeout(this.timer);
-    const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, this.file);
+    this.timer = null;
+    this.firstPending = 0;
+    this.persistence.saveStore(this.data);
+  }
+
+  // --- settings (admin page) ---------------------------------------------------
+  get settings() {
+    if (!this.data.settings) this.data.settings = {};
+    return this.data.settings;
+  }
+
+  /** Sync settings: { defaultIntervalSec (null = built-in default), updatedAt, updatedBy }. */
+  syncSettings() { return this.settings.sync || {}; }
+
+  setSyncSettings(patch, actor = null) {
+    this.settings.sync = { ...this.syncSettings(), ...patch, updatedAt: new Date().toISOString(), updatedBy: actor };
+    this.save();
+    return this.settings.sync;
+  }
+
+  // --- alerts -------------------------------------------------------------------
+  /** Add alerts (newest first) and apply retention. */
+  addAlerts(list) {
+    const cutoff = new Date(Date.now() - ALERT_RETENTION_DAYS * 86_400_000).toISOString();
+    const all = [...list].reverse().concat(this.data.alerts);
+    let n = Math.min(all.length, ALERT_MAX);
+    while (n > 0 && all[n - 1].at < cutoff) n--;
+    all.length = n;
+    this.data.alerts = all;
+    this.save();
   }
 
   get customers() { return this.data.customers; }

@@ -1,31 +1,37 @@
 // Health history for SLA reporting.
 //
 // Each device keeps a list of health transitions [timeMs, health] recorded on
-// every sync, in data/history.json, trimmed to RETAIN_DAYS. Devices that only
+// every sync, trimmed to RETAIN_DAYS. Only transitions are stored (not every
+// sync), so a device that stays healthy costs one entry. Saved through the
+// persistence backend: data/history.json, or one row per device in Postgres
+// where only changed devices are written. Devices that only
 // come from mock connections use a deterministic simulated history instead,
 // so the SLA tab has 30 days of data on a fresh demo (the UI says so).
 //
 // Availability: a device is available when healthy or warning, and
 // unavailable when critical or offline. An incident is a continuous
 // unavailable period; MTTR is the mean length of incidents that ended.
-import fs from 'node:fs';
-import path from 'node:path';
 import { hash } from '../mock/estate.js';
+import { FilePersistence } from '../lib/persistence.js';
 
 const DAY = 86_400_000;
-const RETAIN_DAYS = 35;
+const RETAIN_DAYS = Math.max(31, Number(process.env.HISTORY_RETENTION_DAYS) || 35);
+const MAX_TRANSITIONS = 2000; // per device, so one flapping device can't grow without bound
+const SAVE_DELAY_MS = 5000;
 const SIM_STEP = 15 * 60_000;
 const DOWN = new Set(['critical', 'offline']);
 
 export const WINDOWS = { '24h': DAY, '7d': 7 * DAY, '30d': 30 * DAY };
 
 export class History {
-  constructor(dataDir) {
-    this.file = path.join(dataDir, 'history.json');
-    this.devices = {};
-    try { this.devices = JSON.parse(fs.readFileSync(this.file, 'utf8')).devices || {}; } catch { this.devices = {}; }
+  constructor(dataDir, { persistence = null } = {}) {
+    this.persistence = persistence || new FilePersistence(dataDir);
+    this.devices = this.persistence.loadHistory() || {};
     this.timer = null;
     this.cache = new Map();
+    this.dirty = new Set();
+    this.removed = new Set();
+    this.lastPrune = 0;
   }
 
   /** Record the current health of every device. `isMock(d)` marks simulated-history devices. */
@@ -34,42 +40,54 @@ export class History {
     for (const d of devices) {
       let e = this.devices[d.id];
       if (!e) {
-        e = this.devices[d.id] = { since: now, mock: !!isMock(d), t: [[now, d.health]] };
+        e = this.devices[d.id] = { since: now, seen: now, mock: !!isMock(d), t: [[now, d.health]] };
+        this.dirty.add(d.id); this.removed.delete(d.id);
         changed = true;
         continue;
       }
-      e.mock = !!isMock(d);
-      if (e.t[e.t.length - 1]?.[1] !== d.health) { e.t.push([now, d.health]); changed = true; }
-      e.seen = now;
+      const mock = !!isMock(d);
+      if (e.mock !== mock) { e.mock = mock; this.dirty.add(d.id); changed = true; }
+      if (e.t[e.t.length - 1]?.[1] !== d.health) {
+        e.t.push([now, d.health]);
+        if (e.t.length > MAX_TRANSITIONS) e.t.splice(0, e.t.length - MAX_TRANSITIONS);
+        this.dirty.add(d.id); changed = true;
+      }
+      // "Last seen" only matters for pruning, so it is written at most hourly per device.
+      if (now - (e.seen ?? 0) > 3_600_000) { e.seen = now; this.dirty.add(d.id); changed = true; } else if (e.seen === undefined) e.seen = now;
     }
-    if (changed) { this.prune(now); this.save(); }
+    // Pruning walks every device, so it runs at most hourly.
+    if (now - this.lastPrune > 3_600_000) { this.prune(now); this.lastPrune = now; changed = true; }
+    if (changed) this.save();
   }
 
   prune(now = Date.now()) {
     const cutoff = now - RETAIN_DAYS * DAY;
     for (const [id, e] of Object.entries(this.devices)) {
-      if ((e.seen ?? e.since) < cutoff) { delete this.devices[id]; continue; }
+      if ((e.seen ?? e.since) < cutoff) { delete this.devices[id]; this.dirty.delete(id); this.removed.add(id); continue; }
       const i = e.t.findIndex(([t]) => t >= cutoff);
-      if (i > 1) e.t = [[cutoff, e.t[i - 1][1]], ...e.t.slice(i)];
+      if (i > 1) { e.t = [[cutoff, e.t[i - 1][1]], ...e.t.slice(i)]; this.dirty.add(id); }
     }
   }
 
+  /** Writes are batched: at most one every few seconds, however many devices changed. */
   save() {
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.flush(), 2000);
+    if (this.timer) return;
+    this.timer = setTimeout(() => this.flush(), SAVE_DELAY_MS);
     this.timer.unref?.();
   }
 
   flush() {
     clearTimeout(this.timer);
-    try {
-      const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ devices: this.devices }));
-      fs.renameSync(tmp, this.file);
-    } catch (e) { console.error(`[history] could not save: ${e.message}`); }
+    this.timer = null;
+    const dirty = [...this.dirty];
+    const removed = [...this.removed];
+    this.dirty.clear(); this.removed.clear();
+    this.persistence.saveHistory(this.devices, dirty, removed);
   }
 
   close() { clearTimeout(this.timer); this.timer = null; }
+
+  get size() { return Object.keys(this.devices).length; }
 
   /** Health segments [{start, end, health, simulated}] covering [from, to). */
   segments(id, from, to) {

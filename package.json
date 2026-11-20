@@ -10,9 +10,12 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "loadtest": "node test/load/run.js",
+    "test:pg": "node --test test/postgres.test.js"
   },
   "dependencies": {
-    "express": "4.22.3"
+    "express": "4.22.3",
+    "pg": "8.23.1"
   }
 }

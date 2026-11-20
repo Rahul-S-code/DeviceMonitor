@@ -10,8 +10,9 @@ import { validateSchematic, withBlockPorts, SCHEMATIC_TEMPLATES, BLOCKS, CABLES,
 import { detectDesignType, cleanFileName, DESIGN_ACCEPT, MAX_DESIGNS_PER_ROOM } from './lib/designs.js';
 import { ApiTracker } from './services/api-tracker.js';
 import { ERROR_CODES } from './lib/issues.js';
-import { Inventory } from './services/inventory.js';
-import { SyncService } from './services/sync.js';
+import { Inventory, listItem, SORT_KEYS } from './services/inventory.js';
+import { SyncService, SYNC_LIMITS, SYNC_PRESETS, cleanInterval, minIntervalFor, fmtSeconds } from './services/sync.js';
+import { FilePersistence, openPersistence } from './lib/persistence.js';
 import { History, slaReport, WINDOWS } from './services/history.js';
 import { CONNECTORS, getConnectorClass, createConnector } from './connectors/registry.js';
 import { PLATFORMS } from './lib/device-model.js';
@@ -31,8 +32,9 @@ if (fs.existsSync(envFile)) {
   }
 }
 
-export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || 'data'), intervalMs, autoStart = true } = {}) {
-  const store = new Store(dataDir);
+export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || 'data'), intervalMs, autoStart = true, persistence = null } = {}) {
+  persistence ||= new FilePersistence(dataDir);
+  const store = new Store(dataDir, { persistence });
   const production = process.env.NODE_ENV === 'production';
   // In production, never fall back to a well-known password.
   const randomPw = () => crypto.randomBytes(9).toString('base64url');
@@ -53,8 +55,9 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const showDemoAccounts = process.env.SHOW_DEMO_ACCOUNTS ? process.env.SHOW_DEMO_ACCOUNTS === 'true' : !production;
   const vault = Vault.fromEnv(dataDir);
   const inventory = new Inventory(store);
-  const history = new History(dataDir);
-  const sync = new SyncService({ store, vault, inventory, history, intervalMs: intervalMs ?? Number(process.env.SYNC_INTERVAL_SECONDS || 30) * 1000 });
+  const history = new History(dataDir, { persistence });
+  // SYNC_INTERVAL_SECONDS is only the starting default: admins change it on the Sync schedule page.
+  const sync = new SyncService({ store, vault, inventory, history, persistence, intervalMs: intervalMs ?? (process.env.SYNC_INTERVAL_SECONDS ? Number(process.env.SYNC_INTERVAL_SECONDS) * 1000 : null) });
   const sessions = new Sessions();
   const apiTracker = new ApiTracker({ store, sync, mapLayers, intervalMinutes: Number(process.env.API_CHECK_MINUTES ?? 30) });
 
@@ -147,11 +150,39 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
 
   // --- inventory --------------------------------------------------------
   app.get('/api/filters', requireUser, (req, res) => res.json(inventory.filterOptions(scope(req))));
-  app.get('/api/summary', requireUser, (req, res) => res.json(inventory.summary(inventory.query(scope(req), req.query))));
-  app.get('/api/tree', requireUser, (req, res) => res.json(inventory.tree(inventory.query(scope(req), req.query), configuredScope(req))));
-  app.get('/api/devices', requireUser, (req, res) => res.json(inventory.query(scope(req), req.query)));
+  app.get('/api/summary', requireUser, (req, res) => {
+    const allowed = scope(req);
+    res.json(inventory.summary(inventory.query(allowed, req.query), Inventory.filterKey(allowed, req.query)));
+  });
+  // Rooms carry counts; ?devices=1 adds each room's devices (use it with a customer and site filter).
+  app.get('/api/tree', requireUser, (req, res) => {
+    const devs = inventory.query(scope(req), req.query);
+    const tree = inventory.tree(devs, configuredScope(req), { withDevices: req.query.devices === '1' });
+    if (req.query.devices === '1') for (const s of tree) for (const r of s.rooms) r.devices = r.devices.map(listItem);
+    res.json(tree);
+  });
+  // Paged list: ?limit=&offset=&sort=&dir= returns { items, total, offset, limit }.
+  // Without paging parameters the old array form is returned, capped at MAX_UNPAGED devices (X-Total-Count has the full count).
+  const MAX_UNPAGED = 5000;
+  app.get('/api/devices', requireUser, (req, res) => {
+    const q = req.query;
+    if (q.limit !== undefined || q.offset !== undefined || q.sort !== undefined) {
+      if (q.sort && !SORT_KEYS.includes(q.sort)) return res.status(400).json({ error: `sort must be one of ${SORT_KEYS.join(', ')}` });
+      return res.json(inventory.page(scope(req), q, { sort: q.sort || null, dir: q.dir === 'desc' || q.dir === '-1' ? -1 : 1, offset: Number(q.offset) || 0, limit: Number(q.limit) || 100 }));
+    }
+    const all = inventory.query(scope(req), q);
+    res.set('X-Total-Count', String(all.length));
+    if (all.length > MAX_UNPAGED) res.set('X-Truncated', 'true');
+    res.json(all.length > MAX_UNPAGED ? all.slice(0, MAX_UNPAGED) : all);
+  });
+  // List rows for specific devices (e.g. the current selection), in scope only.
+  app.post('/api/devices/lookup', requireUser, requireJson, (req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.slice(0, 2000) : [];
+    res.json(ids.map((id) => visibleDevice(req, String(id))).filter(Boolean).map(listItem));
+  });
+  const visibleDevice = (req, id) => { const d = inventory.get(id); return d && inScope(req, d.customerId) ? d : null; };
   app.get('/api/devices/:id', requireUser, (req, res) => {
-    const d = inventory.query(scope(req)).find((x) => x.id === req.params.id);
+    const d = visibleDevice(req, req.params.id);
     return d ? res.json(d) : res.status(404).json({ error: 'Not found' });
   });
   // --- device actions (admins): run through the vendor API that reports the device
@@ -167,12 +198,12 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
   const lastAction = new Map();
   app.get('/api/devices/:id/actions', requireAdmin, (req, res) => {
-    const d = inventory.query(scope(req)).find((x) => x.id === req.params.id);
+    const d = visibleDevice(req, req.params.id);
     if (!d) return res.status(404).json({ error: 'Not found' });
     res.json({ sets: actionSets(d) });
   });
   app.post('/api/devices/:id/actions', requireAdmin, requireJson, async (req, res) => {
-    const d = inventory.query(scope(req)).find((x) => x.id === req.params.id);
+    const d = visibleDevice(req, req.params.id);
     if (!d) return res.status(404).json({ error: 'Not found' });
     const { connectionId, action } = req.body || {};
     const src = d.sources.find((x) => x.connectionId === connectionId && x.oem !== 'manual');
@@ -210,8 +241,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   app.post('/api/devices/bulk', requireAdmin, requireJson, (req, res) => {
     const { ids, set = {}, reset } = req.body || {};
     if (!Array.isArray(ids) || !ids.length || ids.length > 2000) return res.status(400).json({ error: 'Select between 1 and 2000 devices' });
-    const visible = new Map(inventory.query(scope(req)).map((d) => [d.id, d]));
-    const targets = ids.map((id) => visible.get(id)).filter(Boolean);
+    const targets = ids.map((id) => visibleDevice(req, String(id))).filter(Boolean);
     if (targets.length !== ids.length) return res.status(404).json({ error: 'Some devices were not found' });
     if (set.platform && !PLATFORMS.includes(set.platform)) return res.status(400).json({ error: 'Unknown platform' });
     const text = (v, n) => (v === undefined ? undefined : v === null ? null : String(v).trim().slice(0, n));
@@ -243,8 +273,9 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       store.patchOverride(d.id, patch);
     }
     store.save();
-    sync.refresh();
     const custs = [...new Set(targets.map((d) => d.customerId))];
+    for (const c of custs) inventory.invalidate(c);
+    sync.refreshPending();
     audit(req, reset ? 'device.reset' : 'device.bulk_update', {
       customerId: custs.length === 1 ? custs[0] : null,
       target: targets.length === 1 ? `${targets[0].make} ${targets[0].model} (${targets[0].room})` : `${targets.length} devices`,
@@ -262,7 +293,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     if (!inScope(req, b.customerId)) return res.status(400).json({ error: 'Pick a customer' });
     try {
       const d = store.addManualDevice({ ...b, createdBy: req.user.email });
-      sync.refresh();
+      sync.refresh(d.customerId);
       audit(req, 'device.manual_add', { customerId: d.customerId, target: manualLabel(d), details: { serial: d.serial, mac: d.mac } });
       res.status(201).json(inventory.devices.find((x) => x.manualId === d.id || x.id === d.id) || d);
     } catch (e) { res.status(400).json({ error: e.message }); }
@@ -297,7 +328,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     if (records.length > MAX_IMPORT_ROWS) return res.status(400).json({ error: `Up to ${MAX_IMPORT_ROWS} rows per file. Split the file and import each part.` });
     const out = store.importManualDevices(records, { customerIds: scope(req), defaultCustomerId: customerId, commit: !!commit, allowUnlisted: !!allowUnlisted, by: req.user.email });
     if (commit && out.added.length) {
-      sync.refresh();
+      for (const cid of new Set(out.added.map((d) => d.customerId))) inventory.invalidate(cid); sync.refreshPending();
       const byCust = new Map();
       for (const d of out.added) byCust.set(d.customerId, (byCust.get(d.customerId) || 0) + 1);
       for (const [cid, n] of byCust) audit(req, 'device.bulk_import', { customerId: cid, target: `${n} devices from CSV`, details: { rows: out.rows.length, added: n, skipped: out.invalid } });
@@ -309,7 +340,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     if (!cur) return res.status(404).json({ error: 'Not found' });
     try {
       const d = store.updateManualDevice(cur.id, req.body || {});
-      sync.refresh();
+      sync.refresh(d.customerId);
       audit(req, 'device.manual_update', { customerId: d.customerId, target: manualLabel(d), details: { fields: Object.keys(req.body || {}) } });
       res.json(d);
     } catch (e) { res.status(400).json({ error: e.message }); }
@@ -322,7 +353,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const cur = manualOf(req);
     if (!cur) return res.status(404).json({ error: 'Not found' });
     store.deleteManualDevice(cur.id);
-    sync.refresh();
+    sync.refresh(cur.customerId);
     audit(req, 'device.manual_delete', { customerId: cur.customerId, target: manualLabel(cur), details: { serial: cur.serial } });
     res.json({ ok: true });
   });
@@ -346,7 +377,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     if (!inScope(req, customerId) || !site || !room) return res.status(400).json({ error: 'Unknown room' });
     try {
       store.setSchematic(customerId, site, room, schematic ? { ...validateSchematic(schematic), updatedBy: req.user.name || req.user.email } : null);
-      sync.refresh();
+      sync.refresh(customerId);
       audit(req, schematic ? 'room.schematic_saved' : 'room.schematic_removed', { customerId, target: `${room}, ${site}`, details: schematic ? { nodes: schematic.nodes?.length || 0, links: schematic.links?.length || 0 } : undefined });
       res.json({ ok: true, schematic: store.schematic(customerId, site, room) });
     } catch (e) { res.status(400).json({ error: e.message }); }
@@ -414,7 +445,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
 
   // --- super admin: customers and onboarding -----------------------------
   const customerSummary = (c) => {
-    const devs = inventory.devices.filter((d) => d.customerId === c.id);
+    const devs = inventory.forCustomer(c.id);
     return {
       ...c,
       mockData: store.mockEnabled(c.id),
@@ -453,11 +484,10 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       const mockChanged = body.mockData !== undefined && prevMock !== c.mockData;
       audit(req, 'customer.update', { customerId: c.id, target: c.name, details: { fields: Object.keys(req.body || {}), ...(req.body?.slaTarget !== undefined ? { slaTarget: { from: prevTarget, to: c.slaTarget } } : {}), ...(mockChanged ? { mockData: { from: prevMock, to: c.mockData } } : {}) } });
       await Promise.all(store.connections.filter((x) => x.customerId === c.id).map((x) => sync.syncConnection(x)));
-      sync.refresh();
+      sync.refresh(c.id);
       if (mockChanged && c.mockData === false) {
         // Alerts raised by the mock devices that just went away.
-        const present = new Set(inventory.devices.map((d) => d.id));
-        store.data.alerts = store.data.alerts.filter((a) => a.customerId !== c.id || a.kind !== 'device' || present.has(a.deviceId));
+        store.data.alerts = store.data.alerts.filter((a) => a.customerId !== c.id || a.kind !== 'device' || inventory.byId.has(a.deviceId));
         store.save();
       }
       res.json(customerSummary(c));
@@ -465,7 +495,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
   app.delete('/api/admin/customers/:id', requireSuper, (req, res) => {
     try {
-      for (const c of store.connections.filter((x) => x.customerId === req.params.id)) inventory.removeConnection(c.id);
+      for (const c of store.connections.filter((x) => x.customerId === req.params.id)) { inventory.removeConnection(c.id); persistence.deleteSnapshot(c.id); }
       const name = store.customerName(req.params.id);
       store.deleteCustomer(req.params.id);
       audit(req, 'customer.delete', { customerId: req.params.id, target: name });
@@ -508,7 +538,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     if (platform && !PLATFORMS.includes(platform)) return res.status(400).json({ error: 'Unknown platform' });
     const before = store.roomPlatform(customerId, site, room);
     store.setRoomPlatform(customerId, site, room, platform === 'Unassigned' ? null : platform);
-    sync.refresh();
+    sync.refresh(customerId);
     audit(req, 'room.platform', { customerId, target: `${room}, ${site}`, details: { from: before || 'Unassigned', to: platform || 'Unassigned' } });
     res.json({ ok: true });
   });
@@ -521,14 +551,15 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.flushHeaders();
     const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     const onAlert = (a) => { if (allowed.has(a.customerId)) send('alert', a); };
+    const onAlerts = (x) => send('alerts', x); // a burst (e.g. first sync of a big estate): the page reloads its feed
     const onInv = (d) => send('inventory', d);
     const onSync = (s) => {
       const conn = store.connections.find((c) => c.id === s.connectionId);
       if (conn && allowed.has(conn.customerId)) send('sync', isAdmin ? s : { ...s, error: s.error ? 'Sync error' : null });
     };
-    sync.on('alert', onAlert); sync.on('inventory', onInv); sync.on('sync', onSync);
+    sync.on('alert', onAlert); sync.on('alerts', onAlerts); sync.on('inventory', onInv); sync.on('sync', onSync);
     const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
-    req.on('close', () => { clearInterval(ping); sync.off('alert', onAlert); sync.off('inventory', onInv); sync.off('sync', onSync); });
+    req.on('close', () => { clearInterval(ping); sync.off('alert', onAlert); sync.off('alerts', onAlerts); sync.off('inventory', onInv); sync.off('sync', onSync); });
   });
 
   // --- connectors & connections ----------------------------------------
@@ -536,7 +567,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
 
   const publicConnection = (c, admin) => {
     const C = getConnectorClass(c.oem);
-    const base = { id: c.id, customerId: c.customerId, customerName: store.customerName(c.customerId), oem: c.oem, oemName: C.displayName, name: c.name, mode: c.mode, status: sync.statusFor(c.id) };
+    const base = { id: c.id, customerId: c.customerId, customerName: store.customerName(c.customerId), oem: c.oem, oemName: C.displayName, name: c.name, mode: c.mode, syncIntervalSec: c.syncIntervalSec ?? null, minIntervalSec: minIntervalFor(c.oem), status: sync.statusFor(c.id) };
     if (!admin) return { ...base, status: { ...base.status, error: base.status.error ? 'Sync error' : null } };
     let secrets = {};
     try { secrets = c.secret ? vault.decrypt(c.secret) : {}; } catch { secrets = {}; }
@@ -577,12 +608,15 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const { customerId, oem, name, settings, credentials, mode = 'mock' } = req.body || {};
     if (!inScope(req, customerId)) return res.status(400).json({ error: 'Unknown customer' });
     let C; try { C = getConnectorClass(oem); } catch (e) { return res.status(400).json({ error: e.message }); }
+    let syncIntervalSec = null;
+    try { syncIntervalSec = cleanInterval(req.body?.syncIntervalSec, { min: minIntervalFor(oem) }); } catch (e) { return res.status(400).json({ error: e.message }); }
     if (mode === 'live' && C.liveSupported === false) return res.status(400).json({ error: C.liveNote || `${C.displayName} has no live API` });
     const badSetting = settingsError(C, settings); if (badSetting) return res.status(400).json({ error: badSetting });
     const conn = {
       id: crypto.randomUUID(), customerId, oem, mode: mode === 'live' ? 'live' : 'mock',
       name: name || `${store.customerName(customerId)} · ${C.displayName}`,
       settings: cleanSettings(C, settings), secret: mergeSecrets(C, null, credentials), createdAt: new Date().toISOString(),
+      ...(syncIntervalSec ? { syncIntervalSec } : {}),
     };
     store.connections.push(conn); store.save();
     audit(req, 'connection.create', { customerId, target: conn.name, details: { oem, mode: conn.mode, settings: Object.keys(conn.settings), credentialsSet: Object.keys(credentials || {}).filter((k) => credentials[k]) } });
@@ -597,7 +631,10 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const { name, settings, credentials, mode } = req.body || {};
     if (mode === 'live' && C.liveSupported === false) return res.status(400).json({ error: C.liveNote || `${C.displayName} has no live API` });
     const badSetting = settingsError(C, settings); if (badSetting) return res.status(400).json({ error: badSetting });
-    const before = { name: conn.name, mode: conn.mode, settings: JSON.stringify(conn.settings) };
+    let interval;
+    if (req.body && 'syncIntervalSec' in req.body) { try { interval = cleanInterval(req.body.syncIntervalSec, { min: minIntervalFor(conn.oem) }); } catch (e) { return res.status(400).json({ error: e.message }); } }
+    const before = { name: conn.name, mode: conn.mode, settings: JSON.stringify(conn.settings), syncIntervalSec: conn.syncIntervalSec ?? null };
+    if (interval !== undefined) { if (interval === null) delete conn.syncIntervalSec; else conn.syncIntervalSec = interval; sync.reschedule(conn); }
     if (name) conn.name = String(name).slice(0, 120);
     if (settings) conn.settings = cleanSettings(C, settings);
     if (credentials) conn.secret = mergeSecrets(C, conn.secret, credentials);
@@ -609,6 +646,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       ...(before.mode !== conn.mode ? { mode: { from: before.mode, to: conn.mode } } : {}),
       ...(before.name !== conn.name ? { renamed: { from: before.name, to: conn.name } } : {}),
       ...(before.settings !== JSON.stringify(conn.settings) ? { settingsChanged: true } : {}),
+      ...(before.syncIntervalSec !== (conn.syncIntervalSec ?? null) ? { syncInterval: { from: before.syncIntervalSec ?? 'default', to: conn.syncIntervalSec ?? 'default' } } : {}),
       ...(credChanged.length ? { credentialsReplaced: credChanged } : {}),
     } });
     await sync.syncOne(conn.id);
@@ -648,16 +686,72 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const [conn] = store.connections.splice(i, 1);
     audit(req, 'connection.delete', { customerId: conn.customerId, target: conn.name, details: { oem: conn.oem } });
     inventory.removeConnection(conn.id);
+    persistence.deleteSnapshot(conn.id);
     store.save();
-    sync.refresh();
+    sync.refresh(conn.customerId);
     res.json({ ok: true });
   });
 
+  // --- sync schedule (admin page) ------------------------------------------------
+  const syncSchedule = (req) => {
+    const allowed = new Set(scope(req));
+    const st = store.syncSettings();
+    return {
+      defaultIntervalSec: sync.defaultIntervalSec(),
+      defaultSource: typeof st.defaultIntervalSec === 'number' ? 'admin' : process.env.SYNC_INTERVAL_SECONDS ? 'environment' : 'built-in',
+      updatedAt: st.updatedAt || null, updatedBy: st.updatedBy || null,
+      limits: { ...SYNC_LIMITS, builtInDefault: SYNC_LIMITS.default }, presets: SYNC_PRESETS,
+      concurrency: sync.concurrency, timeoutSec: Math.round(sync.timeoutMs / 1000),
+      canEditDefault: isSuperAdmin(req.user),
+      connections: store.connections.filter((c) => allowed.has(c.customerId)).map((c) => {
+        const info = sync.intervalInfo(c);
+        const status = sync.statusFor(c.id);
+        return { id: c.id, name: c.name, customerId: c.customerId, customerName: store.customerName(c.customerId), oem: c.oem, oemName: getConnectorClass(c.oem).displayName, mode: c.mode, syncIntervalSec: c.syncIntervalSec ?? null, effectiveSec: info.seconds, source: info.source, minSec: info.min, state: status.state, lastRunAt: status.lastRunAt, nextRunAt: status.nextRunAt, durationMs: status.durationMs, deviceCount: status.deviceCount, failures: status.failures };
+      }),
+      // Rough vendor API load with these settings: full device pulls per hour.
+      pullsPerHour: Math.round(store.connections.filter((c) => allowed.has(c.customerId)).reduce((n, c) => n + 3600 / sync.intervalInfo(c).seconds, 0)),
+      estate: { devices: inventory.devices.length, customers: store.customers.length, connections: store.connections.length, builtAt: inventory.builtAt },
+      storage: isSuperAdmin(req.user) ? persistence.describe() : undefined,
+    };
+  };
+  app.get('/api/admin/sync', requireAdmin, (req, res) => res.json(syncSchedule(req)));
+  app.put('/api/admin/sync', requireSuper, requireJson, (req, res) => {
+    const before = sync.defaultIntervalSec();
+    let v;
+    try { v = cleanInterval(req.body?.defaultIntervalSec, { label: 'Default sync interval' }); } catch (e) { return res.status(400).json({ error: e.message }); }
+    store.setSyncSettings({ defaultIntervalSec: v }, req.user.email);
+    sync.rescheduleAll();
+    audit(req, 'sync.default_interval', { target: 'Sync schedule', details: { from: fmtSeconds(before), to: fmtSeconds(sync.defaultIntervalSec()) } });
+    res.json(syncSchedule(req));
+  });
+  // Per-connection interval (null = follow the default). Admins, for connections they can see.
+  app.put('/api/connections/:id/schedule', requireAdmin, requireJson, (req, res) => {
+    const conn = store.connections.find((c) => c.id === req.params.id && inScope(req, c.customerId));
+    if (!conn) return res.status(404).json({ error: 'Not found' });
+    let v;
+    try { v = cleanInterval(req.body?.syncIntervalSec, { min: minIntervalFor(conn.oem) }); } catch (e) { return res.status(400).json({ error: e.message }); }
+    const before = conn.syncIntervalSec ?? null;
+    if (v === null) delete conn.syncIntervalSec; else conn.syncIntervalSec = v;
+    store.save();
+    sync.reschedule(conn);
+    audit(req, 'connection.sync_interval', { customerId: conn.customerId, target: conn.name, details: { from: before ? fmtSeconds(before) : 'default', to: v ? fmtSeconds(v) : 'default' } });
+    res.json({ ...syncSchedule(req).connections.find((c) => c.id === conn.id) });
+  });
+
   // --- model and firmware master (super admin maintains, everyone can read) ----
-  const modelView = (m, devs) => {
-    const mine = devs.filter((d) => d.modelId === m.id);
+  const modelCounts = (devs) => {
+    const counts = new Map();
+    for (const d of devs) {
+      if (!d.modelId) continue;
+      const c = counts.get(d.modelId) || counts.set(d.modelId, { devices: 0, behind: 0 }).get(d.modelId);
+      c.devices++; if (d.firmwareStatus === 'behind') c.behind++;
+    }
+    return counts;
+  };
+  const modelView = (m, devs, counts = modelCounts(devs)) => {
     const latest = m.releases[0]?.version ?? null;
-    return { ...m, latest, devices: mine.length, behind: mine.filter((d) => d.firmwareStatus === 'behind').length };
+    const c = counts.get(m.id) || { devices: 0, behind: 0 };
+    return { ...m, latest, devices: c.devices, behind: c.behind };
   };
   app.get('/api/models', requireUser, (req, res) => {
     const devs = inventory.query(scope(req));
@@ -669,7 +763,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       const u = uncatalogued.get(k); u.devices++; d.oems.forEach((o) => u.oems.add(o));
     }
     res.json({
-      models: store.models.map((m) => modelView(m, devs)).sort((a, b) => (a.make + a.model).localeCompare(b.make + b.model)),
+      models: (() => { const counts = modelCounts(devs); return store.models.map((m) => modelView(m, devs, counts)); })().sort((a, b) => (a.make + a.model).localeCompare(b.make + b.model)),
       uncatalogued: [...uncatalogued.values()].map((u) => ({ ...u, oems: [...u.oems] })).sort((a, b) => b.devices - a.devices),
     });
   });
@@ -726,7 +820,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   const customerBaselineView = (customerId, version = null) => {
     const versions = store.customerBaselineVersions(customerId);
     const cb = version === null ? versions.at(-1) ?? null : versions.find((v) => v.version === version) ?? null;
-    const devs = inventory.devices.filter((d) => d.customerId === customerId);
+    const devs = inventory.forCustomer(customerId);
     const models = store.models.map((m) => {
       const mine = devs.filter((d) => d.modelId === m.id);
       const fw = resolveFirmware(m, cb);
@@ -757,7 +851,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     try {
       const v = store.saveCustomerBaseline(req.params.id, req.body || {}, actorOf(req.user));
       audit(req, 'baseline.customer_save', { customerId: req.params.id, target: `${store.customerName(req.params.id)} baseline v${v.version}`, details: { level: v.level, exceptions: v.models, policy: v.policy || 'advisory', note: v.note } });
-      sync.refresh();
+      sync.refresh(req.params.id);
       res.json(customerBaselineView(req.params.id));
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
@@ -766,7 +860,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     try {
       const v = store.restoreCustomerBaseline(req.params.id, req.body?.version, actorOf(req.user));
       audit(req, 'baseline.customer_restore', { customerId: req.params.id, target: `${store.customerName(req.params.id)} baseline v${v.version}`, details: { restoredFrom: v.restoredFrom } });
-      sync.refresh();
+      sync.refresh(req.params.id);
       res.json(customerBaselineView(req.params.id));
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
@@ -826,8 +920,29 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   return { app, store, sync, inventory, vault, history, apiTracker };
 }
 
+/** Start the server: Postgres when DATABASE_URL is set, otherwise JSON files in the data folder. */
+export async function startServer({ port = Number(process.env.PORT || 8080) } = {}) {
+  const dataDir = path.resolve(ROOT, process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || 'data');
+  const persistence = await openPersistence({ dataDir });
+  const ctx = createApp({ dataDir, persistence });
+  console.log(`[storage] ${persistence.kind === 'postgres' ? `Postgres (${persistence.describe().location || 'DATABASE_URL'})` : `files in ${dataDir}`}`);
+  const server = ctx.app.listen(port, () => console.log(`Device monitor running on http://localhost:${port}`));
+  // Write everything out before the platform stops the process (deploys, restarts).
+  let stopping = false;
+  const shutdown = async (signal) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`[shutdown] ${signal}: saving data`);
+    ctx.sync.stop(); ctx.apiTracker.stop?.();
+    try { ctx.store.flush(); ctx.history.flush(); await persistence.close(); } catch (e) { console.error(`[shutdown] ${e.message}`); }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  return { ...ctx, server };
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { app } = createApp();
-  const port = Number(process.env.PORT || 8080);
-  app.listen(port, () => console.log(`Device monitor running on http://localhost:${port}`));
+  startServer().catch((e) => { console.error(`[start] ${e.message}`); process.exit(1); });
 }

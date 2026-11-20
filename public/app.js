@@ -36,6 +36,7 @@ const S = {
   summary: null, tree: null, devices: null,
   selected: new Set(), schematicDirty: false, config: null,
   filters: loadFilters(), sort: { key: 'health', dir: -1 }, alertFilter: 'all', openFilter: null,
+  devPage: { offset: 0, limit: 100, query: null }, tileLimit: 120,
 };
 
 function loadFilters() {
@@ -144,15 +145,16 @@ const NAV_ICON = {
   apis: '<path d="M1.5 8h3l2-5 3 10 2-5h3"/>',
   errors: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 10.8v.4"/>',
   docs: '<path d="M3 2.5h7l3 3v8H3z"/><path d="M10 2.5v3h3M5.5 8h5M5.5 10.5h5"/>',
+  sync: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.5 1.5"/>',
 };
 const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
-const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation' };
+const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation', sync: 'Sync schedule' };
 
 function navGroups() {
   return [
     ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts']],
     ['Service', ['sla', 'lifecycle', 'baselines', 'errors']],
-    ['Configure', ['connections', ...(isAdmin() ? ['models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['apis', 'audit'] : [])]],
+    ['Configure', ['connections', ...(isAdmin() ? ['sync', 'models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['apis', 'audit'] : [])]],
     ['Help', ['docs']],
   ];
 }
@@ -235,6 +237,7 @@ async function navigate() {
     else if (r.name === 'models' && isAdmin()) await viewModels();
     else if (r.name === 'audit' && isAdmin()) await viewAudit();
     else if (r.name === 'apis' && isAdmin()) await viewApis();
+    else if (r.name === 'sync' && isAdmin()) await viewSyncSchedule();
     else if (r.name === 'errors') await viewErrorCodes();
     else if (r.name === 'docs') viewDocs(r.args);
     else location.hash = '#/overview';
@@ -460,26 +463,33 @@ function syncState(st) {
 function renderSyncList() {
   const el = $('#syncList');
   if (!el) return;
-  el.innerHTML = S.connections.map((c) => `
+  // Large estates have hundreds of connections: show problems first and link to the full list.
+  const order = { error: 0, syncing: 1, never: 2, ok: 3 };
+  const list = [...S.connections].sort((a, b) => (order[a.status.state] ?? 4) - (order[b.status.state] ?? 4)).slice(0, 12);
+  const more = S.connections.length - list.length;
+  el.innerHTML = list.map((c) => `
     <div class="sync-item">
       <div class="oem-logo oem-${c.oem}">${OEM_SHORT[c.oem] || '?'}</div>
       <div><div class="sync-name">${esc(c.name)}</div>
         <div class="sync-meta"><span class="pill ${c.mode}" style="padding:1px 7px">${c.mode === 'live' ? 'Live' : c.status.mockOff ? 'Not live' : 'Mock'}</span> · ${c.status.deviceCount} devices · ${ago(c.status.lastSuccessAt)}</div>
         ${c.status.error ? `<div class="err-line">${esc(c.status.error)}</div>` : ''}</div>
       ${syncState(c.status)}
-    </div>`).join('') || '<div class="empty">No connections</div>';
+    </div>`).join('') + (more > 0 ? `<a class="muted" style="display:block;padding:8px 4px;font-size:12.5px" href="#/${isAdmin() ? 'sync' : 'connections'}">${more} more connections</a>` : '') || '<div class="empty">No connections</div>';
 }
 
 // ------------------------------------------------------------------ estate drill-down
 async function viewEstate(args) {
   const [customerId, site, room] = args;
-  const tree = await api(`/api/tree${qs()}`);
+  // The site list carries counts only; a room's devices are fetched for that one site.
+  const tree = await api(`/api/tree${customerId ? qs({ customer: customerId, site, devices: room ? '1' : '' }) : qs()}`);
   S.tree = tree;
   const crumbBase = '<a href="#/estate">All sites</a>';
   if (!customerId) {
-    hero('Sites & rooms', `${tree.length} sites. Pick a site to see its rooms, then a room to see its devices.`);
-    $('#view').innerHTML = tree.length ? `<div class="tiles">${tree.map((s) => siteTile(s)).join('')}</div>` : '<div class="card empty">No sites match the filters</div>';
+    hero('Sites & rooms', `${tree.length.toLocaleString()} sites. Pick a site to see its rooms, then a room to see its devices.`);
+    const shown = tree.slice(0, S.tileLimit);
+    $('#view').innerHTML = tree.length ? `<div class="tiles">${shown.map((s) => siteTile(s)).join('')}</div>${tree.length > shown.length ? `<div class="more-row"><span class="muted">Showing ${shown.length} of ${tree.length.toLocaleString()} sites. Use the filters or search to narrow the list.</span><button class="btn btn-outline btn-sm" id="moreTiles">Show ${Math.min(240, tree.length - shown.length)} more</button></div>` : ''}` : '<div class="card empty">No sites match the filters</div>';
     document.querySelectorAll('.tile[data-href]').forEach((el) => el.addEventListener('click', () => { location.hash = el.dataset.href; }));
+    $('#moreTiles')?.addEventListener('click', () => { S.tileLimit += 240; viewEstate(args); });
     return;
   }
   const s = tree.find((x) => x.customerId === customerId && x.site === site);
@@ -493,6 +503,7 @@ async function viewEstate(args) {
   }
   const r = s.rooms.find((x) => x.room === room);
   if (!r) { location.hash = siteHref; return; }
+  r.devices ||= [];
   hero(r.room, `${esc(s.site)} · ${esc(r.platform)} room · ${r.devices.length} devices`, `${crumbBase} <span>›</span> <a href="${siteHref}">${esc(s.site)}</a> <span>›</span> <span>${esc(r.room)}</span>`);
   const platSrc = r.devices.find((d) => d.platformSource)?.platformSource;
   $('#view').innerHTML = `
@@ -543,13 +554,14 @@ function siteTile(s) {
     <div class="counts">${healthCounts(s.health)}</div></div>`;
 }
 function roomTile(r, href) {
-  const makes = [...new Set(r.devices.map((d) => d.make))].join(' + ');
+  const makes = (r.makes || []).join(' + ');
   return `<div class="tile w-${r.worst}" data-href="${href}">
-    <h3>${esc(r.room)}</h3><div class="sub">${esc(r.platform)}${makes ? ` · ${esc(makes)}` : ''} · ${r.devices.length} devices${r.hasSchematic ? ' · schematic' : ''}</div>
+    <h3>${esc(r.room)}</h3><div class="sub">${esc(r.platform)}${makes ? ` · ${esc(makes)}` : ''} · ${r.deviceCount} devices${r.hasSchematic ? ' · schematic' : ''}</div>
     <div class="counts">${healthCounts(r.health)}</div></div>`;
 }
 
 // ------------------------------------------------------------------ devices table
+const PAGE_SIZES = [50, 100, 250, 500];
 const COLS = {
   health: ['Health', (d) => status(d.health), (d) => ['unmonitored', 'healthy', 'warning', 'offline', 'critical'].indexOf(d.health)],
   device: ['Device', (d) => `<b>${esc(d.make)}</b> ${esc(shortModel(d.make, d.model))}${mockTag(d)}`, (d) => `${d.make} ${d.model}`],
@@ -565,9 +577,9 @@ const COLS = {
   sources: ['Sources', (d) => `<span class="src-tags">${d.oems.map((o) => `<span class="pill" title="${esc(OEM_NAME[o] || o)}">${OEM_SHORT[o] || o}</span>`).join('')}</span>`, (d) => d.oems.length],
 };
 let tableRows = [];
-function deviceTable(rows, cols, selectable) {
+function deviceTable(rows, cols, selectable, { serverSorted = false } = {}) {
   const { key, dir } = S.sort;
-  const sorter = COLS[key]?.[2];
+  const sorter = serverSorted ? null : COLS[key]?.[2];
   tableRows = sorter ? [...rows].sort((a, b) => { const x = sorter(a); const y = sorter(b); return (x > y ? 1 : x < y ? -1 : 0) * dir; }) : rows;
   if (!rows.length) return '<div class="empty">No devices match the filters</div>';
   const sel = selectable && isAdmin();
@@ -595,15 +607,38 @@ function bindDeviceTable() {
   }));
 }
 
+// Paged on the server: filters, search and sorting run there, and only one page of rows comes back.
 async function viewDevices() {
-  const devices = await api(`/api/devices${qs()}`);
+  const P = S.devPage;
+  const q = qs();
+  const sortKey = `${S.sort.key}|${S.sort.dir}`;
+  if (P.query !== q || P.sortKey !== sortKey) { P.offset = 0; P.query = q; P.sortKey = sortKey; }
+  const params = new URLSearchParams(q.slice(1));
+  Object.entries({ limit: P.limit, offset: P.offset, sort: S.sort.key, dir: S.sort.dir < 0 ? 'desc' : 'asc' }).forEach(([k, v]) => params.set(k, v));
+  const page = await api(`/api/devices?${params}`);
+  if (page.offset >= page.total && page.total && P.offset) { P.offset = Math.max(0, Math.floor((page.total - 1) / P.limit) * P.limit); return viewDevices(); }
+  const devices = page.items;
   S.devices = devices;
-  hero('Devices', `${devices.length} devices match the current filters. Duplicates reported by more than one source appear once.`);
+  hero('Devices', `${page.total.toLocaleString()} devices match the current filters. Duplicates reported by more than one source appear once.`);
   const cols = ['health', 'device', 'deviceType', ...(isAdmin() && !acting() ? ['customer'] : []), 'site', 'room', 'platform', 'serial', 'firmware', 'warranty', 'lastSeen', 'sources'];
-  const known = new Set(devices.map((d) => d.id));
-  for (const id of [...S.selected]) if (!known.has(id)) S.selected.delete(id);
-  $('#view').innerHTML = `${isAdmin() ? `<div class="toolbar"><span class="muted">Tick devices to group them into a room or update them in bulk.</span><span style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="bulkDev">Bulk add (CSV)</button><button class="btn btn-grad btn-sm" id="addDev">+ Add device</button></span></div>` : ''}<div class="card">${deviceTable(devices, cols, true)}</div>`;
+  const from = page.total ? page.offset + 1 : 0;
+  const to = page.offset + devices.length;
+  const last = Math.max(0, Math.floor((page.total - 1) / page.limit) * page.limit);
+  const pager = page.total > Math.min(...PAGE_SIZES) ? `<div class="pager">
+      <span class="muted">${from.toLocaleString()}–${to.toLocaleString()} of ${page.total.toLocaleString()}</span>
+      <span class="pager-btns">
+        <button class="btn btn-outline btn-sm" data-pg="0" ${page.offset === 0 ? 'disabled' : ''} aria-label="First page">«</button>
+        <button class="btn btn-outline btn-sm" data-pg="${Math.max(0, page.offset - page.limit)}" ${page.offset === 0 ? 'disabled' : ''}>Previous</button>
+        <span class="muted">Page ${Math.floor(page.offset / page.limit) + 1} of ${Math.floor(last / page.limit) + 1}</span>
+        <button class="btn btn-outline btn-sm" data-pg="${page.offset + page.limit}" ${to >= page.total ? 'disabled' : ''}>Next</button>
+        <button class="btn btn-outline btn-sm" data-pg="${last}" ${to >= page.total ? 'disabled' : ''} aria-label="Last page">»</button>
+      </span>
+      <label class="muted pager-size">Rows <select id="pgSize">${PAGE_SIZES.map((n) => `<option ${n === page.limit ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    </div>` : '';
+  $('#view').innerHTML = `${isAdmin() ? `<div class="toolbar"><span class="muted">Tick devices to group them into a room or update them in bulk. Ticks are kept when you change page.</span><span style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="bulkDev">Bulk add (CSV)</button><button class="btn btn-grad btn-sm" id="addDev">+ Add device</button></span></div>` : ''}<div class="card">${deviceTable(devices, cols, true, { serverSorted: true })}${pager}</div>`;
   bindDeviceTable();
+  document.querySelectorAll('[data-pg]').forEach((b) => b.addEventListener('click', () => { P.offset = Number(b.dataset.pg); viewDevices(); $('#view').scrollIntoView({ block: 'start' }); }));
+  $('#pgSize')?.addEventListener('change', (e) => { P.limit = Number(e.target.value); P.offset = 0; viewDevices(); });
   $('#addDev')?.addEventListener('click', () => openManualDevice(null));
   $('#bulkDev')?.addEventListener('click', () => openBulkImport());
 }
@@ -899,6 +934,7 @@ function connCard(c) {
       <div><div class="sync-name">${esc(c.oemName)}</div><div class="sync-meta">${esc(c.name)}</div></div>
       <span class="pill ${c.mode}">${c.mode === 'live' ? 'Live' : st.mockOff ? 'Not live' : 'Mock data'}</span></div>
     <div class="conn-stats"><div><span class="muted">Status</span>${syncState(st)}</div><div><span class="muted">Devices</span><b>${st.deviceCount}</b></div><div><span class="muted">Last sync</span><b>${ago(st.lastSuccessAt)}</b></div></div>
+    ${st.intervalSec ? `<div class="muted" style="font-size:12px">Syncs every ${fmtInterval(st.intervalSec)}${st.intervalSource === 'default' ? ' (default)' : ''}${st.nextRunAt ? `, next ${inTime(st.nextRunAt)}` : ''}${isAdmin() ? ' · <a href="#/sync">Change</a>' : ''}</div>` : ''}
     ${st.error ? `<div class="err-line">${esc(st.error)}</div>` : ''}
     ${st.mockOff ? '<div class="muted" style="font-size:12px">Mock data is off for this customer, so this connection shows no devices until it goes live.</div>' : ''}
     ${S.connectors.find((x) => x.oem === c.oem)?.liveSupported === false ? '<div class="muted" style="font-size:12px">Mock only: no public API for live data.</div>' : ''}
@@ -1028,8 +1064,26 @@ function toast(icon, text) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.innerHTML = `<div>${icon}</div><div>${esc(text)}</div>`;
-  $('#toasts')?.appendChild(el);
+  const wrap = $('#toasts');
+  wrap?.appendChild(el);
+  // Never stack more than four: the oldest goes first.
+  while (wrap && wrap.children.length > 4) wrap.firstElementChild.remove();
   setTimeout(() => el.remove(), 5000);
+}
+// Critical alerts toast one by one, but a burst (a vendor cloud down for many customers)
+// becomes a single "N new critical alerts" toast instead of a wall of them.
+const alertToasts = { times: [], held: 0, timer: null };
+function toastAlert(a) {
+  const now = Date.now();
+  alertToasts.times = alertToasts.times.filter((t) => now - t < 10_000);
+  if (alertToasts.times.length < 3) { alertToasts.times.push(now); toast(alertIcon(a), a.message); return; }
+  alertToasts.held++;
+  if (alertToasts.timer) return;
+  alertToasts.timer = setTimeout(() => {
+    const n = alertToasts.held;
+    alertToasts.held = 0; alertToasts.timer = null;
+    if (n) toast(ICONS.critical, `${n} more critical alert${n === 1 ? '' : 's'}. See Alerts.`);
+  }, 4000);
 }
 
 let es;
@@ -1044,7 +1098,13 @@ function openEvents() {
     S.alerts.unshift(a);
     S.alerts.length = Math.min(S.alerts.length, 300);
     renderFeed(a.id);
-    if (a.severity === 'critical') toast(alertIcon(a), a.message);
+    if (a.severity === 'critical') toastAlert(a);
+    if (route().name === 'alerts') viewAlerts();
+  });
+  // Many alerts at once (e.g. the first sync of a large estate): reload the feed instead of one toast each.
+  es.addEventListener('alerts', async () => {
+    S.alerts = await api('/api/alerts?limit=300').catch(() => S.alerts);
+    renderFeed();
     if (route().name === 'alerts') viewAlerts();
   });
   es.addEventListener('sync', (e) => {
@@ -1114,8 +1174,7 @@ function renderBulkBar() {
 }
 
 async function selectedDevices() {
-  const all = await api('/api/devices');
-  return all.filter((d) => S.selected.has(d.id));
+  return api('/api/devices/lookup', { method: 'POST', body: { ids: [...S.selected] } });
 }
 
 async function bulkAction(act) {
@@ -1220,6 +1279,7 @@ async function viewMap(args, isRefresh) {
   MAP = { map, sites, sel: selection, layer: L.layerGroup().addTo(map) };
   const key = (s) => `${s.customerId}|${s.site}`;
   const worstOf = (list) => ['critical', 'offline', 'warning', 'healthy'].find((h) => list.some((s) => s.health[h])) || 'none';
+  const sev = (s) => ['none', 'unmonitored', 'healthy', 'warning', 'offline', 'critical'].indexOf(s.worst);
   const sum = (list) => list.reduce((a, s) => a + s.health.total, 0);
   const pin = (count, color, size, label) => L.divIcon({
     className: 'pin-wrap',
@@ -1241,10 +1301,33 @@ async function viewMap(args, isRefresh) {
         m.bindTooltip(regionTip(region, list), { direction: 'top', offset: [0, -30] });
       }
     } else {
+      // Sites close together on screen are drawn as one cluster pin (count = devices), and
+      // only pins inside the visible area (plus a margin) are drawn, so thousands of sites stay fast.
+      const view = map.getBounds().pad(0.25);
+      const cells = new Map();
+      const CELL = 64;
       for (const s of placed) {
-        const m = L.marker([s.lat, s.lng], { icon: pin(s.health.total, HCOLOR[s.worst], MAP.sel.siteKey === key(s) ? 48 : 40, s.site) }).addTo(MAP.layer);
-        m.on('click', () => selectSite(s, true));
-        m.bindTooltip(regionTip(s.site, [s]), { direction: 'top', offset: [0, -24] });
+        if (!view.contains([s.lat, s.lng])) continue;
+        const pt = map.project([s.lat, s.lng], z);
+        const k = `${Math.floor(pt.x / CELL)}|${Math.floor(pt.y / CELL)}`;
+        if (!cells.has(k)) cells.set(k, []);
+        cells.get(k).push(s);
+      }
+      for (const list of cells.values()) {
+        if (list.length === 1 || z >= map.getMaxZoom()) {
+          for (const s of list) {
+            const m = L.marker([s.lat, s.lng], { icon: pin(s.health.total, HCOLOR[s.worst], MAP.sel.siteKey === key(s) ? 48 : 40, s.site) }).addTo(MAP.layer);
+            m.on('click', () => selectSite(s, true));
+            m.bindTooltip(regionTip(s.site, [s]), { direction: 'top', offset: [0, -24] });
+          }
+          continue;
+        }
+        const lat = list.reduce((a, s) => a + s.lat, 0) / list.length;
+        const lng = list.reduce((a, s) => a + s.lng, 0) / list.length;
+        const size = Math.min(64, 42 + Math.round(Math.log2(list.length) * 3));
+        const m = L.marker([lat, lng], { icon: pin(sum(list), HCOLOR[worstOf(list)], size, `${list.length} sites`) }).addTo(MAP.layer);
+        m.on('click', () => map.fitBounds(L.latLngBounds(list.map((s) => [s.lat, s.lng])).pad(0.5), { maxZoom: Math.min(map.getMaxZoom(), z + 3) }));
+        m.bindTooltip(regionTip(`${list.length} sites`, list), { direction: 'top', offset: [0, -28] });
       }
     }
   };
@@ -1261,25 +1344,34 @@ async function viewMap(args, isRefresh) {
     const byRegion = new Map();
     for (const s of sites) { const r = s.region || 'Unassigned'; if (!byRegion.has(r)) byRegion.set(r, []); byRegion.get(r).push(s); }
     side.innerHTML = `${crumbs([{ label: 'All regions' }])}<h2>Regions</h2><div class="card-sub" style="margin-bottom:12px">Click a region or site to zoom in</div>
-      ${[...byRegion.entries()].map(([r, list]) => `<div class="side-group"><div class="side-title">${esc(r)} <span class="muted">${list.length} sites · ${sum(list)} devices</span></div>
-        ${list.map((s) => `<button class="side-row" data-site="${esc(key(s))}">${status(s.worst)}<span class="grow">${esc(s.site)}${isAdmin() && !acting() ? `<small>${esc(s.customerName)}</small>` : ''}</span><b>${s.health.total}</b></button>`).join('')}</div>`).join('')}
-      ${unplaced.length ? `<div class="notice info" style="margin-top:12px">${unplaced.length} site(s) have no coordinates: ${unplaced.map((s) => esc(s.site)).join(', ')}.${isSuper() ? ' Add them under Customers.' : ''}</div>` : ''}`;
+      ${[...byRegion.entries()].map(([r, list]) => { const top = [...list].sort((a, b) => sev(b) - sev(a) || b.health.total - a.health.total).slice(0, 25); return `<div class="side-group"><div class="side-title">${esc(r)} <span class="muted">${list.length.toLocaleString()} sites · ${sum(list).toLocaleString()} devices</span></div>
+        ${top.map((s) => `<button class="side-row" data-site="${esc(key(s))}">${status(s.worst)}<span class="grow">${esc(s.site)}${isAdmin() && !acting() ? `<small>${esc(s.customerName)}</small>` : ''}</span><b>${s.health.total}</b></button>`).join('')}
+        ${list.length > top.length ? `<div class="muted" style="font-size:12px;padding:4px 8px">${list.length - top.length} more sites. Worst first; zoom in or filter to see the rest.</div>` : ''}</div>`; }).join('')}
+      ${unplaced.length ? `<div class="notice info" style="margin-top:12px">${unplaced.length} site(s) have no coordinates: ${unplaced.slice(0, 20).map((s) => esc(s.site)).join(', ')}${unplaced.length > 20 ? '…' : ''}.${isSuper() ? ' Add them under Customers.' : ''}</div>` : ''}`;
     bindSide();
   };
-  const selectSite = (s, fly) => {
+  // Room lists come from the tree for that one site (the map itself only carries site totals).
+  const siteRooms = async (s, withDevices) => {
+    const t = await api(`/api/tree${qs({ customer: s.customerId, site: s.site, devices: withDevices ? '1' : '' })}`).catch(() => []);
+    return t.find((x) => x.customerId === s.customerId && x.site === s.site)?.rooms || [];
+  };
+  const selectSite = async (s, fly) => {
     MAP.sel = { siteKey: key(s), room: null };
     if (fly && s.lat !== null) map.flyTo([s.lat, s.lng], Math.max(map.getZoom(), 11), { duration: 0.8 });
+    s.rooms = await siteRooms(s, false);
+    if (MAP?.sel.siteKey !== key(s)) return;
     side.innerHTML = `${crumbs([{ label: 'All regions', act: 1 }, { label: s.site }])}
       <h2>${esc(s.site)}</h2><div class="card-sub">${isAdmin() && !acting() ? `${esc(s.customerName)} · ` : ''}${esc([s.city, s.country].filter(Boolean).join(', ') || s.region)}${s.address ? `<br>${esc(s.address)}` : ''}</div>
       <div class="counts" style="display:flex;gap:12px;margin:12px 0">${HEALTH_BARS.filter((h) => s.health[h]).map((h) => `<span class="st ${h}">${ICONS[h]}${s.health[h]}</span>`).join('')}</div>
       <div class="side-title">${s.rooms.length} rooms</div>
-      ${s.rooms.map((r) => `<button class="side-row" data-room="${esc(r.room)}">${status(r.worst)}<span class="grow">${esc(r.room)}<small>${esc(r.platform)} · ${r.devices.length} devices${r.hasSchematic ? ' · schematic' : ''}</small></span></button>`).join('') || '<div class="empty">No rooms yet</div>'}
+      ${s.rooms.map((r) => `<button class="side-row" data-room="${esc(r.room)}">${status(r.worst)}<span class="grow">${esc(r.room)}<small>${esc(r.platform)} · ${r.deviceCount} devices${r.hasSchematic ? ' · schematic' : ''}</small></span></button>`).join('') || '<div class="empty">No rooms yet</div>'}
       <a class="btn btn-outline btn-sm" style="margin-top:12px" href="#/estate/${encodeURIComponent(s.customerId)}/${encodeURIComponent(s.site)}">Open site page</a>`;
     bindSide(s);
     draw();
   };
-  const selectRoom = async (s, r) => {
-    MAP.sel = { siteKey: key(s), room: r.room };
+  const selectRoom = async (s, room) => {
+    MAP.sel = { siteKey: key(s), room: room.room };
+    const r = (await siteRooms(s, true)).find((x) => x.room === room.room) || { ...room, devices: [] };
     const sch = await api(`/api/rooms/schematic?customerId=${encodeURIComponent(s.customerId)}&site=${encodeURIComponent(s.site)}&room=${encodeURIComponent(r.room)}`).catch(() => null);
     side.innerHTML = `${crumbs([{ label: 'All regions', act: 1 }, { label: s.site, act: 1 }, { label: r.room }])}
       <h2>${esc(r.room)}</h2><div class="card-sub">${esc(r.platform)} · ${r.devices.length} devices</div>
@@ -1299,11 +1391,12 @@ async function viewMap(args, isRefresh) {
   }
 
   map.on('zoomend', draw);
+  map.on('moveend', () => { if (map.getZoom() >= 4) draw(); });
   if (keepView) map.setView(center, zoom, { animate: false });
   else if (placed.length) map.fitBounds(L.latLngBounds(placed.map((x) => [x.lat, x.lng])).pad(0.3));
   draw();
   const selSite = selection.siteKey && sites.find((x) => key(x) === selection.siteKey);
-  if (selSite && selection.room && selSite.rooms.some((r) => r.room === selection.room)) selectRoom(selSite, selSite.rooms.find((r) => r.room === selection.room));
+  if (selSite && selection.room) selectRoom(selSite, { room: selection.room });
   else if (selSite) selectSite(selSite, false);
   else showWorld();
   setTimeout(() => map.invalidateSize(), 50);
@@ -2576,6 +2669,68 @@ function latencyBars(checks) {
   const max = Math.max(500, ...list.map((c) => c.ms));
   return `<svg class="spark" viewBox="0 0 ${list.length * 6} 24" width="${list.length * 6}" height="24" aria-hidden="true">${list.map((c, i) => { const h = c.ok ? Math.max(2, (c.ms / max) * 22) : 22; return `<rect x="${i * 6}" y="${24 - h}" width="4" height="${h}" rx="1" fill="${c.ok ? (c.ms > 1500 ? '#fab219' : '#0ca30c') : '#d03b3b'}"><title>${esc(`${fmtDateTime(c.at)} · ${c.ok ? `${c.ms} ms` : 'failed'}${c.status ? ` · HTTP ${c.status}` : ''}`)}</title></rect>`; }).join('')}</svg>`;
 }
+// ------------------------------------------------------------------ sync schedule (admin)
+const fmtInterval = (sec) => {
+  if (!sec) return '—';
+  if (sec % 3600 === 0) return `${sec / 3600} h`;
+  if (sec % 60 === 0) return `${sec / 60} min`;
+  return `${sec} s`;
+};
+const inTime = (iso) => {
+  if (!iso) return '—';
+  const s = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+  if (s <= 5) return 'due now';
+  if (s < 90) return `in ${s} s`;
+  if (s < 5400) return `in ${Math.round(s / 60)} min`;
+  return `in ${Math.round(s / 3600)} h`;
+};
+async function viewSyncSchedule() {
+  const r = await api('/api/admin/sync');
+  const opts = (min, cur, withDefault) => `${withDefault ? `<option value="" ${cur === null ? 'selected' : ''}>Default (${fmtInterval(r.defaultIntervalSec)})</option>` : ''}${[...new Set([...r.presets, ...(cur ? [cur] : [])])].filter((v) => v >= min).sort((a, b) => a - b).map((v) => `<option value="${v}" ${v === cur ? 'selected' : ''}>Every ${fmtInterval(v)}</option>`).join('')}`;
+  const failing = r.connections.filter((c) => c.state === 'error').length;
+  hero('Sync schedule', `How often each connection pulls its devices from the vendor API. Longer intervals put less load on vendor rate limits; shorter ones show changes sooner. Minimum ${fmtInterval(r.limits.min)}, maximum ${fmtInterval(r.limits.max)}.`);
+  const sourceLabel = { admin: 'set here', environment: 'from SYNC_INTERVAL_SECONDS', 'built-in': 'built-in default' }[r.defaultSource];
+  $('#view').innerHTML = `
+    <div class="stats">
+      ${statTile('Default interval', fmtInterval(r.defaultIntervalSec), sourceLabel, '')}
+      ${statTile('Connections', r.connections.length.toLocaleString(), `${r.connections.filter((c) => c.source === 'connection').length} with their own interval`, '')}
+      ${statTile('API pulls per hour', r.pullsPerHour.toLocaleString(), `At most ${r.concurrency} at a time, staggered`, '')}
+      ${statTile('Failing', failing, failing ? 'Retried with back-off, up to hourly' : 'All connections syncing', failing ? 'crit' : 'good')}
+    </div>
+    <div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Default interval</h2><div class="card-sub">Used by every connection that has no interval of its own.${r.updatedAt ? ` Last changed ${ago(r.updatedAt)}${r.updatedBy ? ` by ${esc(r.updatedBy)}` : ''}.` : ''}</div></div></div>
+      ${r.canEditDefault ? `<div class="sync-default">
+        <div class="field"><label for="syDef">Sync every</label><select id="syDef">${opts(r.limits.min, r.defaultIntervalSec, false)}<option value="custom">Custom…</option></select></div>
+        <div class="field hidden" id="syCustomWrap"><label for="syCustom">Seconds</label><input id="syCustom" type="number" min="${r.limits.min}" max="${r.limits.max}" step="1" value="${r.defaultIntervalSec}"></div>
+        <button class="btn btn-primary btn-sm" id="sySave">Save default</button>
+      </div><div id="syMsg"></div>` : `<p class="muted">Every ${fmtInterval(r.defaultIntervalSec)}. Only the super admin can change the default; you can set an interval per connection below.</p>`}
+      <div class="help" style="margin-top:8px">A sync that runs longer than ${r.timeoutSec} seconds is abandoned and retried. A failing connection keeps its last good data and retries at twice its interval, then four times, up to once an hour, until it recovers.</div>
+    </div>
+    <div class="card"><div class="card-head"><div><h2>Per connection</h2><div class="card-sub">Pick "Default" to follow the default above. Some vendors set a higher minimum.</div></div>
+      <input class="sy-filter" id="syQ" placeholder="Filter connections" aria-label="Filter connections"></div>
+      <div class="table-wrap flat"><table class="sync-table"><thead><tr><th>Connection</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Status</th><th>Interval</th><th>Last sync</th><th>Next sync</th><th>Devices</th></tr></thead><tbody>
+      ${r.connections.map((c) => `<tr data-q="${esc(`${c.name} ${c.customerName} ${c.oemName}`.toLowerCase())}">
+        <td><b>${esc(c.oemName)}</b><div class="muted">${esc(c.name)} · ${c.mode === 'live' ? 'Live' : 'Mock'}</div></td>
+        ${isAdmin() && !acting() ? `<td>${esc(c.customerName)}</td>` : ''}
+        <td>${syncState({ state: c.state })}${c.failures ? `<div class="muted">${c.failures} failed in a row</div>` : ''}</td>
+        <td><select data-iv="${esc(c.id)}" aria-label="Interval for ${esc(c.name)}">${opts(c.minSec, c.syncIntervalSec, true)}</select>${c.minSec > r.limits.min ? `<div class="muted">Vendor minimum ${fmtInterval(c.minSec)}</div>` : ''}</td>
+        <td>${ago(c.lastRunAt)}${c.durationMs !== null && c.durationMs !== undefined ? `<div class="muted">took ${(c.durationMs / 1000).toFixed(1)} s</div>` : ''}</td>
+        <td>${inTime(c.nextRunAt)}</td>
+        <td>${(c.deviceCount || 0).toLocaleString()}</td></tr>`).join('') || `<tr><td colspan="7" class="empty">No connections</td></tr>`}
+      </tbody></table></div></div>
+    ${r.storage ? `<div class="muted" style="margin-top:12px;font-size:12px">Estate: ${r.estate.devices.toLocaleString()} devices from ${r.estate.connections.toLocaleString()} connections. Storage: ${r.storage.kind === 'postgres' ? 'Postgres' : 'files on disk'}.</div>` : ''}`;
+  $('#syDef')?.addEventListener('change', (e) => { $('#syCustomWrap').classList.toggle('hidden', e.target.value !== 'custom'); });
+  $('#sySave')?.addEventListener('click', async () => {
+    const v = $('#syDef').value === 'custom' ? Number($('#syCustom').value) : Number($('#syDef').value);
+    try { await api('/api/admin/sync', { method: 'PUT', body: { defaultIntervalSec: v } }); toast(ICONS.resolved, `Default sync interval set to ${fmtInterval(v)}`); viewSyncSchedule(); } catch (e) { $('#syMsg').innerHTML = `<div class="notice err">${esc(e.message)}</div>`; }
+  });
+  document.querySelectorAll('select[data-iv]').forEach((sel) => sel.addEventListener('change', async () => {
+    const v = sel.value === '' ? null : Number(sel.value);
+    sel.disabled = true;
+    try { await api(`/api/connections/${encodeURIComponent(sel.dataset.iv)}/schedule`, { method: 'PUT', body: { syncIntervalSec: v } }); toast(ICONS.resolved, v ? `Syncs every ${fmtInterval(v)}` : 'Follows the default interval'); viewSyncSchedule(); } catch (e) { toast(ICONS.critical, e.message); sel.disabled = false; }
+  }));
+  $('#syQ').addEventListener('input', (e) => { const q = e.target.value.trim().toLowerCase(); document.querySelectorAll('.sync-table tbody tr[data-q]').forEach((tr) => { tr.hidden = !!q && !tr.dataset.q.includes(q); }); });
+}
+
 async function viewApis(report) {
   const r = report || await api('/api/admin/apis');
   S.apiReport = r;

@@ -13,6 +13,8 @@ export class BaseConnector {
   static short = '?';
   /** Product documentation shown on the Documentation page: summary, needs[], health, location. */
   static guide = null;
+  /** Shortest sync interval this vendor allows, in seconds (never below the global minimum of 60). */
+  static minSyncSeconds = 60;
   /** Overrides the "OEM device cloud API" label on device actions (e.g. a network monitor). */
   static apiSetLabel = '';
   /** Manufacturer name written to device.make. */

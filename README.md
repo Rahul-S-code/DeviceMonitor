@@ -117,11 +117,11 @@ Cisco Control Hub is the Webex admin portal and is covered by the **Cisco Contro
 `railway.json` sets the start command and health check. In Railway: New Project > Deploy from GitHub repo > pick this repository, then:
 
 1. Right-click the service > Attach volume, mount path `/data`. The app stores its data on the volume automatically (it reads `RAILWAY_VOLUME_MOUNT_PATH`; `DATA_DIR` overrides it). Without a volume, data is lost on every redeploy.
-2. Variables: `NODE_ENV=production`, `MASTER_KEY` (keep the same value when moving hosts, or saved API keys can't be decrypted), `SUPERADMIN_PASSWORD`, `DEMO_PASSWORD`, `SHOW_DEMO_ACCOUNTS=false`. Optional: `SYNC_INTERVAL_SECONDS` (default 30).
+2. Variables: `NODE_ENV=production`, `MASTER_KEY` (keep the same value when moving hosts, or saved API keys can't be decrypted), `SUPERADMIN_PASSWORD`, `DEMO_PASSWORD`, `SHOW_DEMO_ACCOUNTS=false`. Optional: `SYNC_INTERVAL_SECONDS` (starting default 300; change it later under Configure > Sync schedule).
 3. Settings > Networking > Generate Domain for a public https link.
 4. Set a usage limit under Workspace > Usage so a runaway service can't run up the bill.
 
-A Railway Postgres can be added to the same project later; its `DATABASE_URL` can be referenced from this service's variables.
+For a large estate, add a Railway Postgres to the same project and set this service's `DATABASE_URL` variable to reference it (`${{Postgres.DATABASE_URL}}`). On the first start with Postgres the app imports what is already on the volume, then keeps everything in the database. Keep the volume for uploaded room documents.
 
 ## Publish it online (Render)
 
@@ -134,6 +134,29 @@ GitHub stores the code but cannot run a Node server, so the app is hosted on Ren
 
 On the free plan the service sleeps after 15 minutes without visitors (the first visit then takes about a minute), and its disk is temporary, so onboarded customers, schematics, uploaded design documents and saved API keys are reset when it restarts. For real use, add a Render persistent disk mounted at `/opt/render/project/src/data` (paid plan) or move the store to a database.
 
+## Large estates (tens of thousands of devices)
+
+The app is sized for estates of 50,000+ devices on one instance. `npm run loadtest` builds a synthetic estate (50,000 devices, 100 customers, 400 connections; `LOAD_DEVICES=100000` for more) and prints the timings; `test/scale.test.js` runs the same estate in `npm test` with time and size limits. Typical results:
+
+| Step | Time |
+|---|---|
+| Full build (de-duplicate and enrich every customer) | ~0.6 s |
+| One connection changed (rebuild that customer only) | ~30 ms |
+| Identical sync result | nothing rebuilt |
+| First page of 100 devices, sorted on the server | ~20 ms (59 KB) |
+| Next page | cached, under 1 ms |
+
+How it is built:
+
+- **Inventory per customer.** Each connection's latest sync is kept as a snapshot. De-duplication only happens within a customer, so a changed snapshot rebuilds only that customer, and an identical one rebuilds nothing. Rebuilds after a burst of syncs are coalesced (at most one a second).
+- **Reads are paged and cached on the server.** `GET /api/devices?limit=100&offset=0&sort=health&dir=desc` (plus the usual filters and `q`) returns `{ items, total, offset, limit }` with light list rows; the full record comes from `/api/devices/:id`. Without paging parameters the old array form is still served, capped at 5,000 rows (`X-Total-Count` has the real count). Summaries, filters and sorted lists are cached until the inventory changes.
+- **The map and site list carry counts, not devices.** `/api/map` returns sites only and the browser clusters nearby pins; rooms and devices for one site come from `/api/tree?customer=…&site=…&devices=1` when it is opened.
+- **Sync scheduler.** Each connection syncs on its own interval (default 5 minutes, minimum 1 minute, maximum 24 hours; set under Configure > Sync schedule). First runs are spread over 30 seconds, at most `SYNC_CONCURRENCY` (4) run at once, a sync that runs past `SYNC_TIMEOUT_SECONDS` (120) is abandoned, and a failing connection backs off (2x, 4x… up to hourly) while keeping its last good data. A connector can declare `static minSyncSeconds` when its vendor needs a slower rate.
+- **Storage.** With `DATABASE_URL` set, configuration is stored per section in Postgres (only changed sections are written), health history one row per device (only changed devices are written), and the latest snapshot per connection, so a restart shows the estate straight away instead of calling every vendor API at once. Without it, JSON files in `DATA_DIR` are used. Writes never block requests.
+- **Retention.** Alerts: newest 10,000, none older than 30 days (`ALERT_MAX`, `ALERT_RETENTION_DAYS`). Health history: transitions only, 35 days (`HISTORY_RETENTION_DAYS`), at most 2,000 transitions per device.
+
+Still single-instance: sessions and the inventory live in the server's memory, so run one instance (vertical scaling). Running several web instances behind a load balancer would need shared sessions and a separate sync worker; the snapshot table is the hand-off point for that.
+
 ## Architecture
 
 ```
@@ -145,19 +168,22 @@ server/
     logitech-sync/          Logitech Sync: mutual TLS + REST
   lib/device-model.js       Common device format, health/platform normalisation
   lib/vault.js              AES-256-GCM encryption for credentials
-  lib/store.js              JSON-file config store (data/store.json): customers, users, connections,
-                            site directory (with map coordinates), device overrides, room schematics
+  lib/store.js              Config store: customers, users, connections, settings, site directory
+                            (with map coordinates), device overrides, room schematics, alerts
+  lib/persistence.js        Storage backends: JSON files in DATA_DIR, or Postgres when DATABASE_URL is set
   lib/schematic.js          Room schematic building blocks, validation and templates
   lib/designs.js            Uploaded room design documents (type checks)
   lib/api-calls.js          Counts live connector API calls per endpoint
   services/api-tracker.js   API catalogue, reachability checks and performance
   lib/auth.js               scrypt passwords, HttpOnly sessions, customer scoping
   services/dedupe.js        Merge devices reported by several sources
-  services/inventory.js     Enrichment, filtering, aggregates, drill-down tree
-  services/sync.js          Scheduler, per-connection status, alert generation
+  services/inventory.js     Per-customer incremental build, paging, cached aggregates, drill-down tree
+  services/sync.js          Scheduler (per-connection intervals, staggering, concurrency, back-off), alerts
+  services/history.js       Health transitions for SLA reports
   mock/estate.js            Shared fictional estate used by all mock transports
 public/                     Front end (plain ES modules, no build step)
-test/                       node:test suites
+test/                       node:test suites (scale.test.js = 50,000-device load test)
+test/load/                  Synthetic estate generator and `npm run loadtest`
 ```
 
 Each connector has a **live transport** and a **mock transport** with the same
