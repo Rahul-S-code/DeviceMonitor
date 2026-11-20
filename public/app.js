@@ -44,8 +44,12 @@ function loadFilters() {
 }
 function emptyFilters() { return Object.fromEntries([...FILTER_KEYS.map(([k]) => [k, []]), ['q', '']]); }
 function saveFilters() { try { localStorage.setItem('dm.filters', JSON.stringify(S.filters)); } catch { /* ignore */ } }
-const isAdmin = () => ['super_admin', 'provider_admin'].includes(S.me?.role);
+// What the signed-in user may do comes from their role's permissions (set on the Roles page).
+const can = (perm) => (S.me?.permissions || []).includes(perm);
+// Super admins and MSP admins look after several customers.
+const multi = () => !!S.me?.multiCustomer;
 const isSuper = () => S.me?.role === 'super_admin';
+const seesModels = () => (S.me?.rank ?? 9) <= 1;
 const acting = () => S.me?.actingCustomerId || null;
 
 async function api(path, opts = {}) {
@@ -106,9 +110,11 @@ async function renderLogin(error) {
         <div class="field"><label for="pw">Password</label><input id="pw" name="password" type="password" autocomplete="current-password" required></div>
         <button class="btn btn-primary" style="width:100%;justify-content:center" type="submit">Sign in</button>
         ${S.config?.showDemoAccounts ? `<div class="demo-users">Demo accounts (password is <span class="mono">DEMO_PASSWORD</span>, default <span class="mono">demo1234</span>):
-          <button type="button" data-u="superadmin@provider.example">superadmin@provider.example · super admin, onboards customers</button>
-          <button type="button" data-u="admin@provider.example">admin@provider.example · provider admin, all customers</button>
-          <button type="button" data-u="it@demo.example">it@demo.example · Demo Customer only</button>
+          <button type="button" data-u="superadmin@provider.example">superadmin@provider.example · super admin, the whole platform</button>
+          <button type="button" data-u="admin@provider.example">admin@provider.example · MSP admin, the default MSP's customers</button>
+          <button type="button" data-u="admin@demo.example">admin@demo.example · customer admin, Demo Customer</button>
+          <button type="button" data-u="tech@demo.example">tech@demo.example · technical user, Demo Customer</button>
+          <button type="button" data-u="it@demo.example">it@demo.example · end user, Demo Customer (read only)</button>
         </div>` : ''}
       </form>
     </div>
@@ -141,6 +147,10 @@ const NAV_ICON = {
   lifecycle: '<path d="M13.5 6.5A5.5 5.5 0 0 0 3 5M2.5 9.5A5.5 5.5 0 0 0 13 11"/><path d="M3 2v3h3M13 14v-3h-3"/>',
   connections: '<circle cx="4" cy="8" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="12" cy="12" r="2"/><path d="M5.8 7l4.4-2.2M5.8 9l4.4 2.2"/>',
   models: '<path d="M2.5 4.5L8 2l5.5 2.5v7L8 14l-5.5-2.5z"/><path d="M2.5 4.5L8 7l5.5-2.5M8 7v7"/>',
+  msps: '<path d="M2 14V5l6-3 6 3v9"/><path d="M5.5 14v-4h5v4M5.5 7h.01M10.5 7h.01"/>',
+  users: '<circle cx="8" cy="5" r="2.8"/><path d="M2.5 14.5a5.5 5.5 0 0 1 11 0"/>',
+  roles: '<path d="M8 1.5l5.5 2v4.2c0 3.2-2.3 5.8-5.5 6.8-3.2-1-5.5-3.6-5.5-6.8V3.5z"/><circle cx="8" cy="6.8" r="1.6"/><path d="M5.6 11a2.6 2.6 0 0 1 4.8 0"/>',
+  sites: '<path d="M8 14.5s4.5-4.3 4.5-8a4.5 4.5 0 0 0-9 0c0 3.7 4.5 8 4.5 8z"/><circle cx="8" cy="6.5" r="1.6"/>',
   customers: '<circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 14a4.5 4.5 0 0 1 9 0M11 3.5a2.3 2.3 0 0 1 0 4.5M12.5 10a3.8 3.8 0 0 1 2 4"/>',
   audit: '<path d="M4 1.5h6l3 3V14.5H4z"/><path d="M6.5 8h4M6.5 10.5h4M6.5 5.5h2"/>',
   apis: '<path d="M1.5 8h3l2-5 3 10 2-5h3"/>',
@@ -149,13 +159,17 @@ const NAV_ICON = {
   sync: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.5 1.5"/>',
 };
 const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
-const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation', sync: 'Sync schedule' };
+const ROUTE_TITLE = { msps: 'MSPs', users: 'Users', roles: 'Roles & permissions', sites: 'Sites & contacts', overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation', sync: 'Sync schedule' };
 
 function navGroups() {
   return [
     ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts']],
-    ['Service', ['sla', 'lifecycle', 'baselines', 'errors']],
-    ['Configure', ['connections', ...(isAdmin() ? ['sync', 'models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['apis', 'audit'] : [])]],
+    ...(can('service.view') ? [['Service', ['sla', 'lifecycle', 'baselines', 'errors']]] : []),
+    ['Configure', [
+      ...(can('connections.view') ? ['connections'] : []), ...(can('connections.manage') ? ['sync'] : []), ...(seesModels() ? ['models'] : []),
+      ...(isSuper() ? ['msps'] : []), ...(can('customers.manage') ? ['customers'] : []), ...(can('sites.manage') && !multi() ? ['sites'] : []),
+      ...(can('users.manage') ? ['users'] : []), 'roles', ...(can('apis.view') ? ['apis'] : []), ...(can('audit.view') ? ['audit'] : []),
+    ]],
     ['Help', ['docs']],
   ];
 }
@@ -169,15 +183,15 @@ function homeLinkHTML(cls) {
 
 function renderShell() {
   const initials = (S.me.name || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('');
-  const label = { estate: 'Sites &amp; rooms', sla: 'SLA', models: 'Models' };
+  const label = { estate: 'Sites &amp; rooms', sla: 'SLA', models: 'Models', roles: 'Roles', sites: 'Sites &amp; contacts' };
   $('#app').innerHTML = `
   <div class="shell">
     <aside class="side" id="side">
-      <a class="brand" href="#/overview"><div class="brand-mark">${pulseMark()}</div><div>Estate Monitor<small>${esc(S.me.customerName || S.me.actingCustomerName || (isSuper() ? 'Super admin' : isAdmin() ? 'Service provider' : 'Customer view'))}</small></div></a>
+      <a class="brand" href="#/overview"><div class="brand-mark">${pulseMark()}</div><div>Estate Monitor<small>${esc(S.me.customerName || S.me.actingCustomerName || (isSuper() ? 'Platform' : S.me.mspName || 'Service provider'))}</small></div></a>
       <nav class="nav" id="nav">${navGroups().map(([g, items]) => `<div class="nav-group">${esc(g)}</div>${items.map((k) => `<a href="#/${k}" data-r="${k}">${navIcon(k)}<span>${label[k] || ROUTE_TITLE[k]}</span>${k === 'alerts' ? '<b class="nav-badge" id="alertBadge" hidden></b>' : ''}</a>`).join('')}`).join('')}${homeLinkHTML('nav-home')}</nav>
       <div class="side-foot">
         <span class="avatar">${esc(initials)}</span>
-        <span class="who">${esc(S.me.name)}<small>${esc({ super_admin: 'Super admin', provider_admin: 'Provider admin', customer_viewer: 'Customer' }[S.me.role] || S.me.role)}</small></span>
+        <span class="who">${esc(S.me.name)}<small>${esc(S.me.roleLabel || S.me.role)}</small></span>
         <button class="icon-btn" id="logout" title="Sign out" aria-label="Sign out"><svg viewBox="0 0 16 16"><path d="M6 2.5H3v11h3M10 5l3 3-3 3M13 8H6"/></svg></button>
       </div>
     </aside>
@@ -187,7 +201,7 @@ function renderShell() {
         <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu"><svg viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h12"/></svg></button>
         <div class="top-title" id="topTitle"></div>
         <div class="top-right">
-          ${isAdmin() ? `<select class="enter-select" id="enterSel" aria-label="Enter a customer"><option value="">${acting() ? 'Exit to all customers' : 'All customers'}</option>${S.customers.map((c) => `<option value="${esc(c.id)}" ${c.id === acting() ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}
+          ${multi() ? `<select class="enter-select" id="enterSel" aria-label="Enter a customer"><option value="">${acting() ? 'Exit to all customers' : 'All customers'}</option>${S.customers.map((c) => `<option value="${esc(c.id)}" ${c.id === acting() ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}
           <span class="live" id="live"><i></i>Live</span>
         </div>
       </div></header>
@@ -226,7 +240,7 @@ async function navigate() {
   const r = route();
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.r === r.name));
   const group = navGroups().find(([, items]) => items.includes(r.name))?.[0];
-  if ($('#topTitle')) $('#topTitle').textContent = [group, isAdmin() ? null : S.me.customerName].filter(Boolean).join(' · ');
+  if ($('#topTitle')) $('#topTitle').textContent = [group, multi() ? null : S.me.customerName].filter(Boolean).join(' · ');
   const withFilters = ['overview', 'estate', 'devices', 'map', 'lifecycle', 'sla'].includes(r.name);
   if (r.name !== 'map') destroyMap();
   $('#filters').innerHTML = '';
@@ -236,17 +250,21 @@ async function navigate() {
     else if (r.name === 'estate') await viewEstate(r.args);
     else if (r.name === 'devices') await viewDevices();
     else if (r.name === 'alerts') await viewAlerts();
-    else if (r.name === 'connections') await viewConnections();
+    else if (r.name === 'connections' && can('connections.view')) await viewConnections();
     else if (r.name === 'map') await viewMap(r.args);
-    else if (r.name === 'customers' && isSuper()) await viewCustomers();
-    else if (r.name === 'lifecycle') await viewLifecycle();
-    else if (r.name === 'baselines') await viewBaselines(r.args);
-    else if (r.name === 'sla') await viewSla();
-    else if (r.name === 'models' && isAdmin()) await viewModels();
-    else if (r.name === 'audit' && isAdmin()) await viewAudit();
-    else if (r.name === 'apis' && isAdmin()) await viewApis();
-    else if (r.name === 'sync' && isAdmin()) await viewSyncSchedule();
-    else if (r.name === 'errors') await viewErrorCodes();
+    else if (r.name === 'customers' && can('customers.manage')) await viewCustomers();
+    else if (r.name === 'msps' && isSuper()) await viewMsps();
+    else if (r.name === 'users' && can('users.manage')) await viewUsers();
+    else if (r.name === 'roles') await viewRoles(r.args);
+    else if (r.name === 'sites' && can('sites.manage')) await viewSites(r.args);
+    else if (r.name === 'lifecycle' && can('service.view')) await viewLifecycle();
+    else if (r.name === 'baselines' && can('service.view')) await viewBaselines(r.args);
+    else if (r.name === 'sla' && can('service.view')) await viewSla();
+    else if (r.name === 'models' && seesModels()) await viewModels();
+    else if (r.name === 'audit' && can('audit.view')) await viewAudit();
+    else if (r.name === 'apis' && can('apis.view')) await viewApis();
+    else if (r.name === 'sync' && can('connections.manage')) await viewSyncSchedule();
+    else if (r.name === 'errors' && can('service.view')) await viewErrorCodes();
     else if (r.name === 'docs') viewDocs(r.args);
     else location.hash = '#/overview';
   } catch (e) {
@@ -336,8 +354,8 @@ async function viewOverview() {
   const pct = (n) => (t.total ? `${Math.round((n / t.total) * 100)}%` : '0%');
   const monitored = t.total - (t.unmonitored || 0);
   const availability = monitored ? (((monitored - t.offline) / monitored) * 100).toFixed(1) : '0.0';
-  hero(isAdmin() && !acting() ? 'Global estate overview' : `${S.me.customerName || S.me.actingCustomerName} estate`, `${t.total} devices across ${summary.rooms} rooms and ${summary.sites} sites. Updated ${ago(summary.builtAt)}.`);
-  const fourth = isAdmin() && S.options.customer.length > 1
+  hero(multi() && !acting() ? 'Global estate overview' : `${S.me.customerName || S.me.actingCustomerName} estate`, `${t.total} devices across ${summary.rooms} rooms and ${summary.sites} sites. Updated ${ago(summary.builtAt)}.`);
+  const fourth = multi() && S.options.customer.length > 1
     ? breakdownCard('By customer', 'Each customer only sees its own estate', summary.byCustomer, (k) => ({ k: 'customer', v: S.options.customer.find((c) => c.label === k)?.value }))
     : breakdownCard('By device type', 'Classified from the model name', summary.byType, (k) => ({ k: 'deviceType', v: k }));
   $('#view').innerHTML = `
@@ -362,8 +380,8 @@ async function viewOverview() {
       <div class="grid">
         <div class="card"><div class="card-head"><div><h2>Live alert feed</h2><div class="card-sub">Health changes as they happen</div></div><a href="#/alerts" class="pill blue">View all</a></div>
           <div class="feed" id="feed"></div></div>
-        <div class="card"><div class="card-head"><div><h2>Sync status</h2><div class="card-sub">Manufacturer clouds and meeting-platform portals</div></div><a href="#/connections" class="pill blue">Manage</a></div>
-          <div class="sync-list" id="syncList"></div></div>
+        ${can('connections.view') ? `<div class="card"><div class="card-head"><div><h2>Sync status</h2><div class="card-sub">Manufacturer clouds and meeting-platform portals</div></div><a href="#/connections" class="pill blue">${can('connections.manage') ? 'Manage' : 'View'}</a></div>
+          <div class="sync-list" id="syncList"></div></div>` : ''}
       </div>
     </div>`;
   document.querySelectorAll('.kpi').forEach((el) => el.addEventListener('click', () => {
@@ -442,7 +460,7 @@ function feedItem(a, fresh) {
   return `<div class="feed-item ${fresh ? 'new' : ''}" data-dev="${esc(a.deviceId || '')}" data-conn="${esc(a.connectionId || '')}">
     <div class="sev-dot">${alertIcon(a)}</div>
     <div><div class="feed-msg">${esc(a.message)}${(a.errorCodes || []).map((c) => ` <span class="code-chip">${esc(c)}</span>`).join('')}</div>
-      <div class="feed-meta"><span>${ago(a.at)}</span>${a.site ? `<span>${esc(a.site)}</span>` : ''}${isAdmin() && cust ? `<span>${esc(cust)}</span>` : ''}${a.platform && a.platform !== 'Unassigned' ? `<span>${esc(a.platform)}</span>` : ''}${a.initial ? '<span>at startup</span>' : ''}</div></div>
+      <div class="feed-meta"><span>${ago(a.at)}</span>${a.site ? `<span>${esc(a.site)}</span>` : ''}${multi() && cust ? `<span>${esc(cust)}</span>` : ''}${a.platform && a.platform !== 'Unassigned' ? `<span>${esc(a.platform)}</span>` : ''}${a.initial ? '<span>at startup</span>' : ''}</div></div>
   </div>`;
 }
 function bindFeed(root) {
@@ -461,7 +479,7 @@ function renderFeed(freshId) {
 
 // ------------------------------------------------------------------ sync status
 async function loadConnections() {
-  S.connections = await api('/api/connections');
+  S.connections = can('connections.view') ? await api('/api/connections') : [];
   return S.connections;
 }
 function syncState(st) {
@@ -482,7 +500,7 @@ function renderSyncList() {
         <div class="sync-meta"><span class="pill ${c.mode}" style="padding:1px 7px">${c.mode === 'live' ? 'Live' : c.status.mockOff ? 'Not live' : 'Mock'}</span> · ${c.status.deviceCount} devices · ${ago(c.status.lastSuccessAt)}</div>
         ${c.status.error ? `<div class="err-line">${esc(c.status.error)}</div>` : ''}</div>
       ${syncState(c.status)}
-    </div>`).join('') + (more > 0 ? `<a class="muted" style="display:block;padding:8px 4px;font-size:12.5px" href="#/${isAdmin() ? 'sync' : 'connections'}">${more} more connections</a>` : '') || '<div class="empty">No connections</div>';
+    </div>`).join('') + (more > 0 ? `<a class="muted" style="display:block;padding:8px 4px;font-size:12.5px" href="#/${can('connections.manage') ? 'sync' : 'connections'}">${more} more connections</a>` : '') || '<div class="empty">No connections</div>';
 }
 
 // ------------------------------------------------------------------ estate drill-down
@@ -504,7 +522,7 @@ async function viewEstate(args) {
   if (!s) { hero('Site not found', 'It may be hidden by the current filters.', crumbBase); $('#view').innerHTML = '<div class="card empty">Nothing to show. Try clearing filters.</div>'; return; }
   const siteHref = `#/estate/${encodeURIComponent(customerId)}/${encodeURIComponent(site)}`;
   if (!room) {
-    hero(s.site, `${isAdmin() ? `${esc(s.customerName)} · ` : ''}${esc(s.region || '')}${s.country ? ` · ${esc(s.country)}` : ''} · ${s.rooms.length} rooms · ${s.health.total} devices`, `${crumbBase} <span>›</span> <span>${esc(s.site)}</span>`);
+    hero(s.site, `${multi() ? `${esc(s.customerName)} · ` : ''}${esc(s.region || '')}${s.country ? ` · ${esc(s.country)}` : ''} · ${s.rooms.length} rooms · ${s.health.total} devices`, `${crumbBase} <span>›</span> <span>${esc(s.site)}</span>`);
     $('#view').innerHTML = `<div class="tiles">${s.rooms.map((r) => roomTile(r, `${siteHref}/${encodeURIComponent(r.room)}`)).join('')}</div>`;
     document.querySelectorAll('.tile[data-href]').forEach((el) => el.addEventListener('click', () => { location.hash = el.dataset.href; }));
     return;
@@ -516,17 +534,17 @@ async function viewEstate(args) {
   const platSrc = r.devices.find((d) => d.platformSource)?.platformSource;
   $('#view').innerHTML = `
     <div class="grid cols-main">
-      <div class="card"><div class="card-head"><div><h2>Devices in this room</h2><div class="card-sub">Click a device for full details and source data</div></div><div style="display:flex;gap:10px;align-items:center">${isAdmin() ? '<button class="btn btn-outline btn-sm" id="roomAddDev">+ Add device</button>' : ''}${status(r.worst)}</div></div>
+      <div class="card"><div class="card-head"><div><h2>Devices in this room</h2><div class="card-sub">Click a device for full details and source data</div></div><div style="display:flex;gap:10px;align-items:center">${can('estate.edit') ? '<button class="btn btn-outline btn-sm" id="roomAddDev">+ Add device</button>' : ''}${status(r.worst)}</div></div>
         ${r.devices.length ? deviceTable(r.devices, ['health', 'device', 'deviceType', 'serial', 'firmware', 'lastSeen', 'sources'], true) : '<div class="empty">No devices are assigned to this room yet. Add one by hand, or use Devices › Group into room to move devices here.</div>'}</div>
       <div class="grid">
         <div class="card"><h2>Room</h2>
           <dl class="kv" style="margin-top:12px">
             <dt>Platform</dt><dd>${esc(r.platform)} <span class="muted">${platSrc ? `(${esc(platSrc)})` : ''}</span></dd>
             <dt>Site</dt><dd>${esc(s.site)}</dd><dt>Region</dt><dd>${esc(s.region)}</dd>
-            ${isAdmin() ? `<dt>Customer</dt><dd>${esc(s.customerName)}</dd>` : ''}
+            ${multi() ? `<dt>Customer</dt><dd>${esc(s.customerName)}</dd>` : ''}
             <dt>Health</dt><dd>${HEALTH_BARS.filter((h) => r.health[h]).map((h) => `${r.health[h]} ${HLABEL[h].toLowerCase()}`).join(', ') || 'No devices'}</dd>
           </dl>
-          ${isAdmin() ? `<div class="section-title">Set room platform</div>
+          ${can('estate.edit') ? `<div class="section-title">Set room platform</div>
             <div class="field"><select id="roomPlat">${['Unassigned', 'Microsoft Teams', 'Zoom', 'Cisco Webex', 'Google Meet'].map((p) => `<option ${p === r.platform ? 'selected' : ''}>${p}</option>`).join('')}</select>
             <div class="help">Logitech Sync does not report the meeting platform, so it is set per room here. Devices that report a platform themselves (such as Poly Lens) keep their own value.</div></div>
             <button class="btn btn-outline btn-sm" id="savePlat">Save platform</button>` : ''}
@@ -557,7 +575,7 @@ function healthCounts(h) {
 }
 function siteTile(s) {
   return `<div class="tile w-${s.worst}" data-href="#/estate/${encodeURIComponent(s.customerId)}/${encodeURIComponent(s.site)}">
-    <h3>${esc(s.site)}</h3><div class="sub">${isAdmin() ? `${esc(s.customerName)} · ` : ''}${esc(s.region || '')}${s.country ? ` · ${esc(s.country)}` : ''} · ${s.rooms.length} rooms</div>
+    <h3>${esc(s.site)}</h3><div class="sub">${multi() ? `${esc(s.customerName)} · ` : ''}${esc(s.region || '')}${s.country ? ` · ${esc(s.country)}` : ''} · ${s.rooms.length} rooms</div>
     <div class="brk-bar">${HEALTH_BARS.filter((h) => s.health[h]).map((h) => `<span class="f-${h}" style="flex:${s.health[h]}"></span>`).join('')}</div>
     <div class="counts">${healthCounts(s.health)}</div></div>`;
 }
@@ -590,7 +608,7 @@ function deviceTable(rows, cols, selectable, { serverSorted = false } = {}) {
   const sorter = serverSorted ? null : COLS[key]?.[2];
   tableRows = sorter ? [...rows].sort((a, b) => { const x = sorter(a); const y = sorter(b); return (x > y ? 1 : x < y ? -1 : 0) * dir; }) : rows;
   if (!rows.length) return '<div class="empty">No devices match the filters</div>';
-  const sel = selectable && isAdmin();
+  const sel = selectable && can('estate.edit');
   const allOn = sel && tableRows.every((d) => S.selected.has(d.id));
   return `<div class="table-wrap"><table><thead><tr>${sel ? `<th class="cb"><input type="checkbox" id="selAll" aria-label="Select all" ${allOn ? 'checked' : ''}></th>` : ''}${cols.map((c) => `<th data-sort="${c}">${COLS[c][0]}${key === c ? (dir > 0 ? ' ↑' : ' ↓') : ''}</th>`).join('')}</tr></thead>
     <tbody>${tableRows.map((d) => `<tr data-id="${esc(d.id)}" class="${S.selected.has(d.id) ? 'sel' : ''}">${sel ? `<td class="cb"><input type="checkbox" data-sel="${esc(d.id)}" aria-label="Select" ${S.selected.has(d.id) ? 'checked' : ''}></td>` : ''}${cols.map((c) => `<td>${COLS[c][1](d)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
@@ -628,7 +646,7 @@ async function viewDevices() {
   const devices = page.items;
   S.devices = devices;
   hero('Devices', `${page.total.toLocaleString()} devices match the current filters. Duplicates reported by more than one source appear once.`);
-  const cols = ['health', 'device', 'deviceType', ...(isAdmin() && !acting() ? ['customer'] : []), 'site', 'room', 'platform', 'serial', 'firmware', 'warranty', 'lastSeen', 'sources'];
+  const cols = ['health', 'device', 'deviceType', ...(multi() && !acting() ? ['customer'] : []), 'site', 'room', 'platform', 'serial', 'firmware', 'warranty', 'lastSeen', 'sources'];
   const from = page.total ? page.offset + 1 : 0;
   const to = page.offset + devices.length;
   const last = Math.max(0, Math.floor((page.total - 1) / page.limit) * page.limit);
@@ -643,7 +661,7 @@ async function viewDevices() {
       </span>
       <label class="muted pager-size">Rows <select id="pgSize">${PAGE_SIZES.map((n) => `<option ${n === page.limit ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
     </div>` : '';
-  $('#view').innerHTML = `${isAdmin() ? `<div class="toolbar"><span class="muted">Tick devices to group them into a room or update them in bulk. Ticks are kept when you change page.</span><span style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="bulkDev">Bulk add (CSV)</button><button class="btn btn-grad btn-sm" id="addDev">+ Add device</button></span></div>` : ''}<div class="card">${deviceTable(devices, cols, true, { serverSorted: true })}${pager}</div>`;
+  $('#view').innerHTML = `${can('estate.edit') ? `<div class="toolbar"><span class="muted">Tick devices to group them into a room or update them in bulk. Ticks are kept when you change page.</span><span style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="bulkDev">Bulk add (CSV)</button><button class="btn btn-grad btn-sm" id="addDev">+ Add device</button></span></div>` : ''}<div class="card">${deviceTable(devices, cols, true, { serverSorted: true })}${pager}</div>`;
   bindDeviceTable();
   document.querySelectorAll('[data-pg]').forEach((b) => b.addEventListener('click', () => { P.offset = Number(b.dataset.pg); viewDevices(); $('#view').scrollIntoView({ block: 'start' }); }));
   $('#pgSize')?.addEventListener('change', (e) => { P.limit = Number(e.target.value); P.offset = 0; viewDevices(); });
@@ -751,7 +769,7 @@ async function openDevice(id) {
     ${d.diagnosis?.length ? diagnosisSection(d) : ''}
     <div class="section-title">Common device record</div>
     <dl class="kv">
-      ${isAdmin() ? `<dt>Customer</dt><dd>${esc(d.customerName)}</dd>` : ''}
+      ${multi() ? `<dt>Customer</dt><dd>${esc(d.customerName)}</dd>` : ''}
       <dt>Region</dt><dd>${esc(d.region)}</dd><dt>Site</dt><dd>${esc(d.site)}</dd>
       <dt>Room</dt><dd><a href="${roomHref}" data-closedrawer>${esc(d.room)}</a></dd>
       <dt>Device type</dt><dd>${esc(d.deviceType)}</dd><dt>Make</dt><dd>${esc(d.make)}</dd><dt>Model</dt><dd>${esc(d.model)}</dd>
@@ -767,11 +785,11 @@ async function openDevice(id) {
       ${d.notes ? `<dt>Notes</dt><dd>${esc(d.notes)}</dd>` : ''}
     </dl>
     ${d.manualId ? `<div class="notice ${d.health === 'unmonitored' ? 'info' : 'ok'}" style="margin-top:14px">${d.health === 'unmonitored' ? `${esc(d.healthReason || 'Added manually.')} It has no live health.` : 'Added manually and now also reported by a connected API, which provides its live health.'}
-      ${isAdmin() ? `<div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mEdit">Edit manual record</button><button class="btn btn-danger btn-sm" id="mDel">Remove manual record</button></div>` : ''}</div>` : ''}
+      ${can('estate.edit') ? `<div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mEdit">Edit manual record</button><button class="btn btn-danger btn-sm" id="mDel">Remove manual record</button></div>` : ''}</div>` : ''}
     ${lifecycleSection(d)}
-    ${isAdmin() && d.sources.some((x) => x.oem !== 'manual') ? '<div class="section-title">Remote actions</div><div id="devActions"><div class="muted">Loading…</div></div>' : ''}
+    ${can('devices.actions') && d.sources.some((x) => x.oem !== 'manual') ? '<div class="section-title">Remote actions</div><div id="devActions"><div class="muted">Loading…</div></div>' : ''}
     ${d.overridden?.length ? `<div class="notice info" style="margin-top:14px">Manually changed: ${d.overridden.map(esc).join(', ')}. The OEM reports this device in <b>${esc(d.reportedRoom)}</b>, ${esc(d.reportedSite)}.</div>` : ''}
-    ${isAdmin() ? `<div class="section-title">Edit this device</div>
+    ${can('estate.edit') ? `<div class="section-title">Edit this device</div>
       <div class="grid cols-2" style="gap:10px">
         <div class="field"><label>Site</label><input id="eSite" value="${esc(d.site)}" list="eSites"></div>
         <div class="field"><label>Room</label><input id="eRoom" value="${esc(d.room)}"></div>
@@ -911,13 +929,13 @@ async function viewAlerts() {
 // ------------------------------------------------------------------ connections view
 async function viewConnections() {
   await loadConnections();
-  hero('Connections', isAdmin()
+  hero('Connections', can('connections.manage')
     ? 'Link each customer\'s manufacturer clouds and meeting-platform portals. Credentials are encrypted on the server and never sent back to the browser.'
     : 'Sync status of the manufacturer clouds and platform portals feeding your estate.');
   const byCust = new Map();
   for (const c of S.connections) { if (!byCust.has(c.customerName)) byCust.set(c.customerName, []); byCust.get(c.customerName).push(c); }
   $('#view').innerHTML = `
-    ${isAdmin() ? `<div class="cta"><div><h3>Link Poly Lens with API keys</h3><p>Create an API client in Poly Lens (Integrations › API Credentials), then paste the client ID and secret here. Logitech Sync uses a client certificate instead.</p></div>
+    ${can('connections.manage') ? `<div class="cta"><div><h3>Link Poly Lens with API keys</h3><p>Create an API client in Poly Lens (Integrations › API Credentials), then paste the client ID and secret here. Logitech Sync uses a client certificate instead.</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-grad" id="linkPoly">Link Poly Lens</button><button class="btn btn-outline" id="addConn">Add connection</button></div></div>` : ''}
     ${[...byCust.entries()].map(([name, conns]) => `
       <div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>${esc(name)}</h2><div class="card-sub">${conns.length} connection${conns.length > 1 ? 's' : ''}</div></div></div>
@@ -942,11 +960,11 @@ function connCard(c) {
       <div><div class="sync-name">${esc(c.oemName)}</div><div class="sync-meta">${esc(c.name)}</div></div>
       <span class="pill ${c.mode}">${c.mode === 'live' ? 'Live' : st.mockOff ? 'Not live' : 'Mock data'}</span></div>
     <div class="conn-stats"><div><span class="muted">Status</span>${syncState(st)}</div><div><span class="muted">Devices</span><b>${st.deviceCount}</b></div><div><span class="muted">Last sync</span><b>${ago(st.lastSuccessAt)}</b></div></div>
-    ${st.intervalSec ? `<div class="muted" style="font-size:12px">Syncs every ${fmtInterval(st.intervalSec)}${st.intervalSource === 'default' ? ' (default)' : ''}${st.nextRunAt ? `, next ${inTime(st.nextRunAt)}` : ''}${isAdmin() ? ' · <a href="#/sync">Change</a>' : ''}</div>` : ''}
+    ${st.intervalSec ? `<div class="muted" style="font-size:12px">Syncs every ${fmtInterval(st.intervalSec)}${st.intervalSource === 'default' ? ' (default)' : ''}${st.nextRunAt ? `, next ${inTime(st.nextRunAt)}` : ''}${can('connections.manage') ? ' · <a href="#/sync">Change</a>' : ''}</div>` : ''}
     ${st.error ? `<div class="err-line">${esc(st.error)}</div>` : ''}
     ${st.mockOff ? '<div class="muted" style="font-size:12px">Mock data is off for this customer, so this connection shows no devices until it goes live.</div>' : ''}
     ${S.connectors.find((x) => x.oem === c.oem)?.liveSupported === false ? '<div class="muted" style="font-size:12px">Mock only: no public API for live data.</div>' : ''}
-    ${isAdmin() ? `<div class="conn-actions"><button class="btn btn-primary btn-sm" data-cfg="${c.id}">${c.mode === 'live' || S.connectors.find((x) => x.oem === c.oem)?.liveSupported === false ? 'Configure' : 'Configure & go live'}</button><button class="btn btn-outline btn-sm" data-sync="${c.id}">Sync now</button></div>` : ''}
+    ${can('connections.manage') || can('connections.sync') ? `<div class="conn-actions">${can('connections.manage') ? `<button class="btn btn-primary btn-sm" data-cfg="${c.id}">${c.mode === 'live' || S.connectors.find((x) => x.oem === c.oem)?.liveSupported === false ? 'Configure' : 'Configure & go live'}</button>` : ''}${can('connections.sync') ? `<button class="btn btn-outline btn-sm" data-sync="${c.id}">Sync now</button>` : ''}</div>` : ''}
   </div>`;
 }
 
@@ -1169,7 +1187,7 @@ const PLATFORM_LIST = ['Microsoft Teams', 'Zoom', 'Cisco Webex', 'Google Meet', 
 
 function renderBulkBar() {
   let bar = $('#bulkBar');
-  if (!isAdmin() || !S.selected.size) { bar?.remove(); return; }
+  if (!can('estate.edit') || !S.selected.size) { bar?.remove(); return; }
   if (!bar) { bar = document.createElement('div'); bar.id = 'bulkBar'; bar.className = 'bulk-bar'; document.body.appendChild(bar); }
   bar.innerHTML = `<b>${S.selected.size} selected</b>
     <button class="btn btn-sm btn-grad" data-act="room">Group into room</button>
@@ -1353,7 +1371,7 @@ async function viewMap(args, isRefresh) {
     for (const s of sites) { const r = s.region || 'Unassigned'; if (!byRegion.has(r)) byRegion.set(r, []); byRegion.get(r).push(s); }
     side.innerHTML = `${crumbs([{ label: 'All regions' }])}<h2>Regions</h2><div class="card-sub" style="margin-bottom:12px">Click a region or site to zoom in</div>
       ${[...byRegion.entries()].map(([r, list]) => { const top = [...list].sort((a, b) => sev(b) - sev(a) || b.health.total - a.health.total).slice(0, 25); return `<div class="side-group"><div class="side-title">${esc(r)} <span class="muted">${list.length.toLocaleString()} sites · ${sum(list).toLocaleString()} devices</span></div>
-        ${top.map((s) => `<button class="side-row" data-site="${esc(key(s))}">${status(s.worst)}<span class="grow">${esc(s.site)}${isAdmin() && !acting() ? `<small>${esc(s.customerName)}</small>` : ''}</span><b>${s.health.total}</b></button>`).join('')}
+        ${top.map((s) => `<button class="side-row" data-site="${esc(key(s))}">${status(s.worst)}<span class="grow">${esc(s.site)}${multi() && !acting() ? `<small>${esc(s.customerName)}</small>` : ''}</span><b>${s.health.total}</b></button>`).join('')}
         ${list.length > top.length ? `<div class="muted" style="font-size:12px;padding:4px 8px">${list.length - top.length} more sites. Worst first; zoom in or filter to see the rest.</div>` : ''}</div>`; }).join('')}
       ${unplaced.length ? `<div class="notice info" style="margin-top:12px">${unplaced.length} site(s) have no coordinates: ${unplaced.slice(0, 20).map((s) => esc(s.site)).join(', ')}${unplaced.length > 20 ? '…' : ''}.${isSuper() ? ' Add them under Customers.' : ''}</div>` : ''}`;
     bindSide();
@@ -1369,7 +1387,7 @@ async function viewMap(args, isRefresh) {
     s.rooms = await siteRooms(s, false);
     if (MAP?.sel.siteKey !== key(s)) return;
     side.innerHTML = `${crumbs([{ label: 'All regions', act: 1 }, { label: s.site }])}
-      <h2>${esc(s.site)}</h2><div class="card-sub">${isAdmin() && !acting() ? `${esc(s.customerName)} · ` : ''}${esc([s.city, s.country].filter(Boolean).join(', ') || s.region)}${s.address ? `<br>${esc(s.address)}` : ''}</div>
+      <h2>${esc(s.site)}</h2><div class="card-sub">${multi() && !acting() ? `${esc(s.customerName)} · ` : ''}${esc([s.city, s.country].filter(Boolean).join(', ') || s.region)}${s.address ? `<br>${esc(s.address)}` : ''}</div>
       <div class="counts" style="display:flex;gap:12px;margin:12px 0">${HEALTH_BARS.filter((h) => s.health[h]).map((h) => `<span class="st ${h}">${ICONS[h]}${s.health[h]}</span>`).join('')}</div>
       <div class="side-title">${s.rooms.length} rooms</div>
       ${s.rooms.map((r) => `<button class="side-row" data-room="${esc(r.room)}">${status(r.worst)}<span class="grow">${esc(r.room)}<small>${esc(r.platform)} · ${r.deviceCount} devices${r.hasSchematic ? ' · schematic' : ''}</small></span></button>`).join('') || '<div class="empty">No rooms yet</div>'}
@@ -1612,10 +1630,10 @@ async function mountSchematic(card, ctx) {
     const crit = findings.filter((f) => f.level !== 'info').length;
     card.innerHTML = `<div class="card-head"><div><h2>Room schematic</h2><div class="card-sub">${editing ? 'Add building blocks, then drag from one port to another to connect a cable. Drag blocks to move them.' : `Port-to-port cabling for troubleshooting${saved?.updatedAt ? ` · saved ${ago(saved.updatedAt)}${saved.updatedBy ? ` by ${esc(saved.updatedBy)}` : ''}` : ''}`}</div></div>
       <div class="schem-actions">${draft.nodes.length && !editing ? '<button class="btn btn-outline btn-sm" id="scCsv">Cable schedule (CSV)</button><button class="btn btn-outline btn-sm" id="scExport">Export JSON</button>' : ''}
-        ${isAdmin() && !editing ? `<button class="btn btn-primary btn-sm" id="scEdit">${draft.nodes.length ? 'Open designer' : 'Design schematic'}</button>` : ''}</div></div>
+        ${can('rooms.design') && !editing ? `<button class="btn btn-primary btn-sm" id="scEdit">${draft.nodes.length ? 'Open designer' : 'Design schematic'}</button>` : ''}</div></div>
       ${editing ? designerToolbar() : ''}
       <div id="scMsg"></div>
-      ${!draft.nodes.length && !editing ? `<div class="empty">No schematic for this room yet.${isAdmin() ? ' Open the designer to draw one from building blocks or a template, or upload an existing drawing below.' : ''}</div>` : `
+      ${!draft.nodes.length && !editing ? `<div class="empty">No schematic for this room yet.${can('rooms.design') ? ' Open the designer to draw one from building blocks or a template, or upload an existing drawing below.' : ''}</div>` : `
       <div class="designer${editing ? ' editing' : ''}">
         ${editing ? `<div class="palette">${paletteHtml()}</div>` : ''}
         <div class="canvas-wrap" id="scCanvasWrap"><svg class="schem-canvas" id="scSvg" width="${w * zoom}" height="${h * zoom}" viewBox="0 0 ${w} ${h}">${schematicBody(draft, devices, { sel, pending, trace: !editing && sel?.type === 'node' ? tracePath(draft, sel.id) : null })}</svg></div>
@@ -1960,12 +1978,12 @@ async function mountDesigns(card, ctx) {
   S.blockLib = lib;
   const icon = (f) => `<div class="doc-ic ${f.ext}">${esc(f.ext.toUpperCase())}</div>`;
   card.innerHTML = `<div class="card-head"><div><h2>Design documents</h2><div class="card-sub">As-built drawings, line diagrams and installer schematics for this room</div></div></div>
-    ${isAdmin() ? `<div class="upload-row"><input type="file" id="dsFile" accept="${esc(lib.designAccept)}"><input id="dsTitle" placeholder="Title (optional), e.g. As-built AV schematic rev B" maxlength="120"><button class="btn btn-primary btn-sm" id="dsUp">Upload</button></div>
+    ${can('rooms.design') ? `<div class="upload-row"><input type="file" id="dsFile" accept="${esc(lib.designAccept)}"><input id="dsTitle" placeholder="Title (optional), e.g. As-built AV schematic rev B" maxlength="120"><button class="btn btn-primary btn-sm" id="dsUp">Upload</button></div>
       <div class="help" style="margin:-4px 0 12px">PDF, PNG, JPEG, Visio (.vsdx) or AutoCAD (.dwg), up to 10 MB. Images and PDFs open in the browser; Visio and AutoCAD files download.</div><div id="dsMsg"></div>` : ''}
     ${files.length ? `<div class="doc-grid">${files.map((f) => `<div class="doc">
       <a class="doc-thumb" href="${f.url}" target="_blank" rel="noopener">${f.preview === 'image' ? `<img src="${f.url}" alt="${esc(f.title || f.name)}" loading="lazy">` : icon(f)}</a>
       <div class="doc-meta"><b>${esc(f.title || f.name)}</b><small>${esc(f.label)} · ${fmtBytes(f.size)} · ${esc(f.uploadedBy || '')} · ${ago(f.uploadedAt)}</small>
-        <div class="doc-acts"><a class="linkbtn" href="${f.url}" target="_blank" rel="noopener">${f.preview === 'download' ? 'Download' : 'Open'}</a>${f.preview !== 'download' ? `<a class="linkbtn" href="${f.url}?download">Download</a>` : ''}${isAdmin() ? `<button class="linkbtn danger" data-deldoc="${f.id}">Remove</button>` : ''}</div></div></div>`).join('')}</div>`
+        <div class="doc-acts"><a class="linkbtn" href="${f.url}" target="_blank" rel="noopener">${f.preview === 'download' ? 'Download' : 'Open'}</a>${f.preview !== 'download' ? `<a class="linkbtn" href="${f.url}?download">Download</a>` : ''}${can('rooms.design') ? `<button class="linkbtn danger" data-deldoc="${f.id}">Remove</button>` : ''}</div></div></div>`).join('')}</div>`
     : '<div class="empty">No documents uploaded for this room.</div>'}`;
   $('#dsUp', card)?.addEventListener('click', async () => {
     const f = $('#dsFile', card).files[0]; const msg = $('#dsMsg', card);
@@ -2298,7 +2316,7 @@ async function viewLifecycle() {
         <td>${x.devices ? `${x.compliant} of ${x.devices}` : '—'}</td><td>${x.meetsCustomerBelowAdvisory ? chip(x.meetsCustomerBelowAdvisory, 'warn') : '0'}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No customers</td></tr>'}
       </tbody></table></div></div>
     <div class="grid cols-2" style="margin-bottom:18px">
-      <div class="card"><div class="card-head"><div><h2>Firmware by model</h2><div class="card-sub">Versions running in the fleet against the customer's target and our advisory</div></div>${isAdmin() ? '<a class="pill blue" href="#/models">Model master</a>' : ''}</div>
+      <div class="card"><div class="card-head"><div><h2>Firmware by model</h2><div class="card-sub">Versions running in the fleet against the customer's target and our advisory</div></div>${seesModels() ? '<a class="pill blue" href="#/models">Model master</a>' : ''}</div>
         <div class="table-wrap flat"><table><thead><tr><th>Model</th><th>Advisory</th><th>Customer target</th><th>Devices</th><th>Below target</th><th>Versions in fleet</th></tr></thead><tbody>
         ${lc.models.map((m) => `<tr><td><b>${esc(m.make)}</b> ${esc(shortModel(m.make, m.model))}${m.modelId ? '' : ' <span class="muted">(not in master)</span>'}</td><td class="mono">${esc(m.advisory || '—')}</td><td class="mono">${m.mixedTargets ? '<span class="muted">Varies by customer</span>' : esc(m.baseline || '—')}${!m.mixedTargets && m.baseline && m.advisory && m.baseline !== m.advisory ? ` ${chip(cmpVer(m.baseline, m.advisory) > 0 ? 'above' : 'below', cmpVer(m.baseline, m.advisory) > 0 ? 'good' : 'warn')}` : ''}</td><td>${m.total}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td>
           <td>${Object.entries(m.versions).sort((a, b) => cmpVer(b[0], a[0])).map(([v, c]) => `<span class="pill mono ${m.baseline && cmpVer(v, m.baseline) < 0 ? 'bad' : ''}">${esc(v)} × ${c}</span>`).join(' ') || '—'}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No devices</td></tr>'}
@@ -2310,8 +2328,8 @@ async function viewLifecycle() {
       </div>
     </div>
     <div class="card"><div class="card-head"><div><h2>Devices needing attention</h2><div class="card-sub">${lc.attentionTotal} devices failing their customer's baseline (firmware, warranty or lifecycle limit), or close to it${lc.attentionTotal > lc.attention.length ? ` (first ${lc.attention.length} shown)` : ''}</div></div></div>
-      ${lc.attention.length ? `<div class="table-wrap"><table><thead><tr><th>Device</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Site / room</th><th>Firmware</th><th>Warranty</th><th>Lifecycle</th></tr></thead><tbody>
-        ${lc.attention.map((d) => `<tr data-id="${esc(d.id)}"><td><b>${esc(d.make)}</b> ${esc(shortModel(d.make, d.model))}<div class="muted mono" style="font-size:11.5px">${esc(d.serial || '')}</div></td>${isAdmin() && !acting() ? `<td>${esc(d.customerName)}</td>` : ''}
+      ${lc.attention.length ? `<div class="table-wrap"><table><thead><tr><th>Device</th>${multi() && !acting() ? '<th>Customer</th>' : ''}<th>Site / room</th><th>Firmware</th><th>Warranty</th><th>Lifecycle</th></tr></thead><tbody>
+        ${lc.attention.map((d) => `<tr data-id="${esc(d.id)}"><td><b>${esc(d.make)}</b> ${esc(shortModel(d.make, d.model))}<div class="muted mono" style="font-size:11.5px">${esc(d.serial || '')}</div></td>${multi() && !acting() ? `<td>${esc(d.customerName)}</td>` : ''}
           <td>${esc(d.site)}<div class="muted">${esc(d.room)}</div></td>
           <td><span class="mono">${esc(d.firmware || '—')}</span> ${d.firmwareStatus === 'behind' ? chip(`target ${d.baseline}`, 'crit') : d.advisoryStatus === 'behind' ? chip(`advisory ${d.advisoryBaseline}`, 'warn') : ''}</td>
           <td>${chip(W_LABEL[d.warrantyStatus], W_TONE[d.warrantyStatus])}${d.warrantyExpires ? `<div class="muted" style="font-size:12px">${fmtDate(d.warrantyExpires)}</div>` : ''}</td>
@@ -2344,14 +2362,14 @@ async function viewBaselines(args = []) {
   const viewVersion = args[1] !== undefined && args[1] !== '' ? Number(args[1]) : null;
   const [adv, b] = await Promise.all([api('/api/baselines/advisory'), api(`/api/baselines/customers/${encodeURIComponent(cid)}${viewVersion !== null ? `?version=${viewVersion}` : ''}`)]);
   const historic = viewVersion !== null && viewVersion !== b.latestVersion;
-  const canEdit = isAdmin() && !historic;
+  const canEdit = can('baselines.edit') && !historic;
   const pol = b.current.policy || adv.policy;
   const custPolicy = !!b.current.policy;
   const withDevices = b.models.filter((m) => m.devices);
   const below = withDevices.filter((m) => m.drift === 'below' || m.drift === 'not-enforced').length;
   const above = withDevices.filter((m) => m.drift === 'above').length;
   const limitOpts = (sel) => Object.entries(adv.lifecycleLimits).map(([k, l]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${esc(l)}</option>`).join('');
-  const custPick = !acting() && isAdmin() && custs.length > 1 ? `<select id="blCust" class="pill" style="font-weight:600">${custs.map((c) => `<option value="${esc(c.id)}" ${c.id === cid ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '';
+  const custPick = !acting() && multi() && custs.length > 1 ? `<select id="blCust" class="pill" style="font-weight:600">${custs.map((c) => `<option value="${esc(c.id)}" ${c.id === cid ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '';
   $('#view').innerHTML = `
     <div class="stats">
       ${statTile(`${esc(b.customerName)} baseline`, `v${b.current.version}`, `${esc(LEVEL_SHORT[b.current.level] || b.current.level)} · ${b.current.exceptions} model exception${b.current.exceptions === 1 ? '' : 's'}`, '')}
@@ -2360,7 +2378,7 @@ async function viewBaselines(args = []) {
       ${statTile('Advisory baseline', `v${adv.version}`, policyText(adv.policy, adv.lifecycleLimits), '')}
     </div>
     <div class="grid cols-2" style="margin-bottom:18px">
-      <div class="card"><div class="card-head"><div><h2>Advisory baseline</h2><div class="card-sub">Recommended by us for every customer. Firmware targets are the approved baselines in the model master.</div></div>${isAdmin() ? '<a class="pill blue" href="#/models">Model master</a>' : ''}</div>
+      <div class="card"><div class="card-head"><div><h2>Advisory baseline</h2><div class="card-sub">Recommended by us for every customer. Firmware targets are the approved baselines in the model master.</div></div>${seesModels() ? '<a class="pill blue" href="#/models">Model master</a>' : ''}</div>
         <div id="advMsg"></div>
         <div class="grid cols-2" style="gap:10px">
           <div class="field"><label class="inline-chk"><input type="checkbox" id="advW" ${adv.policy.warrantyRequired ? 'checked' : ''} ${isSuper() ? '' : 'disabled'}> Warranty cover required</label><div class="help">Expired warranty fails the baseline.</div></div>
@@ -2384,12 +2402,12 @@ async function viewBaselines(args = []) {
           <div class="field"><label>Lifecycle limit</label><select id="blLc">${limitOpts(pol.lifecycleLimit)}</select></div>
         </div>
         ${canEdit ? `<div class="field"><label>Change note</label><input id="blNote" placeholder="e.g. Exec floor on newest firmware"></div>
-          <div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn btn-primary btn-sm" id="blSave">Save as v${b.latestVersion + 1}</button></div>` : !isAdmin() ? '<div class="help block">Your service provider maintains this baseline. Ask them to change it.</div>' : ''}
+          <div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn btn-primary btn-sm" id="blSave">Save as v${b.latestVersion + 1}</button></div>` : !can('baselines.edit') ? '<div class="help block">Your service provider maintains this baseline. Ask them to change it.</div>' : ''}
         <div class="section-title">Version history</div>
         <div class="table-wrap flat"><table><thead><tr><th>Version</th><th>Saved</th><th>Level</th><th>Exceptions</th><th>Rules</th><th>Note</th><th></th></tr></thead><tbody>
           ${[...b.versions, { version: 0, level: 'advisory', exceptions: 0, policy: null, note: 'Default: follows the advisory', createdAt: null }].map((v) => `<tr><td><b>v${v.version}</b>${v.version === b.latestVersion ? ` ${chip('current', 'good')}` : ''}</td><td>${v.createdAt ? `${fmtDate(v.createdAt)}<div class="muted" style="font-size:12px">${esc(v.createdBy || '')}</div>` : '—'}</td>
             <td>${esc(LEVEL_SHORT[v.level] || v.level)}</td><td>${v.exceptions}</td><td style="font-size:12.5px">${v.policy ? 'Own' : 'Advisory'}</td><td>${esc(v.note || '')}${v.restoredFrom !== null && v.restoredFrom !== undefined ? ` <span class="muted">(from v${v.restoredFrom})</span>` : ''}</td>
-            <td style="white-space:nowrap">${v.version !== b.latestVersion && v.version ? `<a class="linkbtn" href="#/baselines/${esc(cid)}/${v.version}">View</a>` : ''}${isAdmin() && v.version !== b.latestVersion ? ` <button class="linkbtn" data-restore="${v.version}">Restore</button>` : ''}</td></tr>`).join('')}
+            <td style="white-space:nowrap">${v.version !== b.latestVersion && v.version ? `<a class="linkbtn" href="#/baselines/${esc(cid)}/${v.version}">View</a>` : ''}${can('baselines.edit') && v.version !== b.latestVersion ? ` <button class="linkbtn" data-restore="${v.version}">Restore</button>` : ''}</td></tr>`).join('')}
         </tbody></table></div>
       </div>
     </div>
@@ -2465,20 +2483,20 @@ async function viewSla() {
         <div class="table-wrap flat"><table><thead><tr><th>Customer</th><th>Availability</th><th>Target</th><th></th><th>Incidents</th><th>MTTR</th></tr></thead><tbody>
         ${r.byCustomer.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${pctText(c.availability)}</td><td>${c.target}%</td><td>${metChip(c)}</td><td>${c.incidents}</td><td>${mins(c.mttrMin)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No data</td></tr>'}</tbody></table></div></div>
       <div class="card"><div class="card-head"><div><h2>By site</h2><div class="card-sub">Lowest availability first</div></div></div>
-        <div class="table-wrap flat"><table><thead><tr><th>Site</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Availability</th><th></th><th>Incidents</th><th>Downtime</th></tr></thead><tbody>
-        ${r.bySite.map((s) => `<tr><td><b>${esc(s.site)}</b><div class="muted">${esc(s.region || '')}</div></td>${isAdmin() && !acting() ? `<td>${esc(s.customerName)}</td>` : ''}<td>${pctText(s.availability)}</td><td>${metChip(s)}</td><td>${s.incidents}</td><td>${mins(s.downtimeMin)}</td></tr>`).join('')}</tbody></table></div></div>
+        <div class="table-wrap flat"><table><thead><tr><th>Site</th>${multi() && !acting() ? '<th>Customer</th>' : ''}<th>Availability</th><th></th><th>Incidents</th><th>Downtime</th></tr></thead><tbody>
+        ${r.bySite.map((s) => `<tr><td><b>${esc(s.site)}</b><div class="muted">${esc(s.region || '')}</div></td>${multi() && !acting() ? `<td>${esc(s.customerName)}</td>` : ''}<td>${pctText(s.availability)}</td><td>${metChip(s)}</td><td>${s.incidents}</td><td>${mins(s.downtimeMin)}</td></tr>`).join('')}</tbody></table></div></div>
     </div>
     <div class="grid cols-2" style="margin-bottom:18px">
       <div class="card"><div class="card-head"><div><h2>Rooms with the lowest availability</h2></div></div>
         <div class="table-wrap flat"><table><thead><tr><th>Room</th><th>Availability</th><th>Incidents</th><th>Downtime</th></tr></thead><tbody>
-        ${r.worstRooms.map((x) => `<tr class="link" data-room="${esc(JSON.stringify([x.customerId, x.site, x.room]))}"><td><b>${esc(x.room)}</b><div class="muted">${esc(x.site)}${isAdmin() && !acting() ? ` · ${esc(x.customerName)}` : ''}</div></td><td>${pctText(x.availability)}</td><td>${x.incidents}</td><td>${mins(x.downtimeMin)}</td></tr>`).join('')}</tbody></table></div></div>
+        ${r.worstRooms.map((x) => `<tr class="link" data-room="${esc(JSON.stringify([x.customerId, x.site, x.room]))}"><td><b>${esc(x.room)}</b><div class="muted">${esc(x.site)}${multi() && !acting() ? ` · ${esc(x.customerName)}` : ''}</div></td><td>${pctText(x.availability)}</td><td>${x.incidents}</td><td>${mins(x.downtimeMin)}</td></tr>`).join('')}</tbody></table></div></div>
       <div class="card"><div class="card-head"><div><h2>Devices with the lowest availability</h2></div></div>
         <div class="table-wrap flat"><table><thead><tr><th>Device</th><th>Availability</th><th>Incidents</th><th>Now</th></tr></thead><tbody>
         ${r.worstDevices.map((d) => `<tr data-id="${esc(d.id)}"><td><b>${esc(d.make)}</b> ${esc(shortModel(d.make, d.model))}<div class="muted">${esc(d.room)}, ${esc(d.site)}</div></td><td>${pctText(d.availability)}</td><td>${d.incidents}</td><td>${status(d.health)}</td></tr>`).join('')}</tbody></table></div></div>
     </div>
     <div class="card"><div class="card-head"><div><h2>Recent incidents</h2><div class="card-sub">Periods when a device was offline or critical</div></div></div>
-      ${r.incidents.length ? `<div class="table-wrap"><table><thead><tr><th>Started</th><th>Device</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Room</th><th>State</th><th>Duration</th></tr></thead><tbody>
-      ${r.incidents.slice(0, 50).map((i) => `<tr data-id="${esc(i.deviceId)}"><td>${fmtDateTime(i.start)}</td><td><b>${esc(i.make)}</b> ${esc(shortModel(i.make, i.model))}</td>${isAdmin() && !acting() ? `<td>${esc(i.customerName)}</td>` : ''}<td>${esc(i.room)}<div class="muted">${esc(i.site)}</div></td><td>${status(i.health)}</td><td>${i.ongoing ? chip('Ongoing', 'crit') : mins(i.durationMin)}</td></tr>`).join('')}
+      ${r.incidents.length ? `<div class="table-wrap"><table><thead><tr><th>Started</th><th>Device</th>${multi() && !acting() ? '<th>Customer</th>' : ''}<th>Room</th><th>State</th><th>Duration</th></tr></thead><tbody>
+      ${r.incidents.slice(0, 50).map((i) => `<tr data-id="${esc(i.deviceId)}"><td>${fmtDateTime(i.start)}</td><td><b>${esc(i.make)}</b> ${esc(shortModel(i.make, i.model))}</td>${multi() && !acting() ? `<td>${esc(i.customerName)}</td>` : ''}<td>${esc(i.room)}<div class="muted">${esc(i.site)}</div></td><td>${status(i.health)}</td><td>${i.ongoing ? chip('Ongoing', 'crit') : mins(i.durationMin)}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">No incidents in this period</div>'}</div>`;
   document.querySelectorAll('#slaWin button').forEach((b) => b.addEventListener('click', () => { S.slaWindow = b.dataset.w; viewSla(); }));
   document.querySelectorAll('#view tr[data-id]').forEach((tr) => tr.addEventListener('click', () => openDevice(tr.dataset.id)));
@@ -2715,10 +2733,10 @@ async function viewSyncSchedule() {
     </div>
     <div class="card"><div class="card-head"><div><h2>Per connection</h2><div class="card-sub">Pick "Default" to follow the default above. Some vendors set a higher minimum.</div></div>
       <input class="sy-filter" id="syQ" placeholder="Filter connections" aria-label="Filter connections"></div>
-      <div class="table-wrap flat"><table class="sync-table"><thead><tr><th>Connection</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Status</th><th>Interval</th><th>Last sync</th><th>Next sync</th><th>Devices</th></tr></thead><tbody>
+      <div class="table-wrap flat"><table class="sync-table"><thead><tr><th>Connection</th>${multi() && !acting() ? '<th>Customer</th>' : ''}<th>Status</th><th>Interval</th><th>Last sync</th><th>Next sync</th><th>Devices</th></tr></thead><tbody>
       ${r.connections.map((c) => `<tr data-q="${esc(`${c.name} ${c.customerName} ${c.oemName}`.toLowerCase())}">
         <td><b>${esc(c.oemName)}</b><div class="muted">${esc(c.name)} · ${c.mode === 'live' ? 'Live' : 'Mock'}</div></td>
-        ${isAdmin() && !acting() ? `<td>${esc(c.customerName)}</td>` : ''}
+        ${multi() && !acting() ? `<td>${esc(c.customerName)}</td>` : ''}
         <td>${syncState({ state: c.state })}${c.failures ? `<div class="muted">${c.failures} failed in a row</div>` : ''}</td>
         <td><select data-iv="${esc(c.id)}" aria-label="Interval for ${esc(c.name)}">${opts(c.minSec, c.syncIntervalSec, true)}</select>${c.minSec > r.limits.min ? `<div class="muted">Vendor minimum ${fmtInterval(c.minSec)}</div>` : ''}</td>
         <td>${ago(c.lastRunAt)}${c.durationMs !== null && c.durationMs !== undefined ? `<div class="muted">took ${(c.durationMs / 1000).toFixed(1)} s</div>` : ''}</td>
@@ -2912,4 +2930,191 @@ async function openManualDevice(rec, preset = {}) {
   };
   $('#mdvSave', w).addEventListener('click', () => save(false));
   $('#mdvMore', w)?.addEventListener('click', () => save(true));
+}
+
+// ------------------------------------------------------------------ roles and permissions
+async function viewRoles(args = []) {
+  const [layer, id] = args;
+  const q = layer ? `?layer=${encodeURIComponent(layer)}${id ? `&id=${encodeURIComponent(id)}` : ''}` : '';
+  const v = await api(`/api/roles${q}`);
+  const changes = {};
+  hero('Roles & permissions', 'Five levels, each inside the one above. Every level can add users and tune permissions only for the levels below it, and never beyond its own permissions.');
+  const roleCard = (r) => `<div class="conn-card role-card ${r.id === S.me.role ? 'mine' : ''}">
+      <div class="conn-top"><div class="oem-logo role-rank">${r.rank + 1}</div><div><div class="sync-name">${esc(r.label)}${r.label !== r.builtInLabel ? ` <span class="muted" style="font-weight:500">(${esc(r.builtInLabel)})</span>` : ''}</div><div class="sync-meta">${esc(r.scope)}${r.id === S.me.role ? ' · your role' : ''}</div></div></div>
+      <p class="role-sum">${esc(r.summary)}</p>
+      <ul class="role-duties">${r.duties.map((d) => `<li>${esc(d)}</li>`).join('')}</ul></div>`;
+  const groups = [...new Set(v.permissions.map((p) => p.group))];
+  const cell = (r, p) => {
+    const c = v.matrix[r.id][p.key];
+    const title = c.inherited !== null && c.overridden ? ` title="Changed here. Inherited: ${c.inherited ? 'on' : 'off'}"` : '';
+    if (c.editable) return `<td class="pm-cell${c.overridden ? ' over' : ''}"${title}><input type="checkbox" data-pm="${esc(r.id)}|${esc(p.key)}" ${c.on ? 'checked' : ''} aria-label="${esc(r.label)}: ${esc(p.label)}"></td>`;
+    return `<td class="pm-cell${c.overridden ? ' over' : ''}"${title}>${c.on ? '<span class="pm-yes" aria-label="Yes">✓</span>' : '<span class="pm-no" aria-label="No">–</span>'}</td>`;
+  };
+  $('#view').innerHTML = `
+    <div class="conn-grid roles-grid">${v.roles.map(roleCard).join('')}</div>
+    <div class="card" style="margin-top:18px"><div class="card-head" style="flex-wrap:wrap;gap:10px"><div><h2>Permissions: ${esc(v.name || '')}</h2>
+      <div class="card-sub">${v.layer === 'platform' ? 'Platform defaults for every MSP and customer.' : v.layer === 'msp' ? 'Applies to every customer of this MSP, on top of the platform defaults.' : 'Applies to this customer only, on top of its MSP\'s settings.'} ${v.canEdit ? 'Tick or untick to change a role below yours. A highlighted cell differs from what this level inherits.' : 'Read only.'}</div></div>
+      ${v.layers.length > 1 ? `<select id="pmLayer" class="pill" style="font-weight:600">${v.layers.map((l) => `<option value="${esc(l.layer)}|${esc(l.id || '')}" ${l.layer === v.layer && (l.id || null) === v.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>` : ''}</div>
+      <div id="pmMsg"></div>
+      <div class="table-wrap flat"><table class="pm-table"><thead><tr><th>Permission</th>${v.roles.map((r) => `<th>${esc(r.label)}</th>`).join('')}</tr></thead>
+        <tbody>${groups.map((g) => `<tr class="pm-group"><td colspan="${v.roles.length + 1}">${esc(g)}</td></tr>${v.permissions.filter((p) => p.group === g).map((p) => `<tr><td><b>${esc(p.label)}</b>${p.locked ? ' <span class="chip mute">fixed</span>' : ''}<div class="muted" style="font-size:12px">${esc(p.help)}</div></td>${v.roles.map((r) => cell(r, p)).join('')}</tr>`).join('')}`).join('')}</tbody></table></div>
+      ${v.canRename ? `<div class="section-title">Role names</div><div class="help block">Rename a role to match your own terms. Responsibilities and permissions stay the same.</div>
+        <div class="grid cols-2" style="gap:10px">${v.roles.map((r) => `<div class="field"><label>${esc(r.builtInLabel)}</label><input data-label="${esc(r.id)}" value="${esc(r.label)}" maxlength="40"></div>`).join('')}</div>` : ''}
+      ${v.canEdit ? `<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn btn-outline btn-sm" id="pmReset">Reset to inherited</button><button class="btn btn-primary btn-sm" id="pmSave">Save changes</button></div>` : ''}
+    </div>`;
+  $('#pmLayer')?.addEventListener('change', (e) => { const [l, i] = e.target.value.split('|'); location.hash = `#/roles/${l}${i ? `/${encodeURIComponent(i)}` : ''}`; });
+  document.querySelectorAll('[data-pm]').forEach((b) => b.addEventListener('change', () => {
+    const [r, k] = b.dataset.pm.split('|');
+    (changes[r] ||= {})[k] = b.checked;
+    b.closest('td').classList.add('dirty');
+  }));
+  const msg = (t, ok) => { $('#pmMsg').innerHTML = `<div class="notice ${ok ? 'ok' : 'err'}">${esc(t)}</div>`; };
+  const save = async (body) => {
+    try {
+      await api('/api/roles', { method: 'PUT', body: { layer: v.layer, id: v.id, ...body } });
+      S.me = await api('/api/me');
+      toast(ICONS.resolved, 'Permissions saved');
+      renderShell(); openEvents(); navigate();
+    } catch (e) { msg(e.message); }
+  };
+  $('#pmSave')?.addEventListener('click', () => {
+    const labels = v.canRename ? Object.fromEntries([...document.querySelectorAll('[data-label]')].map((i) => [i.dataset.label, i.value.trim()])) : undefined;
+    save({ overrides: changes, ...(labels ? { labels } : {}) });
+  });
+  $('#pmReset')?.addEventListener('click', (e) => {
+    if (!e.target.dataset.confirm) { e.target.dataset.confirm = 1; e.target.textContent = 'Click again to reset'; return; }
+    save({ reset: true });
+  });
+}
+
+// ------------------------------------------------------------------ users
+async function viewUsers() {
+  const r = await api('/api/users');
+  const label = (role) => r.labels[role] || role;
+  const where = (u) => [u.mspName && (u.role === 'msp_admin' || isSuper()) ? u.mspName : null, u.customerName].filter(Boolean).join(' › ') || (u.role === 'super_admin' ? 'Platform' : '—');
+  hero('Users', `${r.users.length} user${r.users.length === 1 ? '' : 's'}. You can add ${r.creatable.map((x) => label(x).toLowerCase()).join(', ').replace(/, ([^,]*)$/, ' and $1') || 'no one'}.`);
+  $('#view').innerHTML = `
+    ${r.creatable.length ? '<div class="toolbar"><span class="muted">Each level adds users only below itself, inside its own organisation. Changes are recorded in the audit log.</span><button class="btn btn-grad btn-sm" id="addUser">+ Add user</button></div>' : ''}
+    <div class="card"><div class="table-wrap flat"><table><thead><tr><th>User</th><th>Role</th><th>Organisation</th><th>Status</th><th></th></tr></thead><tbody>
+      ${r.users.map((u) => `<tr><td><b>${esc(u.name)}</b>${u.self ? ' <span class="chip blue">you</span>' : ''}<div class="muted" style="font-size:12px">${esc(u.email)}</div></td>
+        <td>${esc(u.roleLabel)}</td><td>${esc(where(u))}</td><td>${u.disabled ? chip('Disabled', 'crit') : chip('Active', 'good')}</td>
+        <td style="white-space:nowrap">${u.manageable ? `<button class="linkbtn" data-edituser="${esc(u.id)}">Manage</button>` : ''}</td></tr>`).join('')}
+    </tbody></table></div></div>`;
+  $('#addUser')?.addEventListener('click', () => openUser(null, r));
+  document.querySelectorAll('[data-edituser]').forEach((b) => b.addEventListener('click', () => openUser(r.users.find((u) => u.id === b.dataset.edituser), r)));
+}
+
+function openUser(u, r, preset = {}) {
+  const label = (role) => r.labels[role] || role;
+  const creating = !u;
+  const roles = creating ? r.creatable : r.creatable.filter((x) => x !== 'msp_admin');
+  const custOpts = (sel) => r.customers.map((c) => `<option value="${esc(c.id)}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const w = drawer(creating ? 'Add user' : u.name, creating ? 'They sign in with this email and password' : u.email, `
+    <div id="uMsg"></div>
+    ${creating ? `<div class="field"><label>Email *</label><input id="uEmail" type="email" autocomplete="off"></div>` : ''}
+    <div class="field"><label>Name</label><input id="uName" value="${esc(u?.name || '')}"></div>
+    ${!creating && u.role === 'msp_admin' ? '' : `<div class="field"><label>Role</label><select id="uRole">${roles.map((x) => `<option value="${x}" ${x === (u?.role || preset.role) ? 'selected' : ''}>${esc(label(x))}</option>`).join('')}</select><div class="help" id="uRoleHelp"></div></div>`}
+    ${creating ? `<div class="field" id="uMspF"><label>MSP</label><select id="uMsp">${r.msps.map((m) => `<option value="${esc(m.id)}" ${m.id === preset.mspId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
+      <div class="field" id="uCustF"><label>Customer</label><select id="uCust">${custOpts(preset.customerId || r.customers[0]?.id)}</select></div>` : ''}
+    <div class="field"><label>${creating ? 'Password *' : 'Set a new password'}</label><input id="uPw" type="password" autocomplete="new-password" placeholder="${creating ? '8 or more characters' : 'Leave blank to keep the current one'}"></div>
+    ${creating ? '' : `<label class="inline-chk"><input type="checkbox" id="uDisabled" ${u.disabled ? 'checked' : ''}> Disabled (cannot sign in)</label>`}`,
+  `${creating ? '' : '<button class="btn btn-danger" id="uDel" style="margin-right:auto">Remove user</button>'}<button class="btn btn-primary" id="uSave">${creating ? 'Add user' : 'Save'}</button>`);
+  const DUTY = { msp_admin: 'Manages the customers of one MSP.', customer_admin: 'Runs one customer: users, sites, estate and approvals.', technical_user: 'Diagnostics and remote actions for one customer.', end_user: 'Read-only room status for one customer, and can report issues.' };
+  const paint = () => {
+    const role = $('#uRole', w)?.value || u?.role;
+    if ($('#uRoleHelp', w)) $('#uRoleHelp', w).textContent = DUTY[role] || '';
+    if (creating) { $('#uMspF', w).classList.toggle('hidden', role !== 'msp_admin'); $('#uCustF', w).classList.toggle('hidden', role === 'msp_admin' || r.customers.length < 2); }
+  };
+  $('#uRole', w)?.addEventListener('change', paint); paint();
+  const msg = (t) => { $('#uMsg', w).innerHTML = `<div class="notice err">${esc(t)}</div>`; };
+  $('#uSave', w).addEventListener('click', async () => {
+    try {
+      if (creating) {
+        const role = $('#uRole', w).value;
+        await api('/api/users', { method: 'POST', body: { email: $('#uEmail', w).value.trim(), name: $('#uName', w).value.trim(), password: $('#uPw', w).value, role, mspId: role === 'msp_admin' ? $('#uMsp', w).value : undefined, customerId: role === 'msp_admin' ? undefined : $('#uCust', w).value } });
+      } else {
+        const body = { name: $('#uName', w).value.trim(), disabled: $('#uDisabled', w).checked };
+        if ($('#uRole', w)) body.role = $('#uRole', w).value;
+        if ($('#uPw', w).value) body.password = $('#uPw', w).value;
+        await api(`/api/users/${encodeURIComponent(u.id)}`, { method: 'PUT', body });
+      }
+      closeDrawer(); toast(ICONS.resolved, creating ? 'User added' : 'User saved'); navigate();
+    } catch (e) { msg(e.message); }
+  });
+  $('#uDel', w)?.addEventListener('click', async (e) => {
+    if (!e.target.dataset.confirm) { e.target.dataset.confirm = 1; e.target.textContent = `Click again to remove ${u.email}`; return; }
+    try { await api(`/api/users/${encodeURIComponent(u.id)}`, { method: 'DELETE' }); closeDrawer(); toast(ICONS.resolved, 'User removed'); navigate(); } catch (err) { msg(err.message); }
+  });
+}
+
+// ------------------------------------------------------------------ MSPs (super admin)
+async function viewMsps() {
+  const list = await api('/api/admin/msps');
+  hero('MSPs', 'Managed service providers on the platform. Each MSP admin sees only the customers of their own MSP.');
+  $('#view').innerHTML = `
+    <div class="cta"><div><h3>Add an MSP</h3><p>Create the MSP, then add its admins. They onboard and run their own customers.</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><input id="mspName" placeholder="MSP name" style="min-width:200px"><button class="btn btn-grad" id="mspAdd">Add MSP</button></div></div>
+    <div id="mspMsg"></div>
+    <div class="conn-grid">${list.map((m) => `<div class="conn-card">
+      <div class="conn-top"><div class="oem-logo" style="background:var(--grad)">${esc(m.name.split(/\s+/).map((x) => x[0]).slice(0, 2).join(''))}</div>
+        <div><div class="sync-name">${esc(m.name)}</div><div class="sync-meta">${m.customers.length} customers · ${m.admins.length} admins · ${m.deviceCount} devices</div></div></div>
+      <div class="muted" style="font-size:12.5px">${m.customers.map((c) => esc(c.name)).join(', ') || 'No customers yet'}</div>
+      <div class="muted" style="font-size:12.5px;margin-top:4px">${m.admins.map((a) => esc(a.email)).join(', ') || 'No admins yet'}</div>
+      <div class="conn-actions"><button class="btn btn-primary btn-sm" data-mspadmin="${esc(m.id)}">Add admin</button><a class="btn btn-outline btn-sm" href="#/roles/msp/${encodeURIComponent(m.id)}">Permissions</a><button class="btn btn-outline btn-sm" data-msprename="${esc(m.id)}">Rename</button>${m.customers.length ? '' : `<button class="btn btn-danger btn-sm" data-mspdel="${esc(m.id)}">Delete</button>`}</div>
+    </div>`).join('')}</div>`;
+  const msg = (t) => { $('#mspMsg').innerHTML = `<div class="notice err">${esc(t)}</div>`; };
+  $('#mspAdd').addEventListener('click', async () => {
+    try { await api('/api/admin/msps', { method: 'POST', body: { name: $('#mspName').value } }); toast(ICONS.resolved, 'MSP added'); viewMsps(); } catch (e) { msg(e.message); }
+  });
+  document.querySelectorAll('[data-mspadmin]').forEach((b) => b.addEventListener('click', async () => openUser(null, await api('/api/users'), { role: 'msp_admin', mspId: b.dataset.mspadmin })));
+  document.querySelectorAll('[data-msprename]').forEach((b) => b.addEventListener('click', () => {
+    const m = list.find((x) => x.id === b.dataset.msprename);
+    const w = drawer(`Rename ${m.name}`, 'The new name shows everywhere straight away', '<div id="rnMsg"></div><div class="field"><label>MSP name</label><input id="rnName"></div>', '<button class="btn btn-primary" id="rnSave">Save</button>');
+    $('#rnName', w).value = m.name;
+    $('#rnSave', w).addEventListener('click', async () => {
+      try { await api(`/api/admin/msps/${encodeURIComponent(m.id)}`, { method: 'PUT', body: { name: $('#rnName', w).value } }); closeDrawer(); viewMsps(); } catch (e) { $('#rnMsg', w).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; }
+    });
+  }));
+  document.querySelectorAll('[data-mspdel]').forEach((b) => b.addEventListener('click', async (e) => {
+    if (!e.target.dataset.confirm) { e.target.dataset.confirm = 1; e.target.textContent = 'Click again to delete'; return; }
+    try { await api(`/api/admin/msps/${encodeURIComponent(b.dataset.mspdel)}`, { method: 'DELETE' }); toast(ICONS.resolved, 'MSP deleted'); viewMsps(); } catch (err) { msg(err.message); }
+  }));
+}
+
+// ------------------------------------------------------------------ sites and contacts (customer admins)
+async function viewSites() {
+  const cid = S.me.customerId;
+  const c = S.customers.find((x) => x.id === cid);
+  hero('Sites & contacts', `Sites, map positions and the site contact (SPOC) for ${esc(c?.name || S.me.customerName)}.`);
+  const rows = (await api(`/api/customers/${encodeURIComponent(cid)}/sites`)).sites;
+  $('#view').innerHTML = `<div class="card"><div id="stMsg"></div>
+    <div class="help block">Pick a city preset to fill in the map position. The site contact is who your engineers and your service provider call about that site.</div>
+    <div id="stRows">${rows.map((s, i) => siteRow(s, i)).join('')}</div>
+    <div style="display:flex;justify-content:space-between;margin-top:10px"><button class="btn btn-outline btn-sm" id="stAdd">Add site</button><button class="btn btn-primary btn-sm" id="stSave">Save sites</button></div></div>`;
+  bindSiteRows($('#stRows'));
+  $('#stAdd').addEventListener('click', () => { $('#stRows').insertAdjacentHTML('beforeend', siteRow({}, Date.now())); bindSiteRows($('#stRows')); });
+  $('#stSave').addEventListener('click', async () => {
+    try {
+      await api(`/api/customers/${encodeURIComponent(cid)}/sites`, { method: 'PUT', body: { sites: readSites($('#stRows')) } });
+      toast(ICONS.resolved, 'Sites saved'); S.options = await api('/api/filters'); viewSites();
+    } catch (e) { $('#stMsg').innerHTML = `<div class="notice err">${esc(e.message)}</div>`; }
+  });
+}
+
+// ------------------------------------------------------------------ report an issue
+function reportIssueHTML() {
+  return can('issue.report') ? `<div class="section-title">Report an issue</div>
+    <div class="field"><input id="riSum" maxlength="200" placeholder="What's wrong? e.g. No picture on the left screen"></div>
+    <div class="field"><textarea id="riDet" rows="2" maxlength="2000" placeholder="Details (optional)"></textarea></div>
+    <button class="btn btn-outline btn-sm" id="riSend">Send report</button><div id="riMsg"></div>` : '';
+}
+function bindReportIssue(root, target) {
+  $('#riSend', root)?.addEventListener('click', async (e) => {
+    try {
+      await api('/api/issues', { method: 'POST', body: { ...target, summary: $('#riSum', root).value, details: $('#riDet', root).value } });
+      $('#riSum', root).value = ''; $('#riDet', root).value = '';
+      $('#riMsg', root).innerHTML = '<div class="notice ok">Reported. Your administrators see it in the alert feed.</div>';
+      e.target.disabled = true; setTimeout(() => { e.target.disabled = false; }, 10_000);
+    } catch (err) { $('#riMsg', root).innerHTML = `<div class="notice err">${esc(err.message)}</div>`; }
+  });
 }

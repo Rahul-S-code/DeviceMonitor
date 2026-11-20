@@ -5,7 +5,8 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Store } from './lib/store.js';
 import { Vault, maskSecrets } from './lib/vault.js';
-import { Sessions, COOKIE, parseCookies, verifyPassword, allowedCustomers, isAdminRole, isSuperAdmin, hashPassword } from './lib/auth.js';
+import { Sessions, COOKIE, parseCookies, verifyPassword, allowedCustomers, baseCustomers, isAdminRole, isSuperAdmin, hashPassword } from './lib/auth.js';
+import { ROLES, RANK, ROLE_INFO, PERMISSIONS, CUSTOMER_ROLES, isRole, editableRow, cleanOverrides, allowedFor, resolveMatrix } from './lib/roles.js';
 import { validateSchematic, withBlockPorts, SCHEMATIC_TEMPLATES, BLOCKS, CABLES, NODE_KINDS, CONDITIONS } from './lib/schematic.js';
 import { detectDesignType, cleanFileName, DESIGN_ACCEPT, MAX_DESIGNS_PER_ROOM } from './lib/designs.js';
 import { ApiTracker } from './services/api-tracker.js';
@@ -99,12 +100,18 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   app.use((req, _res, next) => {
     const s = sessions.get(parseCookies(req.headers.cookie)[COOKIE]);
     req.session = s;
-    req.user = s ? store.users.find((u) => u.id === s.userId) : null;
+    req.user = s ? store.users.find((u) => u.id === s.userId && !u.disabled) || null : null;
     next();
   });
   const requireUser = (req, res, next) => (req.user ? next() : res.status(401).json({ error: 'Sign in required' }));
-  const requireAdmin = (req, res, next) => (isAdminRole(req.user) ? next() : res.status(403).json({ error: 'Admin only' }));
-  const requireSuper = (req, res, next) => (isSuperAdmin(req.user) ? next() : res.status(403).json({ error: 'Super admin only' }));
+  // Permissions come from the user's role and the configurable role matrix (lib/roles.js).
+  const permsOf = (req) => (req.perms ||= store.permissionsFor(req.user));
+  const can = (req, perm) => !!req.user && permsOf(req).has(perm);
+  const requirePerm = (perm) => (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Sign in required' });
+    return can(req, perm) ? next() : res.status(403).json({ error: 'Your role does not allow this' });
+  };
+  const requireSuper = requirePerm('platform.manage');
   // Mutations must be JSON (blocks cross-site form posts together with SameSite=Strict).
   const requireJson = (req, res, next) => (req.is('application/json') ? next() : res.status(415).json({ error: 'JSON required' }));
 
@@ -136,7 +143,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const acct = `acct:${String(email || '').trim().toLowerCase().slice(0, 200)}`;
     const wait = Math.max(lockedFor(`ip:${ip}`), lockedFor(acct));
     if (wait) { res.set('Retry-After', String(Math.ceil(wait / 1000))); return res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(wait / 60_000)} minute${wait > 60_000 ? 's' : ''}.` }); }
-    const user = store.users.find((u) => u.email.toLowerCase() === String(email || '').trim().toLowerCase());
+    const user = store.users.find((u) => u.email.toLowerCase() === String(email || '').trim().toLowerCase() && !u.disabled);
     const ok = verifyPassword(String(password || '').slice(0, 1024), user ? user.password : DUMMY_HASH);
     if (!user || !ok) {
       noteFailure(`ip:${ip}`); noteFailure(acct);
@@ -160,24 +167,32 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   app.get('/api/config', (_req, res) => res.json({ showDemoAccounts, mapLayers, homeLink }));
   app.get('/api/me', requireUser, (req, res) => {
     const { id, email, name, role, customerId } = req.user;
-    const acting = isAdminRole(req.user) && req.session.actingCustomerId && store.customers.some((c) => c.id === req.session.actingCustomerId) ? req.session.actingCustomerId : null;
-    res.json({ id, email, name, role, customerId, customerName: customerId ? store.customerName(customerId) : null, actingCustomerId: acting, actingCustomerName: acting ? store.customerName(acting) : null });
+    const acting = isAdminRole(req.user) && req.session.actingCustomerId && baseCustomers(req.user, store).includes(req.session.actingCustomerId) ? req.session.actingCustomerId : null;
+    const mspId = store.userMsp(req.user);
+    res.json({
+      id, email, name, role, rank: RANK[role], roleLabel: store.roleLabels()[role] || role, customerId, customerName: customerId ? store.customerName(customerId) : null,
+      mspId, mspName: mspId ? store.mspName(mspId) : null, multiCustomer: isAdminRole(req.user),
+      permissions: [...permsOf(req)], actingCustomerId: acting, actingCustomerName: acting ? store.customerName(acting) : null,
+    });
   });
 
   const scope = (req) => allowedCustomers(req.user, store, req.session);
+  // Every customer the user's role covers, ignoring "enter customer" (admin pages).
+  const baseScope = (req) => baseCustomers(req.user, store);
   const inScope = (req, customerId) => scope(req).includes(customerId);
   // Empty onboarded sites/rooms only make sense when no device-level filter is active.
   const configuredScope = (req) => (['platform', 'oem', 'deviceType', 'health', 'firmwareStatus', 'warrantyStatus', 'q', 'room'].some((k) => req.query[k]) ? null : { allowed: scope(req), f: req.query });
 
   // "Enter" a customer: admins see the app exactly as that customer's estate.
-  app.post('/api/session/enter', requireAdmin, requireJson, (req, res) => {
+  const requireMulti = (req, res, next) => (isAdminRole(req.user) ? next() : res.status(403).json({ error: 'Your role does not allow this' }));
+  app.post('/api/session/enter', requireMulti, requireJson, (req, res) => {
     const { customerId } = req.body || {};
-    if (!store.customers.some((c) => c.id === customerId)) return res.status(400).json({ error: 'Unknown customer' });
+    if (!baseScope(req).includes(customerId)) return res.status(400).json({ error: 'Unknown customer' });
     req.session.actingCustomerId = customerId;
     audit(req, 'session.enter_customer', { customerId, target: store.customerName(customerId) });
     res.json({ ok: true });
   });
-  app.post('/api/session/exit', requireAdmin, (req, res) => {
+  app.post('/api/session/exit', requireMulti, (req, res) => {
     const was = req.session.actingCustomerId;
     delete req.session.actingCustomerId;
     if (was) audit(req, 'session.exit_customer', { customerId: was, target: store.customerName(was) });
@@ -233,12 +248,12 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     };
   });
   const lastAction = new Map();
-  app.get('/api/devices/:id/actions', requireAdmin, (req, res) => {
+  app.get('/api/devices/:id/actions', requirePerm('devices.actions'), (req, res) => {
     const d = visibleDevice(req, req.params.id);
     if (!d) return res.status(404).json({ error: 'Not found' });
     res.json({ sets: actionSets(d) });
   });
-  app.post('/api/devices/:id/actions', requireAdmin, requireJson, async (req, res) => {
+  app.post('/api/devices/:id/actions', requirePerm('devices.actions'), requireJson, async (req, res) => {
     const d = visibleDevice(req, req.params.id);
     if (!d) return res.status(404).json({ error: 'Not found' });
     const { connectionId, action } = req.body || {};
@@ -266,7 +281,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     }
   });
   // Error code reference, with how many devices in scope have each code now.
-  app.get('/api/error-codes', requireUser, (req, res) => {
+  app.get('/api/error-codes', requirePerm('service.view'), (req, res) => {
     const counts = {};
     for (const d of inventory.query(scope(req))) for (const c of d.errorCodes || []) counts[c] = (counts[c] || 0) + 1;
     res.json(Object.entries(ERROR_CODES).map(([code, e]) => ({ code, ...e, devices: counts[code] || 0 })));
@@ -274,7 +289,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   app.get('/api/map', requireUser, (req, res) => res.json(inventory.map(inventory.query(scope(req), req.query), configuredScope(req))));
 
   // Bulk update: group devices into a room, set platform, tags, notes, or reset to OEM values.
-  app.post('/api/devices/bulk', requireAdmin, requireJson, (req, res) => {
+  app.post('/api/devices/bulk', requirePerm('estate.edit'), requireJson, (req, res) => {
     const { ids, set = {}, reset } = req.body || {};
     if (!Array.isArray(ids) || !ids.length || ids.length > 2000) return res.status(400).json({ error: 'Select between 1 and 2000 devices' });
     const targets = ids.map((id) => visibleDevice(req, String(id))).filter(Boolean);
@@ -324,7 +339,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   // they show as "Not monitored" until a connector reports the same serial or MAC.
   const manualLabel = (m) => { const mod = store.models.find((x) => x.id === m.modelId); return `${mod ? `${mod.make} ${mod.model}` : `${m.make || ''} ${m.model || 'Device'}`.trim()} (${m.room}, ${m.site})`; };
   const manualOf = (req) => store.manualDevices.find((d) => d.id === req.params.id && inScope(req, d.customerId));
-  app.post('/api/manual-devices', requireAdmin, requireJson, (req, res) => {
+  app.post('/api/manual-devices', requirePerm('estate.edit'), requireJson, (req, res) => {
     const b = req.body || {};
     if (!inScope(req, b.customerId)) return res.status(400).json({ error: 'Pick a customer' });
     try {
@@ -337,7 +352,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   // Bulk add from CSV: download the template, preview (commit=false), then import (commit=true).
   const BULK_COLUMNS = ['customer', 'site', 'room', 'make', 'model', 'device_type', 'serial', 'mac', 'firmware', 'platform', 'asset_tag', 'warranty_end', 'warranty_type', 'notes'];
   const MAX_IMPORT_ROWS = 2000;
-  app.get('/api/manual-devices/template.csv', requireAdmin, (req, res) => {
+  app.get('/api/manual-devices/template.csv', requirePerm('estate.edit'), (req, res) => {
     const custs = store.customers.filter((c) => inScope(req, c.id));
     const models = [...store.models].sort((a, b) => `${a.make}${a.model}`.localeCompare(`${b.make}${b.model}`));
     const ex = (i) => models[i % Math.max(models.length, 1)];
@@ -351,7 +366,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="estate-monitor-devices-template.csv"' });
     res.send(toCsv(rows));
   });
-  app.post('/api/manual-devices/import', requireAdmin, requireJson, (req, res) => {
+  app.post('/api/manual-devices/import', requirePerm('estate.edit'), requireJson, (req, res) => {
     const { csv, customerId = null, commit = false, allowUnlisted = false } = req.body || {};
     if (typeof csv !== 'string' || !csv.trim()) return res.status(400).json({ error: 'Choose a CSV file' });
     if (customerId && !inScope(req, customerId)) return res.status(400).json({ error: 'Pick a customer' });
@@ -371,7 +386,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     }
     res.json({ rows: out.rows, valid: out.valid, invalid: out.invalid, added: commit ? out.added.length : 0, committed: !!commit });
   });
-  app.put('/api/manual-devices/:id', requireAdmin, requireJson, (req, res) => {
+  app.put('/api/manual-devices/:id', requirePerm('estate.edit'), requireJson, (req, res) => {
     const cur = manualOf(req);
     if (!cur) return res.status(404).json({ error: 'Not found' });
     try {
@@ -385,7 +400,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const d = manualOf(req);
     return d ? res.json(d) : res.status(404).json({ error: 'Not found' });
   });
-  app.delete('/api/manual-devices/:id', requireAdmin, (req, res) => {
+  app.delete('/api/manual-devices/:id', requirePerm('estate.edit'), (req, res) => {
     const cur = manualOf(req);
     if (!cur) return res.status(404).json({ error: 'Not found' });
     store.deleteManualDevice(cur.id);
@@ -408,7 +423,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     // Schematics saved before the designer existed get ports from their building blocks.
     res.json(saved && saved.nodes.some((n) => !Array.isArray(n.ports)) ? withBlockPorts(saved) : saved);
   });
-  app.put('/api/rooms/schematic', requireAdmin, requireJson, (req, res) => {
+  app.put('/api/rooms/schematic', requirePerm('rooms.design'), requireJson, (req, res) => {
     const { customerId, site, room, schematic } = req.body || {};
     if (!inScope(req, customerId) || !site || !room) return res.status(400).json({ error: 'Unknown room' });
     try {
@@ -427,7 +442,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     if (!inScope(req, customerId)) return res.status(404).json({ error: 'Not found' });
     res.json(store.designsFor(customerId, site, room).map(designOut));
   });
-  app.post('/api/rooms/designs', requireAdmin, (req, res, next) => {
+  app.post('/api/rooms/designs', requirePerm('rooms.design'), (req, res, next) => {
     // Uploads are raw bytes, not JSON. A custom header can't be sent cross-site without CORS, so it stands in for requireJson.
     if (req.get('x-requested-with') !== 'estate-monitor') return res.status(415).json({ error: 'Upload from the app' });
     next();
@@ -460,7 +475,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     });
     res.sendFile(store.designPath(d), (err) => { if (err && !res.headersSent) res.status(404).json({ error: 'The file is missing. It may have been lost when the server restarted.' }); });
   });
-  app.delete('/api/designs/:id', requireAdmin, (req, res) => {
+  app.delete('/api/designs/:id', requirePerm('rooms.design'), (req, res) => {
     const d = findDesign(req, res); if (!d) return;
     store.removeDesign(d.id);
     audit(req, 'room.design_removed', { customerId: d.customerId, target: `${d.room}, ${d.site}`, details: { file: d.name } });
@@ -468,7 +483,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   // --- API tracker (admins; checks are super admin only) ---------------------
-  app.get('/api/admin/apis', requireAdmin, (_req, res) => res.json(apiTracker.report()));
+  app.get('/api/admin/apis', requirePerm('apis.view'), (_req, res) => res.json(apiTracker.report()));
   app.post('/api/admin/apis/check', requireSuper, requireJson, async (req, res) => {
     const id = req.body?.id ? String(req.body.id) : null;
     try {
@@ -479,46 +494,62 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
-  // --- super admin: customers and onboarding -----------------------------
+  // --- customers and onboarding (super admin: all; MSP admins: their MSP's customers) ---
+  const userOut = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, mspId: store.userMsp(u), customerId: u.customerId || null, disabled: !!u.disabled, createdAt: u.createdAt || null });
   const customerSummary = (c) => {
     const devs = inventory.forCustomer(c.id);
     return {
       ...c,
+      roleOverrides: undefined,
+      mspName: c.mspId ? store.mspName(c.mspId) : null,
       mockData: store.mockEnabled(c.id),
       sites: Object.entries(store.sitesFor(c.id)).map(([name, s]) => ({ name, ...s })),
-      users: store.users.filter((u) => u.customerId === c.id).map(({ id, email, name }) => ({ id, email, name })),
+      users: store.users.filter((u) => u.customerId === c.id).map(userOut),
       connections: store.connections.filter((x) => x.customerId === c.id).map((x) => ({ id: x.id, oem: x.oem, name: x.name, mode: x.mode, status: sync.statusFor(x.id) })),
       deviceCount: devs.length,
       health: Inventory.healthCounts(devs),
     };
   };
-  app.get('/api/admin/customers', requireSuper, (_req, res) => res.json(store.customers.map(customerSummary)));
-  app.post('/api/admin/customers', requireSuper, requireJson, async (req, res) => {
+  const manageCustomers = requirePerm('customers.manage');
+  const ownCustomer = (req, id) => baseScope(req).includes(id);
+  app.get('/api/admin/customers', manageCustomers, (req, res) => {
+    const mine = new Set(baseScope(req));
+    res.json(store.customers.filter((c) => mine.has(c.id)).map(customerSummary));
+  });
+  app.post('/api/admin/customers', manageCustomers, requireJson, async (req, res) => {
     const b = req.body || {};
     try {
+      // MSP admins always onboard into their own MSP; the super admin picks one.
+      const mspId = isSuperAdmin(req.user) ? (b.mspId || 'msp-default') : req.user.mspId;
       const conns = (b.connections || []).map((oem) => { const C = getConnectorClass(oem); return { oem, displayName: C.displayName }; });
       const rooms = (b.rooms || []).map((r) => ({
         site: String(r.site || '').trim(), room: String(r.room || '').trim().slice(0, 80),
         platform: PLATFORMS.includes(r.platform) && r.platform !== 'Unassigned' ? r.platform : null,
         schematic: r.schematic ? validateSchematic(r.schematic) : null,
       }));
-      const out = store.onboardCustomer({ ...b, mockData: b.mockData !== false, platforms: (b.platforms || []).filter((p) => PLATFORMS.includes(p)), connections: conns, rooms });
+      const users = (b.users || []).map((u) => ({ ...u, role: CUSTOMER_ROLES.includes(u.role) ? u.role : 'customer_admin' }));
+      if (users.length && !can(req, 'users.manage')) throw new Error('Your role does not allow adding users');
+      const out = store.onboardCustomer({ ...b, mspId, users, mockData: b.mockData !== false, platforms: (b.platforms || []).filter((p) => PLATFORMS.includes(p)), connections: conns, rooms });
       await Promise.all(out.connections.map((c) => sync.syncConnection(c)));
       sync.refresh();
-      audit(req, 'customer.onboard', { customerId: out.customer.id, target: out.customer.name, details: { sites: Object.keys(store.sitesFor(out.customer.id)).length, users: out.users, connections: out.connections.map((c) => c.oem), rooms: rooms.length } });
+      audit(req, 'customer.onboard', { customerId: out.customer.id, target: out.customer.name, details: { msp: store.mspName(mspId), sites: Object.keys(store.sitesFor(out.customer.id)).length, users: out.users, connections: out.connections.map((c) => c.oem), rooms: rooms.length } });
       res.status(201).json(customerSummary(out.customer));
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
-  app.put('/api/admin/customers/:id', requireSuper, requireJson, async (req, res) => {
+  app.put('/api/admin/customers/:id', manageCustomers, requireJson, async (req, res) => {
+    if (!ownCustomer(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
     try {
       const before = store.customers.find((x) => x.id === req.params.id);
       const prevTarget = before ? store.slaTarget(before.id) : null;
       const prevMock = before ? store.mockEnabled(before.id) : null;
+      const prevMsp = before?.mspId;
       const body = { ...(req.body || {}) };
       if (body.mockData !== undefined) body.mockData = body.mockData !== false;
+      // Only the super admin moves a customer to another MSP.
+      if (body.mspId !== undefined && (!isSuperAdmin(req.user) || body.mspId === prevMsp)) delete body.mspId;
       const c = store.updateCustomer(req.params.id, body);
       const mockChanged = body.mockData !== undefined && prevMock !== c.mockData;
-      audit(req, 'customer.update', { customerId: c.id, target: c.name, details: { fields: Object.keys(req.body || {}), ...(req.body?.slaTarget !== undefined ? { slaTarget: { from: prevTarget, to: c.slaTarget } } : {}), ...(mockChanged ? { mockData: { from: prevMock, to: c.mockData } } : {}) } });
+      audit(req, 'customer.update', { customerId: c.id, target: c.name, details: { fields: Object.keys(req.body || {}), ...(req.body?.slaTarget !== undefined ? { slaTarget: { from: prevTarget, to: c.slaTarget } } : {}), ...(mockChanged ? { mockData: { from: prevMock, to: c.mockData } } : {}), ...(body.mspId ? { msp: { from: store.mspName(prevMsp), to: store.mspName(c.mspId) } } : {}) } });
       await Promise.all(store.connections.filter((x) => x.customerId === c.id).map((x) => sync.syncConnection(x)));
       sync.refresh(c.id);
       if (mockChanged && c.mockData === false) {
@@ -529,36 +560,253 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       res.json(customerSummary(c));
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
-  app.delete('/api/admin/customers/:id', requireSuper, (req, res) => {
+  app.delete('/api/admin/customers/:id', manageCustomers, (req, res) => {
+    if (!ownCustomer(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
     try {
       for (const c of store.connections.filter((x) => x.customerId === req.params.id)) { inventory.removeConnection(c.id); persistence.deleteSnapshot(c.id); }
       const name = store.customerName(req.params.id);
+      const mspId = store.mspOf(req.params.id);
       store.deleteCustomer(req.params.id);
-      audit(req, 'customer.delete', { customerId: req.params.id, target: name });
+      audit(req, 'customer.delete', { customerId: req.params.id, mspId, target: name });
       if (req.session.actingCustomerId === req.params.id) delete req.session.actingCustomerId;
       sync.refresh();
       res.json({ ok: true });
     } catch (e) { res.status(404).json({ error: e.message }); }
   });
-  app.post('/api/admin/customers/:id/users', requireSuper, requireJson, (req, res) => {
-    const c = store.customers.find((x) => x.id === req.params.id);
-    if (!c) return res.status(404).json({ error: 'Customer not found' });
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    const password = String(req.body?.password || '');
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email' });
-    if (store.users.some((u) => u.email === email)) return res.status(400).json({ error: 'That email is already in use' });
-    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    store.users.push({ id: `u-${crypto.randomUUID()}`, email, name: String(req.body?.name || email).slice(0, 80), role: 'customer_viewer', customerId: c.id, password: hashPassword(password) });
-    store.save();
-    audit(req, 'user.create', { customerId: c.id, target: email });
-    res.status(201).json(customerSummary(c));
+
+  // Sites and site contacts (SPOC): customer admins look after their own; MSP and super admins too.
+  app.put('/api/customers/:id/sites', requirePerm('sites.manage'), requireJson, (req, res) => {
+    if (!ownCustomer(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
+    if (!Array.isArray(req.body?.sites)) return res.status(400).json({ error: 'sites must be a list' });
+    try {
+      const before = Object.keys(store.sitesFor(req.params.id));
+      const c = store.updateCustomer(req.params.id, { sites: req.body.sites });
+      sync.refresh(c.id);
+      const after = Object.keys(store.sitesFor(c.id));
+      audit(req, 'customer.sites', { customerId: c.id, target: c.name, details: { sites: after.length, added: after.filter((x) => !before.includes(x)), removed: before.filter((x) => !after.includes(x)) } });
+      res.json({ sites: Object.entries(store.sitesFor(c.id)).map(([name, s]) => ({ name, ...s })) });
+    } catch (e) { res.status(400).json({ error: e.message }); }
   });
-  app.delete('/api/admin/users/:id', requireSuper, (req, res) => {
-    const i = store.users.findIndex((u) => u.id === req.params.id && u.role === 'customer_viewer');
-    if (i < 0) return res.status(404).json({ error: 'User not found' });
-    const [gone] = store.users.splice(i, 1); store.save();
-    audit(req, 'user.delete', { customerId: gone.customerId, target: gone.email });
-    res.json({ ok: true });
+
+  // --- users: each level manages only the levels below it, inside its own scope ------
+  const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  /** Can the signed-in user manage a user with this role and placement? */
+  const canManage = (req, { role, mspId = null, customerId = null }) => {
+    const me = req.user;
+    if (!can(req, 'users.manage') || !isRole(role) || RANK[role] <= RANK[me.role]) return false;
+    if (role === 'msp_admin') return isSuperAdmin(me) && store.msps.some((m) => m.id === mspId);
+    if (!CUSTOMER_ROLES.includes(role) || !customerId) return false;
+    return baseScope(req).includes(customerId);
+  };
+  const placement = (u) => ({ role: u.role, mspId: u.role === 'msp_admin' ? u.mspId : null, customerId: u.customerId || null });
+  const userScopeOf = (u) => (u.customerId ? { customerId: u.customerId, mspId: store.mspOf(u.customerId) } : { mspId: u.mspId || null });
+  const visibleUsers = (req) => {
+    const me = req.user;
+    if (isSuperAdmin(me)) return store.users;
+    const mine = new Set(baseScope(req));
+    return store.users.filter((u) => u.id === me.id || (u.customerId && mine.has(u.customerId)) || (me.role === 'msp_admin' && u.role === 'msp_admin' && u.mspId === me.mspId));
+  };
+  app.get('/api/users', requirePerm('users.manage'), (req, res) => {
+    const labels = store.roleLabels();
+    const acting = req.session.actingCustomerId && isAdminRole(req.user) ? req.session.actingCustomerId : null;
+    res.json({
+      users: visibleUsers(req).filter((u) => !acting || u.customerId === acting).map((u) => ({
+        ...userOut(u), roleLabel: labels[u.role] || u.role, mspName: store.userMsp(u) ? store.mspName(store.userMsp(u)) : null,
+        customerName: u.customerId ? store.customerName(u.customerId) : null, self: u.id === req.user.id, manageable: u.id !== req.user.id && canManage(req, placement(u)),
+      })).sort((a, b) => RANK[a.role] - RANK[b.role] || String(a.customerName || '').localeCompare(String(b.customerName || '')) || a.email.localeCompare(b.email)),
+      // What this user may create, and where.
+      creatable: ROLES.filter((r) => RANK[r] > RANK[req.user.role] && (r !== 'msp_admin' || isSuperAdmin(req.user))),
+      msps: isSuperAdmin(req.user) ? store.msps.map((m) => ({ id: m.id, name: m.name })) : [],
+      customers: store.customers.filter((c) => baseScope(req).includes(c.id)).map((c) => ({ id: c.id, name: c.name, mspId: c.mspId })),
+      labels,
+    });
+  });
+  const createUser = (req, b) => {
+    const role = String(b.role || '');
+    const where = { role, mspId: role === 'msp_admin' ? String(b.mspId || '') : null, customerId: CUSTOMER_ROLES.includes(role) ? String(b.customerId || '') : null };
+    if (!canManage(req, where)) throw Object.assign(new Error('You can only add users below your own level, in your own organisation'), { status: 403 });
+    const email = String(b.email || '').trim().toLowerCase();
+    const password = String(b.password || '');
+    if (!EMAIL_RE.test(email)) throw new Error('Enter a valid email');
+    if (store.users.some((u) => u.email.toLowerCase() === email)) throw new Error('That email is already in use');
+    if (password.length < 8) throw new Error('Password must be at least 8 characters');
+    const u = { id: `u-${crypto.randomUUID()}`, email, name: String(b.name || email).trim().slice(0, 80) || email, role, customerId: where.customerId, ...(where.mspId ? { mspId: where.mspId } : {}), password: hashPassword(password), createdAt: new Date().toISOString(), createdBy: req.user.email };
+    store.users.push(u); store.save();
+    audit(req, 'user.create', { ...userScopeOf(u), target: email, details: { role } });
+    return u;
+  };
+  app.post('/api/users', requirePerm('users.manage'), requireJson, (req, res) => {
+    try { res.status(201).json(userOut(createUser(req, req.body || {}))); } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
+  });
+  app.put('/api/users/:id', requirePerm('users.manage'), requireJson, (req, res) => {
+    const u = store.users.find((x) => x.id === req.params.id);
+    if (!u || u.id === req.user.id || !canManage(req, placement(u))) return res.status(404).json({ error: 'User not found' });
+    const b = req.body || {};
+    const changes = {};
+    try {
+      if (b.role !== undefined && b.role !== u.role) {
+        // Role changes stay within the same kind of placement: customer roles move between customer roles.
+        const next = { ...placement(u), role: String(b.role) };
+        if (!CUSTOMER_ROLES.includes(u.role) || !CUSTOMER_ROLES.includes(next.role) || !canManage(req, next)) throw Object.assign(new Error('You can only give roles below your own level'), { status: 403 });
+        changes.role = { from: u.role, to: next.role };
+        u.role = next.role;
+      }
+      if (b.name !== undefined) { const n = String(b.name).trim().slice(0, 80); if (n && n !== u.name) { changes.name = { from: u.name, to: n }; u.name = n; } }
+      if (b.disabled !== undefined && !!b.disabled !== !!u.disabled) { changes.disabled = !!b.disabled; if (b.disabled) u.disabled = true; else delete u.disabled; }
+      if (b.password) {
+        if (String(b.password).length < 8) throw new Error('Password must be at least 8 characters');
+        u.password = hashPassword(String(b.password)); changes.passwordReset = true;
+      }
+    } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    store.save();
+    if (Object.keys(changes).length) audit(req, changes.role ? 'user.role_change' : changes.disabled !== undefined ? (changes.disabled ? 'user.disable' : 'user.enable') : 'user.update', { ...userScopeOf(u), target: u.email, details: changes });
+    res.json(userOut(u));
+  });
+  const deleteUser = (req, id) => {
+    const i = store.users.findIndex((x) => x.id === id);
+    const u = store.users[i];
+    if (!u || u.id === req.user.id || !canManage(req, placement(u))) return null;
+    store.users.splice(i, 1); store.save();
+    audit(req, 'user.delete', { ...userScopeOf(u), target: u.email, details: { role: u.role } });
+    return u;
+  };
+  app.delete('/api/users/:id', requirePerm('users.manage'), (req, res) => (deleteUser(req, req.params.id) ? res.json({ ok: true }) : res.status(404).json({ error: 'User not found' })));
+  // Older routes used by the customer drawer.
+  app.post('/api/admin/customers/:id/users', requirePerm('users.manage'), requireJson, (req, res) => {
+    const c = store.customers.find((x) => x.id === req.params.id && ownCustomer(req, x.id));
+    if (!c) return res.status(404).json({ error: 'Customer not found' });
+    try {
+      createUser(req, { ...req.body, role: req.body?.role || 'end_user', customerId: c.id });
+      res.status(201).json(customerSummary(c));
+    } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
+  });
+  app.delete('/api/admin/users/:id', requirePerm('users.manage'), (req, res) => (deleteUser(req, req.params.id) ? res.json({ ok: true }) : res.status(404).json({ error: 'User not found' })));
+
+  // --- MSPs (super admin) ----------------------------------------------------------
+  const mspOut = (m) => {
+    const custs = store.customers.filter((c) => c.mspId === m.id);
+    return { id: m.id, name: m.name, createdAt: m.createdAt || null, customers: custs.map((c) => ({ id: c.id, name: c.name })), admins: store.users.filter((u) => u.role === 'msp_admin' && u.mspId === m.id).map(userOut), deviceCount: custs.reduce((n, c) => n + inventory.forCustomer(c.id).length, 0) };
+  };
+  app.get('/api/admin/msps', requireSuper, (_req, res) => res.json(store.msps.map(mspOut)));
+  app.post('/api/admin/msps', requireSuper, requireJson, (req, res) => {
+    try {
+      const m = store.createMsp(req.body || {});
+      audit(req, 'msp.create', { mspId: m.id, target: m.name });
+      res.status(201).json(mspOut(m));
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  app.put('/api/admin/msps/:id', requireSuper, requireJson, (req, res) => {
+    try {
+      const before = store.mspName(req.params.id);
+      const m = store.updateMsp(req.params.id, req.body || {});
+      audit(req, 'msp.update', { mspId: m.id, target: m.name, details: before !== m.name ? { renamed: { from: before, to: m.name } } : undefined });
+      res.json(mspOut(m));
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  app.delete('/api/admin/msps/:id', requireSuper, (req, res) => {
+    try {
+      const name = store.mspName(req.params.id);
+      store.deleteMsp(req.params.id);
+      audit(req, 'msp.delete', { mspId: req.params.id, target: name });
+      res.json({ ok: true });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  // --- roles and the permission matrix ---------------------------------------------
+  // Layers: platform (super admin), msp/<id>, customer/<id>. Each shows the effective
+  // matrix there, what it inherits, and which cells the signed-in user may change.
+  const layerFor = (req, layer, id) => {
+    if (layer === 'platform') return { layer, id: null, name: 'Platform defaults', where: {}, parent: null, own: store.roleSettings.platform || {}, ok: true, canEdit: isSuperAdmin(req.user) };
+    if (layer === 'msp') {
+      const m = store.msps.find((x) => x.id === id);
+      const ok = !!m && (isSuperAdmin(req.user) || (req.user.role === 'msp_admin' && req.user.mspId === id));
+      return { layer, id, name: m?.name, where: { mspId: id }, parent: {}, own: m?.roleOverrides || {}, ok, canEdit: ok && can(req, 'roles.manage') };
+    }
+    if (layer === 'customer') {
+      const c = store.customers.find((x) => x.id === id);
+      const ok = !!c && baseScope(req).includes(id);
+      return { layer, id, name: c?.name, where: { customerId: id }, parent: { mspId: c?.mspId }, own: c?.roleOverrides || {}, ok, canEdit: ok && can(req, 'roles.manage') };
+    }
+    return { ok: false };
+  };
+  const defaultLayer = (req) => (isSuperAdmin(req.user) ? ['platform', null] : req.user.role === 'msp_admin' ? ['msp', req.user.mspId] : ['customer', req.user.customerId]);
+  const rolesView = (req, L) => {
+    const eff = store.roleMatrix(L.where);
+    const inherited = L.parent ? store.roleMatrix(L.parent) : null;
+    const mine = permsOf(req);
+    const labels = store.roleLabels();
+    return {
+      layer: L.layer, id: L.id, name: L.name, canEdit: L.canEdit, canRename: isSuperAdmin(req.user) && L.layer === 'platform',
+      roles: ROLES.map((r) => ({ ...ROLE_INFO[r], id: r, rank: RANK[r], label: labels[r], builtInLabel: ROLE_INFO[r].label })),
+      permissions: PERMISSIONS,
+      matrix: Object.fromEntries(ROLES.map((r) => [r, Object.fromEntries(PERMISSIONS.map((p) => {
+        const has = eff[r].has(p.key);
+        const editable = L.canEdit && editableRow(r, L.layer, req.user.role) && allowedFor(r, p.key) && !p.locked && (has || mine.has(p.key));
+        return [p.key, { on: has, editable, inherited: inherited ? inherited[r].has(p.key) : null, overridden: L.own?.[r]?.[p.key] !== undefined }];
+      }))])),
+      layers: [
+        ...(isSuperAdmin(req.user) ? [{ layer: 'platform', id: null, name: 'Platform defaults' }] : []),
+        ...store.msps.filter((m) => isSuperAdmin(req.user) || (req.user.role === 'msp_admin' && req.user.mspId === m.id)).map((m) => ({ layer: 'msp', id: m.id, name: `MSP: ${m.name}` })),
+        ...store.customers.filter((c) => baseScope(req).includes(c.id)).map((c) => ({ layer: 'customer', id: c.id, name: `Customer: ${c.name}` })),
+      ],
+    };
+  };
+  app.get('/api/roles', requireUser, (req, res) => {
+    const [dl, did] = defaultLayer(req);
+    const L = layerFor(req, String(req.query.layer || dl), req.query.layer ? String(req.query.id || '') || null : did);
+    if (!L.ok) return res.status(404).json({ error: 'Not found' });
+    res.json(rolesView(req, L));
+  });
+  app.put('/api/roles', requirePerm('roles.manage'), requireJson, (req, res) => {
+    const b = req.body || {};
+    const L = layerFor(req, String(b.layer || ''), b.id ? String(b.id) : null);
+    if (!L.ok || !L.canEdit) return res.status(403).json({ error: 'You cannot change permissions here' });
+    try {
+      const before = L.own || {};
+      // Cells the editor can't change keep their current value.
+      const inherited = L.parent ? store.roleMatrix(L.parent) : resolveMatrix([]);
+      let next = cleanOverrides(b.overrides, { layer: L.layer, editorRole: req.user.role, editorPerms: permsOf(req), current: before, inherited });
+      // "Reset" puts every row the editor may change back to what the layer inherits.
+      if (b.reset) next = Object.fromEntries(Object.entries(before).filter(([r]) => !editableRow(r, L.layer, req.user.role)));
+      if (L.layer === 'platform') store.roleSettings.platform = next;
+      else if (L.layer === 'msp') store.msps.find((m) => m.id === L.id).roleOverrides = next;
+      else store.customers.find((c) => c.id === L.id).roleOverrides = next;
+      let renamed;
+      if (b.labels && isSuperAdmin(req.user) && L.layer === 'platform') {
+        const labels = {};
+        for (const r of ROLES) { const v = String(b.labels[r] || '').trim().slice(0, 40); if (v && v !== ROLE_INFO[r].label) labels[r] = v; }
+        if (JSON.stringify(labels) !== JSON.stringify(store.roleSettings.labels || {})) { renamed = labels; store.roleSettings.labels = labels; }
+      }
+      store.save();
+      audit(req, 'roles.update', { ...(L.layer === 'customer' ? { customerId: L.id } : L.layer === 'msp' ? { mspId: L.id } : { mspId: null }), target: L.name, details: { before, after: next, ...(renamed ? { labels: renamed } : {}) } });
+      req.perms = null;
+      res.json(rolesView(req, L));
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  // --- report an issue (any role with issue.report) ------------------------------
+  const lastReport = new Map();
+  app.post('/api/issues', requirePerm('issue.report'), requireJson, (req, res) => {
+    const b = req.body || {};
+    const summary = String(b.summary || '').trim().slice(0, 200);
+    if (!summary) return res.status(400).json({ error: 'Say what the problem is' });
+    let d = null;
+    let customerId = String(b.customerId || '');
+    if (b.deviceId) { d = visibleDevice(req, String(b.deviceId)); if (!d) return res.status(404).json({ error: 'Not found' }); customerId = d.customerId; }
+    if (!inScope(req, customerId)) return res.status(400).json({ error: 'Pick a customer' });
+    if (Date.now() - (lastReport.get(req.user.id) || 0) < 10_000) return res.status(429).json({ error: 'You just reported an issue. Wait a few seconds.' });
+    lastReport.set(req.user.id, Date.now());
+    const site = String(d?.site || b.site || '').slice(0, 120) || null;
+    const room = String(d?.room || b.room || '').slice(0, 120) || null;
+    const alert = {
+      id: crypto.randomUUID(), at: new Date().toISOString(), kind: 'report', severity: 'warning', customerId, site, room, deviceId: d?.id || null,
+      message: `Reported by ${req.user.name || req.user.email}: ${summary}${room ? ` (${room})` : ''}`,
+      details: String(b.details || '').trim().slice(0, 2000) || null, reportedBy: { id: req.user.id, email: req.user.email, name: req.user.name },
+    };
+    store.addAlerts([alert]);
+    sync.emit('alert', alert);
+    audit(req, 'issue.report', { customerId, target: room ? `${room}, ${site}` : d ? `${d.make} ${d.model}` : store.customerName(customerId), details: { summary } });
+    res.status(201).json(alert);
   });
 
   app.get('/api/alerts', requireUser, (req, res) => {
@@ -568,7 +816,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   // Room platform directory (Logitech Sync does not report a meeting platform).
-  app.put('/api/rooms/platform', requireAdmin, requireJson, (req, res) => {
+  app.put('/api/rooms/platform', requirePerm('estate.edit'), requireJson, (req, res) => {
     const { customerId, site, room, platform } = req.body || {};
     if (!inScope(req, customerId)) return res.status(400).json({ error: 'Unknown customer' });
     if (platform && !PLATFORMS.includes(platform)) return res.status(400).json({ error: 'Unknown platform' });
@@ -582,7 +830,9 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   // --- live events (SSE) ------------------------------------------------
   app.get('/api/events', requireUser, (req, res) => {
     const allowed = new Set(scope(req));
-    const isAdmin = isAdminRole(req.user);
+    // Estate-wide counts span every MSP, so only the super admin gets them.
+    const isAdmin = isSuperAdmin(req.user);
+    const seesErrors = can(req, 'connections.manage');
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders();
     const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -592,7 +842,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const onInv = (d) => send('inventory', isAdmin ? d : { builtAt: d.builtAt });
     const onSync = (s) => {
       const conn = store.connections.find((c) => c.id === s.connectionId);
-      if (conn && allowed.has(conn.customerId)) send('sync', isAdmin ? s : { ...s, error: s.error ? 'Sync error' : null });
+      if (conn && allowed.has(conn.customerId)) send('sync', seesErrors ? s : { ...s, error: s.error ? 'Sync error' : null });
     };
     sync.on('alert', onAlert); sync.on('alerts', onAlerts); sync.on('inventory', onInv); sync.on('sync', onSync);
     const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
@@ -611,9 +861,9 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     return { ...base, settings: c.settings, credentials: maskSecrets(C.credentialFields, secrets), hasCredentials: !!c.secret };
   };
 
-  app.get('/api/connections', requireUser, (req, res) => {
+  app.get('/api/connections', requirePerm('connections.view'), (req, res) => {
     const allowed = new Set(scope(req));
-    const admin = isAdminRole(req.user);
+    const admin = can(req, 'connections.manage');
     res.json(store.connections.filter((c) => allowed.has(c.customerId)).map((c) => publicConnection(c, admin)));
   });
 
@@ -652,7 +902,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     return Object.keys(current).length ? vault.encrypt(current) : null;
   };
 
-  app.post('/api/connections', requireAdmin, requireJson, async (req, res) => {
+  app.post('/api/connections', requirePerm('connections.manage'), requireJson, async (req, res) => {
     const { customerId, oem, name, settings, credentials, mode = 'mock' } = req.body || {};
     if (!inScope(req, customerId)) return res.status(400).json({ error: 'Unknown customer' });
     let C; try { C = getConnectorClass(oem); } catch (e) { return res.status(400).json({ error: e.message }); }
@@ -672,7 +922,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.status(201).json(publicConnection(conn, true));
   });
 
-  app.put('/api/connections/:id', requireAdmin, requireJson, async (req, res) => {
+  app.put('/api/connections/:id', requirePerm('connections.manage'), requireJson, async (req, res) => {
     const conn = store.connections.find((c) => c.id === req.params.id && inScope(req, c.customerId));
     if (!conn) return res.status(404).json({ error: 'Not found' });
     const C = getConnectorClass(conn.oem);
@@ -705,7 +955,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   // Test with the saved settings, or with unsaved values from the form.
-  app.post('/api/connections/:id/test', requireAdmin, requireJson, async (req, res) => {
+  app.post('/api/connections/:id/test', requirePerm('connections.manage'), requireJson, async (req, res) => {
     const conn = store.connections.find((c) => c.id === req.params.id && inScope(req, c.customerId));
     if (!conn) return res.status(404).json({ error: 'Not found' });
     const C = getConnectorClass(conn.oem);
@@ -724,14 +974,14 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     }
   });
 
-  app.post('/api/connections/:id/sync', requireAdmin, async (req, res) => {
+  app.post('/api/connections/:id/sync', requirePerm('connections.sync'), async (req, res) => {
     const conn = store.connections.find((c) => c.id === req.params.id && inScope(req, c.customerId));
     if (!conn) return res.status(404).json({ error: 'Not found' });
     audit(req, 'connection.sync', { customerId: conn.customerId, target: conn.name });
     try { res.json(await sync.syncOne(conn.id)); } catch (e) { res.status(404).json({ error: e.message }); }
   });
 
-  app.delete('/api/connections/:id', requireAdmin, (req, res) => {
+  app.delete('/api/connections/:id', requirePerm('connections.manage'), (req, res) => {
     const i = store.connections.findIndex((c) => c.id === req.params.id && inScope(req, c.customerId));
     if (i < 0) return res.status(404).json({ error: 'Not found' });
     const [conn] = store.connections.splice(i, 1);
@@ -761,11 +1011,13 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       }),
       // Rough vendor API load with these settings: full device pulls per hour.
       pullsPerHour: Math.round(store.connections.filter((c) => allowed.has(c.customerId)).reduce((n, c) => n + 3600 / sync.intervalInfo(c).seconds, 0)),
-      estate: { devices: inventory.devices.length, customers: store.customers.length, connections: store.connections.length, builtAt: inventory.builtAt },
+      estate: isSuperAdmin(req.user)
+        ? { devices: inventory.devices.length, customers: store.customers.length, connections: store.connections.length, builtAt: inventory.builtAt }
+        : { devices: [...allowed].reduce((n, id) => n + inventory.forCustomer(id).length, 0), customers: allowed.size, connections: store.connections.filter((c) => allowed.has(c.customerId)).length, builtAt: inventory.builtAt },
       storage: isSuperAdmin(req.user) ? persistence.describe() : undefined,
     };
   };
-  app.get('/api/admin/sync', requireAdmin, (req, res) => res.json(syncSchedule(req)));
+  app.get('/api/admin/sync', requirePerm('connections.manage'), (req, res) => res.json(syncSchedule(req)));
   app.put('/api/admin/sync', requireSuper, requireJson, (req, res) => {
     const before = sync.defaultIntervalSec();
     let v;
@@ -776,7 +1028,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.json(syncSchedule(req));
   });
   // Per-connection interval (null = follow the default). Admins, for connections they can see.
-  app.put('/api/connections/:id/schedule', requireAdmin, requireJson, (req, res) => {
+  app.put('/api/connections/:id/schedule', requirePerm('connections.manage'), requireJson, (req, res) => {
     const conn = store.connections.find((c) => c.id === req.params.id && inScope(req, c.customerId));
     if (!conn) return res.status(404).json({ error: 'Not found' });
     let v;
@@ -848,14 +1100,14 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   // --- lifecycle: firmware compliance, warranty, end of sale / support / life --
-  app.get('/api/lifecycle', requireUser, (req, res) => {
+  app.get('/api/lifecycle', requirePerm('service.view'), (req, res) => {
     const ids = req.query.customer ? scope(req).filter((id) => String(req.query.customer).split(',').includes(id)) : scope(req);
     res.json(inventory.lifecycle(inventory.query(scope(req), req.query), ids));
   });
 
   // --- baseline standards: provider advisory + per-customer (versioned) -----
   const versionSummary = (v) => ({ version: v.version, level: v.level, exceptions: Object.keys(v.models || {}).length, policy: v.policy, note: v.note, restoredFrom: v.restoredFrom ?? null, advisoryVersion: v.advisoryVersion ?? null, createdAt: v.createdAt, createdBy: v.createdBy?.email ?? null });
-  app.get('/api/baselines/advisory', requireUser, (_req, res) => res.json({
+  app.get('/api/baselines/advisory', requirePerm('service.view'), (_req, res) => res.json({
     version: store.advisoryVersion(), policy: store.advisoryPolicy(), levels: LEVELS, lifecycleLimits: LIFECYCLE_LIMITS,
     versions: store.advisoryVersions().map((v) => ({ version: v.version, policy: v.policy, note: v.note, createdAt: v.createdAt, createdBy: v.createdBy?.email ?? null })).reverse(),
   }));
@@ -892,12 +1144,12 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       models,
     };
   };
-  app.get('/api/baselines/customers/:id', requireUser, (req, res) => {
+  app.get('/api/baselines/customers/:id', requirePerm('service.view'), (req, res) => {
     if (!inScope(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
     const v = req.query.version !== undefined ? Number(req.query.version) : null;
     res.json(customerBaselineView(req.params.id, Number.isInteger(v) ? v : null));
   });
-  app.post('/api/baselines/customers/:id', requireAdmin, requireJson, (req, res) => {
+  app.post('/api/baselines/customers/:id', requirePerm('baselines.edit'), requireJson, (req, res) => {
     if (!inScope(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
     try {
       const v = store.saveCustomerBaseline(req.params.id, req.body || {}, actorOf(req.user));
@@ -906,7 +1158,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       res.json(customerBaselineView(req.params.id));
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
-  app.post('/api/baselines/customers/:id/restore', requireAdmin, requireJson, (req, res) => {
+  app.post('/api/baselines/customers/:id/restore', requirePerm('baselines.edit'), requireJson, (req, res) => {
     if (!inScope(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
     try {
       const v = store.restoreCustomerBaseline(req.params.id, req.body?.version, actorOf(req.user));
@@ -917,7 +1169,7 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   // --- SLA ----------------------------------------------------------------
-  app.get('/api/sla', requireUser, (req, res) => {
+  app.get('/api/sla', requirePerm('service.view'), (req, res) => {
     const window = WINDOWS[req.query.window] ? req.query.window : '7d';
     res.json(slaReport(history, inventory.query(scope(req), req.query), { window, targetFor: (id) => store.slaTarget(id) }));
   });
@@ -929,7 +1181,16 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const from = q.from ? Date.parse(q.from) : null;
     const to = q.to ? Date.parse(q.to) + (String(q.to).length === 10 ? 86_400_000 : 0) : null;
     const text = q.q ? String(q.q).toLowerCase() : null;
+    const mine = new Set(baseScope(req));
+    const mspId = req.user.role === 'msp_admin' ? req.user.mspId : null;
+    const visible = (e) => {
+      if (isSuperAdmin(req.user)) return true;
+      if (e.customerId) return mine.has(e.customerId);
+      // Entries with no customer (MSP and user admin) belong to the MSP they were tagged with.
+      return !!mspId && e.mspId === mspId;
+    };
     return store.data.audit.filter((e) => {
+      if (!visible(e)) return false;
       if (acting && e.customerId !== acting) return false;
       if (q.customer && e.customerId !== q.customer) return false;
       if (q.action && !e.action.startsWith(String(q.action))) return false;
@@ -941,12 +1202,12 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       return true;
     }).map((e) => ({ ...e, customerName: e.customerId ? store.customerName(e.customerId) : null }));
   };
-  app.get('/api/audit', requireAdmin, (req, res) => {
+  app.get('/api/audit', requirePerm('audit.view'), (req, res) => {
     const rows = auditQuery(req);
     const limit = Math.min(Number(req.query.limit) || 300, 2000);
-    res.json({ total: rows.length, entries: rows.slice(0, limit), actions: [...new Set(store.data.audit.map((e) => e.action))].sort() });
+    res.json({ total: rows.length, entries: rows.slice(0, limit), actions: [...new Set(rows.map((e) => e.action))].sort() });
   });
-  app.get('/api/audit.csv', requireAdmin, (req, res) => {
+  app.get('/api/audit.csv', requirePerm('audit.view'), (req, res) => {
     const cell = (v) => {
       let s = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // stop spreadsheet formula injection

@@ -80,3 +80,40 @@ test('Postgres: an existing file store is imported on first start', { skip }, as
   assert.ok(app.sync.restore() > 0);
   app.sync.stop(); app.store.close(); app.history.close();
 });
+
+test('Postgres: an existing database moves to five-tier roles and a default MSP', { skip }, async (t) => {
+  await fresh();
+  process.env.MASTER_KEY ||= crypto.randomBytes(32).toString('hex');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-pg7-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  // A database written before phase 7: provider admin, customer viewer, no MSPs.
+  const p0 = await PgPersistence.connect(URL_);
+  const legacy = {
+    customers: [{ id: 'cust-real', name: 'Real Co', mockData: false }],
+    users: [
+      { id: 'u-admin', email: 'admin@provider.example', role: 'provider_admin', customerId: null, password: 'x' },
+      { id: 'u-real', email: 'it@real.example', role: 'customer_viewer', customerId: 'cust-real', password: 'x' },
+    ],
+    connections: [], phase3: true, phase5: true, phase6: true,
+  };
+  p0.saveStore(legacy);
+  await p0.flush();
+  await p0.close();
+
+  const p1 = await PgPersistence.connect(URL_);
+  const a = createApp({ dataDir, persistence: p1, autoStart: false });
+  a.store.flush();
+  await p1.flush();
+  a.sync.stop(); a.store.close(); a.history.close();
+  await p1.close();
+
+  const p2 = await PgPersistence.connect(URL_);
+  t.after(() => p2.close());
+  const s = p2.storeData;
+  assert.deepEqual(s.msps.map((m) => m.id), ['msp-default']);
+  assert.equal(s.customers.find((c) => c.id === 'cust-real').mspId, 'msp-default');
+  assert.equal(s.users.find((u) => u.id === 'u-admin').role, 'msp_admin');
+  assert.equal(s.users.find((u) => u.id === 'u-admin').mspId, 'msp-default');
+  assert.equal(s.users.find((u) => u.id === 'u-real').role, 'end_user');
+  assert.equal(s.phase7, true);
+});

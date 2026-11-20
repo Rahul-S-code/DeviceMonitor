@@ -87,11 +87,14 @@ test('customers only see their own devices, alerts and connections', async (t) =
   assert.equal((await helix(`/api/devices/${encodeURIComponent(other.id)}`)).status, 404);
   const alerts = await (await helix('/api/alerts')).json();
   assert.ok(alerts.every((a) => a.customerId === 'cust-demo'));
-  const conns = await (await helix('/api/connections')).json();
-  assert.ok(conns.every((c) => c.customerId === 'cust-demo'));
+  // End users don't see connections by default; technical users see status but no settings.
+  assert.equal((await helix('/api/connections')).status, 403);
+  const tech = await login('tech@demo.example');
+  const conns = await (await tech('/api/connections')).json();
+  assert.ok(conns.length && conns.every((c) => c.customerId === 'cust-demo'));
   assert.ok(conns.every((c) => c.settings === undefined && c.credentials === undefined));
   // Customer users cannot change connections.
-  assert.equal((await helix(`/api/connections/${conns[0].id}`, { method: 'PUT', body: JSON.stringify({ mode: 'live' }) })).status, 403);
+  assert.equal((await tech(`/api/connections/${conns[0].id}`, { method: 'PUT', body: JSON.stringify({ mode: 'live' }) })).status, 403);
 });
 
 test('credentials are stored encrypted and never returned to the browser', async (t) => {

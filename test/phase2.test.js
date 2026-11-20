@@ -44,7 +44,8 @@ test('schematic validation rejects broken links and unknown kinds', () => {
 test('super admin onboards a customer whose user only sees that customer', async (t) => {
   const { login } = await startApp(t);
   const admin = await login('admin@provider.example');
-  assert.equal((await admin('/api/admin/customers')).status, 403, 'provider admin cannot onboard');
+  const own = await (await admin('/api/admin/customers')).json();
+  assert.ok(own.length && own.every((c) => c.mspId === 'msp-default'), 'MSP admin lists only its own MSP\'s customers');
   const sup = await login('superadmin@provider.example');
   const res = await sup('/api/admin/customers', { method: 'POST', body: JSON.stringify({
     name: 'Contoso Group', platforms: ['Zoom'],

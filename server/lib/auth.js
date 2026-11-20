@@ -40,19 +40,25 @@ export function parseCookies(header = '') {
   return Object.fromEntries(header.split(';').map((p) => p.trim().split('=')).filter((p) => p[0]).map(([k, ...v]) => [k, decodeURIComponent(v.join('='))]));
 }
 
-export const isAdminRole = (user) => user?.role === 'super_admin' || user?.role === 'provider_admin';
+// Super admins and MSP admins look after several customers; everyone else belongs to one.
+export const isAdminRole = (user) => user?.role === 'super_admin' || user?.role === 'msp_admin';
 export const isSuperAdmin = (user) => user?.role === 'super_admin';
 
+/** Customers a user's role covers, before any "enter customer" narrowing. */
+export function baseCustomers(user, store) {
+  if (!user) return [];
+  if (user.role === 'super_admin') return store.customers.map((c) => c.id);
+  if (user.role === 'msp_admin') return user.mspId ? store.customers.filter((c) => c.mspId === user.mspId).map((c) => c.id) : [];
+  return user.customerId && store.customers.some((c) => c.id === user.customerId) ? [user.customerId] : [];
+}
+
 /**
- * Customer ids a user may see. Admins see all customers, unless they have
- * "entered" one customer, in which case they see only that one.
- * Customer users only ever see their own.
+ * Customer ids a user may see. Super admins see every customer, MSP admins the
+ * customers of their own MSP; either can "enter" one of those customers and then
+ * sees only that one. Customer roles only ever see their own customer.
  */
 export function allowedCustomers(user, store, session) {
-  if (!user) return [];
-  if (isAdminRole(user)) {
-    if (session?.actingCustomerId && store.customers.some((c) => c.id === session.actingCustomerId)) return [session.actingCustomerId];
-    return store.customers.map((c) => c.id);
-  }
-  return user.customerId ? [user.customerId] : [];
+  const base = baseCustomers(user, store);
+  if (isAdminRole(user) && session?.actingCustomerId && base.includes(session.actingCustomerId)) return [session.actingCustomerId];
+  return base;
 }

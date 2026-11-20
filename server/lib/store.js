@@ -15,9 +15,10 @@ import { CONNECTORS, AV_DEMO_OEMS } from '../connectors/registry.js';
 import { hashPassword } from './auth.js';
 import { cleanPolicy, cleanCustomerBaseline, DEFAULT_ADVISORY_POLICY } from './baselines.js';
 import { FilePersistence } from './persistence.js';
+import { resolveMatrix, roleLabels, LEGACY_ROLES, RANK } from './roles.js';
 
 const EMPTY = {
-  customers: [], users: [], connections: [], siteDirectory: {}, roomDirectory: {},
+  msps: [], customers: [], users: [], connections: [], siteDirectory: {}, roomDirectory: {},
   schematics: {}, deviceOverrides: {}, alerts: [], models: [], audit: [], manualDevices: [],
   designs: [], apiChecks: {}, baselines: { advisory: [], customers: {} }, settings: {},
 };
@@ -26,6 +27,8 @@ const MAX_AUDIT = 5000;
 const ALERT_MAX = Math.max(100, Number(process.env.ALERT_MAX) || 10_000);
 const ALERT_RETENTION_DAYS = Math.max(1, Number(process.env.ALERT_RETENTION_DAYS) || 30);
 export const DEFAULT_SLA_TARGET = 99.5;
+// The MSP that existing customers and provider admins move into (phase 7).
+export const DEFAULT_MSP_ID = 'msp-default';
 // Platform-side connections the demo customers get, by meeting platform.
 const PLATFORM_OEM = { 'Microsoft Teams': 'teams-rooms', Zoom: 'zoom-rooms', 'Cisco Webex': 'webex-control-hub', 'Google Meet': 'google-meet-hardware' };
 const OEM_LABEL = Object.fromEntries(CONNECTORS.map((C) => [C.oem, C.displayName]));
@@ -95,6 +98,66 @@ export class Store {
 
   get customers() { return this.data.customers; }
   get users() { return this.data.users; }
+
+  // --- MSPs (managed service providers) and role permissions -----------------
+  get msps() { return (this.data.msps ||= []); }
+  mspOf(customerId) { return this.customers.find((c) => c.id === customerId)?.mspId ?? null; }
+  mspName(id) { return this.msps.find((m) => m.id === id)?.name ?? id; }
+  /** The MSP a user belongs to (MSP admins directly, customer roles through their customer). */
+  userMsp(u) { return u?.mspId || (u?.customerId ? this.mspOf(u.customerId) : null); }
+
+  createMsp({ name }) {
+    const clean = String(name || '').trim().slice(0, 80);
+    if (!clean) throw new Error('MSP name is required');
+    if (this.msps.some((m) => m.name.toLowerCase() === clean.toLowerCase())) throw new Error('An MSP with that name already exists');
+    const slug = clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'msp';
+    let id = `msp-${slug}`;
+    while (this.msps.some((m) => m.id === id)) id = `msp-${slug}-${crypto.randomBytes(2).toString('hex')}`;
+    const m = { id, name: clean, createdAt: new Date().toISOString() };
+    this.msps.push(m);
+    this.save();
+    return m;
+  }
+
+  updateMsp(id, { name }) {
+    const m = this.msps.find((x) => x.id === id);
+    if (!m) throw new Error('MSP not found');
+    const clean = String(name || '').trim().slice(0, 80);
+    if (clean) {
+      if (this.msps.some((x) => x.id !== id && x.name.toLowerCase() === clean.toLowerCase())) throw new Error('An MSP with that name already exists');
+      m.name = clean;
+    }
+    this.save();
+    return m;
+  }
+
+  deleteMsp(id) {
+    const i = this.msps.findIndex((m) => m.id === id);
+    if (i < 0) throw new Error('MSP not found');
+    if (this.customers.some((c) => c.mspId === id)) throw new Error('Move or delete this MSP\'s customers first');
+    this.msps.splice(i, 1);
+    this.data.users = this.users.filter((u) => !(u.role === 'msp_admin' && u.mspId === id));
+    this.save();
+  }
+
+  /** Role settings: platform-layer permission overrides and display labels (super admin). */
+  get roleSettings() { return (this.data.roles ||= { platform: {}, labels: {} }); }
+  roleLabels() { return roleLabels(this.roleSettings.labels); }
+  /** Override layers from the platform down to an MSP or a customer. */
+  roleLayers({ mspId = null, customerId = null } = {}) {
+    const msp = mspId || (customerId ? this.mspOf(customerId) : null);
+    const layers = [this.roleSettings.platform || {}];
+    if (msp) layers.push(this.msps.find((m) => m.id === msp)?.roleOverrides || {});
+    if (customerId) layers.push(this.customers.find((c) => c.id === customerId)?.roleOverrides || {});
+    return layers;
+  }
+  roleMatrix(where = {}) { return resolveMatrix(this.roleLayers(where)); }
+  /** A user's effective permissions, as a Set of permission keys. */
+  permissionsFor(u) {
+    if (!u || RANK[u.role] === undefined) return new Set();
+    const m = this.roleMatrix(u.role === 'msp_admin' ? { mspId: u.mspId } : u.role === 'super_admin' ? {} : { customerId: u.customerId });
+    return m[u.role];
+  }
   get connections() { return this.data.connections; }
 
   customerName(id) { return this.customers.find((c) => c.id === id)?.name ?? id; }
@@ -161,6 +224,8 @@ export class Store {
   /** Append an audit entry. Never pass secret values in `details`. */
   audit(entry) {
     const e = { id: crypto.randomUUID(), at: new Date().toISOString(), ...entry };
+    // Tag the MSP so each MSP admin sees only its own customers' entries.
+    if (e.mspId === undefined) e.mspId = (e.customerId ? this.mspOf(e.customerId) : null) || (e.actor?.id ? this.userMsp(this.users.find((u) => u.id === e.actor.id)) : null) || null;
     this.data.audit.unshift(e);
     if (this.data.audit.length > MAX_AUDIT) this.data.audit.length = MAX_AUDIT;
     this.save();
@@ -483,14 +548,15 @@ export class Store {
   }
 
   /** Create a customer with sites, users, connections and rooms in one go (onboarding). */
-  onboardCustomer({ name, platforms = [], sites = [], users = [], connections = [], rooms = [], mockData = true }) {
+  onboardCustomer({ name, mspId = DEFAULT_MSP_ID, platforms = [], sites = [], users = [], connections = [], rooms = [], mockData = true }) {
     const clean = String(name || '').trim().slice(0, 80);
     if (!clean) throw new Error('Customer name is required');
     if (this.customers.some((c) => c.name.toLowerCase() === clean.toLowerCase())) throw new Error('A customer with that name already exists');
     const slug = clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'customer';
     let id = `cust-${slug}`;
     while (this.customers.some((c) => c.id === id)) id = `cust-${slug}-${crypto.randomBytes(2).toString('hex')}`;
-    const customer = { id, name: clean, platforms: platforms.slice(0, 4), slaTarget: DEFAULT_SLA_TARGET, mockData: mockData !== false, createdAt: new Date().toISOString() };
+    if (!this.msps.some((m) => m.id === mspId)) throw new Error('Pick an MSP');
+    const customer = { id, name: clean, mspId, platforms: platforms.slice(0, 4), slaTarget: DEFAULT_SLA_TARGET, mockData: mockData !== false, createdAt: new Date().toISOString() };
     const siteDir = {};
     for (const s of sites) {
       const sname = String(s.name || '').trim().slice(0, 60);
@@ -502,7 +568,8 @@ export class Store {
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error(`"${u.email}" is not a valid email`);
       if (this.users.some((x) => x.email === email)) throw new Error(`A user with email ${email} already exists`);
       if (!u.password || String(u.password).length < 8) throw new Error(`Password for ${email} must be at least 8 characters`);
-      return { id: `u-${crypto.randomUUID()}`, email, name: String(u.name || email).slice(0, 80), role: 'customer_viewer', customerId: id, password: hashPassword(String(u.password)) };
+      const role = ['customer_admin', 'technical_user', 'end_user'].includes(u.role) ? u.role : 'customer_admin';
+      return { id: `u-${crypto.randomUUID()}`, email, name: String(u.name || email).slice(0, 80), role, customerId: id, password: hashPassword(String(u.password)), createdAt: new Date().toISOString() };
     });
     this.customers.push(customer);
     this.data.siteDirectory[id] = siteDir;
@@ -523,9 +590,13 @@ export class Store {
     return { customer, connections: conns, users: newUsers.length };
   }
 
-  updateCustomer(id, { name, sites, platforms, slaTarget, mockData }) {
+  updateCustomer(id, { name, sites, platforms, slaTarget, mockData, mspId }) {
     const c = this.customers.find((x) => x.id === id);
     if (!c) throw new Error('Customer not found');
+    if (mspId !== undefined) {
+      if (!this.msps.some((m) => m.id === mspId)) throw new Error('Unknown MSP');
+      c.mspId = mspId;
+    }
     const wasMock = this.mockEnabled(id);
     // Turning mock data off: drop the mock rooms while the mock estate can still list them.
     if (mockData === false && wasMock) this.clearMockRooms(id);
@@ -569,19 +640,22 @@ export class Store {
   seedIfEmpty(demoPassword) {
     if (this.customers.length) return false;
     const pw = hashPassword(demoPassword);
+    this.ensureDefaultMsp();
     for (const c of MOCK_CUSTOMERS) this.seedDemoCustomer(c, pw);
     this.seedModels();
     this.data.phase3 = true;
     this.data.phase5 = true;
     this.data.phase6 = true;
-    this.users.push({ id: 'u-admin', email: 'admin@provider.example', name: 'Service Desk Admin', role: 'provider_admin', customerId: null, password: pw });
+    this.data.phase7 = true;
+    this.users.push({ id: 'u-admin', email: 'admin@provider.example', name: 'Service Desk Admin', role: 'msp_admin', mspId: DEFAULT_MSP_ID, customerId: null, password: pw });
     this.flush();
     return true;
   }
 
   /** One demo customer: sites, room platforms, mock connections and its viewer login. */
-  seedDemoCustomer(c, pwHash) {
-    this.customers.push({ id: c.id, name: c.name, platforms: [...new Set(c.platforms)], slaTarget: DEFAULT_SLA_TARGET, mockData: true });
+  seedDemoCustomer(c, pwHash, mspId = DEFAULT_MSP_ID) {
+    this.ensureDefaultMsp();
+    this.customers.push({ id: c.id, name: c.name, mspId, platforms: [...new Set(c.platforms)], slaTarget: DEFAULT_SLA_TARGET, mockData: true });
     this.data.siteDirectory[c.id] = Object.fromEntries(c.sites.map((s) => [s.name, cleanSite(s)]));
     for (const r of buildEstate(c.id).rooms) {
       // Logitech Sync has no platform field, so rooms it manages get a room-directory entry.
@@ -593,8 +667,24 @@ export class Store {
     const slug = c.id.replace('cust-', '');
     const email = `it@${slug}.example`;
     if (!this.users.some((u) => u.email === email)) {
-      this.users.push({ id: `u-${slug}`, email, name: `${c.name} IT`, role: 'customer_viewer', customerId: c.id, password: pwHash });
+      this.users.push({ id: `u-${slug}`, email, name: `${c.name} IT`, role: 'end_user', customerId: c.id, password: pwHash });
     }
+    this.seedDemoRoleUsers(c, pwHash);
+  }
+
+  /** Demo logins for the customer admin and technical user tiers. */
+  seedDemoRoleUsers(c, pwHash) {
+    const slug = c.id.replace('cust-', '');
+    for (const [who, role, label] of [['admin', 'customer_admin', 'Admin'], ['tech', 'technical_user', 'Engineer']]) {
+      const email = `${who}@${slug}.example`;
+      if (!this.users.some((u) => u.email === email)) this.users.push({ id: `u-${slug}-${who}`, email, name: `${c.name} ${label}`, role, customerId: c.id, password: pwHash });
+    }
+  }
+
+  ensureDefaultMsp() {
+    if (this.msps.some((m) => m.id === DEFAULT_MSP_ID)) return false;
+    this.msps.unshift({ id: DEFAULT_MSP_ID, name: process.env.DEFAULT_MSP_NAME || 'Default MSP', createdAt: new Date().toISOString() });
+    return true;
   }
 
   addMockConnection(c, oem) {
@@ -655,6 +745,20 @@ export class Store {
       this.data.phase6 = true;
       changed = true;
     }
+    // Phase 7: five-tier roles. Existing customers and provider admins move into a
+    // default MSP; provider admins become MSP admins of it and customer viewers become
+    // end users (the same read-only access). The demo customer gets admin and tech logins.
+    if (this.ensureDefaultMsp()) changed = true;
+    for (const c of this.customers) if (!c.mspId || !this.msps.some((m) => m.id === c.mspId)) { c.mspId = DEFAULT_MSP_ID; changed = true; }
+    for (const u of this.users) {
+      if (LEGACY_ROLES[u.role]) { u.role = LEGACY_ROLES[u.role]; changed = true; }
+      if (u.role === 'msp_admin' && !u.mspId) { u.mspId = DEFAULT_MSP_ID; changed = true; }
+    }
+    if (!this.data.phase7) {
+      for (const c of MOCK_CUSTOMERS) if (this.customers.some((x) => x.id === c.id)) this.seedDemoRoleUsers(c, hashPassword(demoPassword));
+      this.data.phase7 = true;
+      changed = true;
+    }
     // Lifecycle catalogue: official EOS/EOL status for models that have none yet.
     // Runs on every start so new catalogue entries reach existing data; admin edits are kept.
     for (const m of this.models) if (applyLifecycle(m)) changed = true;
@@ -673,6 +777,10 @@ function cleanSite(s) {
     lat: num(s.lat, -90, 90),
     lng: num(s.lng, -180, 180),
     mockRooms: num(s.mockRooms, 1, 30),
+    // Site contact (SPOC): who to call about this site's rooms.
+    spocName: String(s.spocName || '').trim().slice(0, 80) || undefined,
+    spocEmail: /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(s.spocEmail || '').trim()) ? String(s.spocEmail).trim().slice(0, 120) : undefined,
+    spocPhone: String(s.spocPhone || '').trim().replace(/[^0-9+()\-. ]/g, '').slice(0, 30) || undefined,
   };
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined));
 }
