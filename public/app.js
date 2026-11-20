@@ -147,13 +147,14 @@ const NAV_ICON = {
   errors: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 10.8v.4"/>',
   docs: '<path d="M3 2.5h7l3 3v8H3z"/><path d="M10 2.5v3h3M5.5 8h5M5.5 10.5h5"/>',
   sync: '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.5 1.5"/>',
+  inbox: '<path d="M2 9.5l1.8-6h8.4l1.8 6V13.5H2z"/><path d="M2 9.5h3.5l1 1.8h3l1-1.8H14"/>',
 };
 const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
-const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation', sync: 'Sync schedule' };
+const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation', sync: 'Sync schedule', inbox: 'Action inbox' };
 
 function navGroups() {
   return [
-    ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts']],
+    ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts', ...(isAdmin() ? ['inbox'] : [])]],
     ['Service', ['sla', 'lifecycle', 'baselines', 'errors']],
     ['Configure', ['connections', ...(isAdmin() ? ['sync', 'models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['apis', 'audit'] : [])]],
     ['Help', ['docs']],
@@ -174,7 +175,7 @@ function renderShell() {
   <div class="shell">
     <aside class="side" id="side">
       <a class="brand" href="#/overview"><div class="brand-mark">${pulseMark()}</div><div>Estate Monitor<small>${esc(S.me.customerName || S.me.actingCustomerName || (isSuper() ? 'Super admin' : isAdmin() ? 'Service provider' : 'Customer view'))}</small></div></a>
-      <nav class="nav" id="nav">${navGroups().map(([g, items]) => `<div class="nav-group">${esc(g)}</div>${items.map((k) => `<a href="#/${k}" data-r="${k}">${navIcon(k)}<span>${label[k] || ROUTE_TITLE[k]}</span>${k === 'alerts' ? '<b class="nav-badge" id="alertBadge" hidden></b>' : ''}</a>`).join('')}`).join('')}${homeLinkHTML('nav-home')}</nav>
+      <nav class="nav" id="nav">${navGroups().map(([g, items]) => `<div class="nav-group">${esc(g)}</div>${items.map((k) => `<a href="#/${k}" data-r="${k}">${navIcon(k)}<span>${label[k] || ROUTE_TITLE[k]}</span>${k === 'alerts' ? '<b class="nav-badge" id="alertBadge" hidden></b>' : ''}${k === 'inbox' ? '<b class="nav-badge" id="inboxBadge" hidden></b>' : ''}</a>`).join('')}`).join('')}${homeLinkHTML('nav-home')}</nav>
       <div class="side-foot">
         <span class="avatar">${esc(initials)}</span>
         <span class="who">${esc(S.me.name)}<small>${esc({ super_admin: 'Super admin', provider_admin: 'Provider admin', customer_viewer: 'Customer' }[S.me.role] || S.me.role)}</small></span>
@@ -205,6 +206,7 @@ function renderShell() {
   $('#nav').addEventListener('click', (e) => { if (e.target.closest('a')) side(false); });
   $('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); S.me = null; renderLogin(); });
   updateAlertBadge();
+  if (isAdmin()) updateInboxBadge();
 }
 
 /** Count of devices currently critical or offline, shown on the Alerts nav item. */
@@ -246,6 +248,7 @@ async function navigate() {
     else if (r.name === 'audit' && isAdmin()) await viewAudit();
     else if (r.name === 'apis' && isAdmin()) await viewApis();
     else if (r.name === 'sync' && isAdmin()) await viewSyncSchedule();
+    else if (r.name === 'inbox' && isAdmin()) await viewInbox(r.args);
     else if (r.name === 'errors') await viewErrorCodes();
     else if (r.name === 'docs') viewDocs(r.args);
     else location.hash = '#/overview';
@@ -2912,4 +2915,260 @@ async function openManualDevice(rec, preset = {}) {
   };
   $('#mdvSave', w).addEventListener('click', () => save(false));
   $('#mdvMore', w)?.addEventListener('click', () => save(true));
+}
+
+// ------------------------------------------------------------------ action inbox
+// Proposed actions from the daily checks, per customer. Admins answer Yes or No.
+// Yes runs a vendor API action, or emails on-site steps to the site contact (SPOC).
+const SEV_LABEL = { high: 'High', medium: 'Medium', low: 'Low' };
+const ACT_STATUS = { proposed: 'To decide', approved: 'Approved', sent: 'Sent', failed: 'Failed', done: 'Done', declined: 'Declined', resolved: 'Cleared' };
+const INBOX_TABS = [['proposed', 'To decide', 'proposed'], ['progress', 'In progress', 'approved,sent,failed'], ['done', 'Done', 'done,resolved'], ['declined', 'Declined', 'declined'], ['all', 'All', '']];
+const inboxHash = (cid, sub) => `#/inbox${sub ? `/${sub}` : ''}${cid ? `/${encodeURIComponent(cid)}` : ''}`;
+const hourText = (h) => `${String(h).padStart(2, '0')}:00 UTC`;
+
+function execLine(a) {
+  const ex = a.execution;
+  if (ex.kind === 'api') {
+    if (ex.sync) return `<b>Runs now:</b> ${esc(ex.actionLabel)} through ${esc(ex.via)}.`;
+    return `<b>Runs through the ${esc(ex.via)} API</b> (${esc(ex.apiSet)}): ${esc(ex.actionLabel)}${ex.target === 'room' ? ' (whole room)' : ''}.${ex.mode !== 'live' ? ' <span class="pill mock" style="padding:1px 7px">Demo connection: simulated</span>' : ''}`;
+  }
+  if (ex.kind === 'dispatch') return `<b>Field dispatch:</b> emails step-by-step ${ex.runbook === 'inspect' ? 'inspection' : 'power-cycle'} instructions to the local contact at ${esc(a.site)}.${ex.switchedFrom ? ` <span class="muted">(Switched from ${esc(ex.switchedFrom)}.)</span>` : ''}`;
+  if (ex.kind === 'task') return `<b>Email request</b> to the customer's ${ex.recipientRole === 'engineer' ? 'engineer or service desk' : 'renewals contact'}, with the device list.`;
+  return `<b>You fix it:</b> ${esc(ex.linkLabel || 'configuration change')}.`;
+}
+
+function yesLabel(a) {
+  const ex = a.execution;
+  if (ex.kind === 'api') return `Yes, ${ex.actionLabel.charAt(0).toLowerCase()}${ex.actionLabel.slice(1)}`;
+  if (ex.kind === 'dispatch') return 'Yes, send to site';
+  if (ex.kind === 'task') return 'Yes, send request';
+  return 'Yes, I\'ll fix it';
+}
+
+function actionCard(a, showCustomer) {
+  const decidable = a.status === 'proposed' || a.status === 'failed';
+  const btns = [];
+  if (S.inbox?.canDecide) {
+    if (decidable) btns.push(`<button class="btn btn-primary btn-sm" data-yes="${esc(a.id)}">${esc(yesLabel(a))}</button>`);
+    if (a.status === 'failed' && a.execution.kind === 'api' && ['offline', 'faulty'].includes(a.rule)) btns.push(`<button class="btn btn-outline btn-sm" data-todispatch="${esc(a.id)}">Send to site instead</button>`);
+    if (a.status === 'approved' && ['dispatch', 'task'].includes(a.execution.kind)) btns.push(`<button class="btn btn-primary btn-sm" data-yes="${esc(a.id)}">Email again</button>`, `<button class="btn btn-outline btn-sm" data-sent="${esc(a.id)}">Mark as sent</button>`);
+    if (['approved', 'sent', 'failed'].includes(a.status)) btns.push(`<button class="btn btn-outline btn-sm" data-done="${esc(a.id)}">Mark done</button>`);
+    if (['proposed', 'failed', 'approved'].includes(a.status)) btns.push(`<button class="btn btn-danger btn-sm" data-no="${esc(a.id)}">No</button>`);
+  }
+  btns.push(`<button class="linkbtn" data-open="${esc(a.id)}">Details</button>`);
+  return `<div class="act-card sev-${esc(a.severity)}">
+    <div class="act-meta"><span class="sev ${esc(a.severity)}">${SEV_LABEL[a.severity]}</span><span class="pill">${esc(a.ruleLabel)}</span>
+      ${showCustomer ? `<span class="pill blue">${esc(a.customerName)}</span>` : ''}<span class="muted mono">${esc(a.ref)}</span>
+      <span class="act-st st-${esc(a.status)}">${ACT_STATUS[a.status] || esc(a.status)}</span></div>
+    <h3>${esc(a.title)}</h3>
+    <p>${esc(a.reason)}</p>
+    <div class="act-exec">${execLine(a)}</div>
+    <div class="act-foot"><span class="muted">${a.total > 1 ? `${a.count} of ${a.total} still affected · ` : ''}Proposed ${ago(a.createdAt)}${a.status !== 'proposed' ? ` · ${esc(ACT_STATUS[a.status])} ${ago(a.updatedAt)}${a.decidedBy ? ` by ${esc(a.decidedBy)}` : ''}` : ''}${a.status === 'declined' && a.snoozeUntil ? ` · quiet until ${fmtDate(a.snoozeUntil)}` : ''}</span>
+      <div class="act-btns">${btns.join('')}</div></div>
+  </div>`;
+}
+
+async function viewInbox(args = []) {
+  if (args[0] === 'contacts') return viewContacts(acting() || args[1] || S.inboxCustomer || S.customers[0]?.id);
+  const cid = acting() || args[0] || '';
+  S.inboxCustomer = cid || S.inboxCustomer;
+  const tab = S.inboxTab || 'proposed';
+  const statuses = INBOX_TABS.find((t) => t[0] === tab)?.[2] || '';
+  const q = new URLSearchParams({ ...(cid ? { customer: cid } : {}), ...(statuses ? { status: statuses } : {}) });
+  const [data, summary] = await Promise.all([api(`/api/actions?${q}`), api('/api/actions/summary')]);
+  S.inbox = data;
+  updateInboxBadge(summary);
+  const c = data.checks;
+  const mine = cid ? c.byCustomer?.[cid] : null;
+  const custOpts = Object.entries(summary);
+  hero('Action inbox', `Proposed actions from the daily estate check. Yes carries out the action (through the vendor API where it can, otherwise by emailing on-site steps to the local contact). No keeps the issue quiet for a while. Every decision is in the audit log.`);
+  const counts = data.counts;
+  const tabCount = (st) => (st ? st.split(',').reduce((s, k) => s + (counts[k] || 0), 0) : Object.values(counts).reduce((s, n) => s + n, 0));
+  $('#view').innerHTML = `
+    <div class="card inbox-head">
+      <div class="inbox-row">
+        ${acting() ? `<div><b>${esc(S.me.actingCustomerName)}</b></div>` : `<select id="ibCust" aria-label="Customer"><option value="">All customers (${custOpts.reduce((s, [, x]) => s + x.proposed, 0)} to decide)</option>${custOpts.map(([id, x]) => `<option value="${esc(id)}" ${id === cid ? 'selected' : ''}>${esc(x.name)} (${x.proposed} to decide)</option>`).join('')}</select>`}
+        <div class="inbox-sched muted">${c.enabled ? `Checks run daily at <b>${hourText(c.hourUtc)}</b>${c.nextRunAt ? `, next ${inTime(c.nextRunAt)}` : ''}` : '<b>Daily checks are off</b>'}${mine ? ` · last checked ${ago(mine.at)}${mine.by ? ` by ${esc(mine.by)}` : ''}` : c.lastRunAt ? ` · last run ${ago(c.lastRunAt)}` : ''}
+          ${data.canSchedule ? ' · <button class="linkbtn" id="ibSched">Change</button>' : ''}</div>
+        <div class="inbox-tools"><a class="btn btn-outline btn-sm" href="${inboxHash(cid || custOpts[0]?.[0], 'contacts')}">Site contacts</a>${S.inbox.canDecide ? '<button class="btn btn-grad btn-sm" id="ibRun">Run checks now</button>' : ''}</div>
+      </div>
+      ${data.mail.configured ? '' : `<div class="notice info" style="margin:12px 0 0">Email sending isn't set up (${esc(data.mail.reason)}). Dispatches open in your own email app instead, with a copy button, and you mark them as sent. See Help › Documentation › Action inbox.</div>`}
+      <div id="ibMsg"></div>
+    </div>
+    <div class="seg inbox-tabs" id="ibTabs">${INBOX_TABS.map(([k, l, st]) => `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${l} <span class="muted">${tabCount(st)}</span></button>`).join('')}</div>
+    <div class="act-list">${data.items.map((a) => actionCard(a, !cid)).join('') || `<div class="card empty">${tab === 'proposed' ? 'Nothing to decide. The next check runs at the scheduled time, or press Run checks now.' : 'Nothing here.'}</div>`}</div>
+    ${data.total > data.items.length ? `<div class="muted" style="padding:10px">Showing ${data.items.length} of ${data.total}.</div>` : ''}`;
+  $('#ibCust')?.addEventListener('change', (e) => { location.hash = inboxHash(e.target.value); });
+  document.querySelectorAll('#ibTabs button').forEach((b) => b.addEventListener('click', () => { S.inboxTab = b.dataset.t; viewInbox(args); }));
+  $('#ibRun')?.addEventListener('click', async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Checking…';
+    try {
+      const r = await api('/api/checks/run', { method: 'POST', body: cid ? { customerId: cid } : {} });
+      toast(ICONS.resolved, `Checks done: ${r.created} new, ${r.updated} updated, ${r.closed} closed`);
+      viewInbox(args);
+    } catch (err) { $('#ibMsg').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; e.target.disabled = false; e.target.textContent = 'Run checks now'; }
+  });
+  $('#ibSched')?.addEventListener('click', () => openCheckSchedule(c, args));
+  const byId = (id) => data.items.find((a) => a.id === id);
+  document.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openAction(b.dataset.open, args)));
+  document.querySelectorAll('[data-no]').forEach((b) => b.addEventListener('click', () => openDecline(byId(b.dataset.no), args)));
+  document.querySelectorAll('[data-yes]').forEach((b) => b.addEventListener('click', () => approveAction(byId(b.dataset.yes), b, args)));
+  document.querySelectorAll('[data-todispatch]').forEach((b) => b.addEventListener('click', async () => {
+    try { const r = await api(`/api/actions/${b.dataset.todispatch}/approve`, { method: 'POST', body: { via: 'dispatch' } }); openDispatch(r.action, args); } catch (e) { toast(ICONS.critical, e.message); }
+  }));
+  document.querySelectorAll('[data-sent]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/api/actions/${b.dataset.sent}/sent`, { method: 'POST', body: {} }); toast(ICONS.resolved, 'Marked as sent'); viewInbox(args); } catch (e) { toast(ICONS.critical, e.message); }
+  }));
+  document.querySelectorAll('[data-done]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/api/actions/${b.dataset.done}/done`, { method: 'POST', body: {} }); toast(ICONS.resolved, 'Marked done'); viewInbox(args); } catch (e) { toast(ICONS.critical, e.message); }
+  }));
+}
+
+async function approveAction(a, btn, args) {
+  if (!a) return;
+  const ex = a.execution;
+  if (ex.kind === 'dispatch' || ex.kind === 'task') return openDispatch(a, args);
+  if (ex.kind === 'api' && !btn.dataset.armed) {
+    btn.dataset.armed = 1; btn.dataset.label = btn.textContent;
+    btn.textContent = `${ex.sync ? 'Retry the sync' : `${ex.actionLabel} on ${a.count} device${a.count === 1 ? '' : 's'}`}? Click to confirm`;
+    btn.classList.add('btn-danger');
+    setTimeout(() => { if (btn.isConnected && btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.label; btn.classList.remove('btn-danger'); } }, 6000);
+    return;
+  }
+  btn.disabled = true; btn.textContent = ex.kind === 'api' ? 'Running…' : 'Saving…';
+  try {
+    const r = await api(`/api/actions/${a.id}/approve`, { method: 'POST', body: {} });
+    if (ex.kind === 'config') { toast(ICONS.resolved, 'Accepted. Opening the page to fix it.'); location.hash = r.link; return; }
+    const st = r.action.status;
+    toast(st === 'done' ? ICONS.resolved : ICONS.critical, st === 'done' ? `${a.ref}: done` : `${a.ref}: some devices failed. See Details.`);
+    viewInbox(args);
+  } catch (e) { toast(ICONS.critical, e.message); viewInbox(args); }
+}
+
+async function openDispatch(a, args) {
+  let d;
+  try { d = await api(`/api/actions/${a.id}/draft`); } catch (e) { toast(ICONS.critical, e.message); return; }
+  const rc = d.recipient || {};
+  const w = drawer(a.execution.kind === 'dispatch' ? 'Send on-site steps' : 'Send request', `${esc(a.ref)} · ${esc(a.title)}`, `
+    ${rc.missing ? `<div class="notice err">${esc(rc.missing)} <a href="${inboxHash(a.customerId, 'contacts')}">Site contacts</a></div>` : rc.source ? `<div class="notice info">Going to the ${esc(rc.source)}${rc.to?.name ? `, ${esc(rc.to.name)}` : ''}${rc.to?.phone ? ` (${esc(rc.to.phone)})` : ''}.</div>` : ''}
+    ${d.mail.configured ? '' : `<div class="notice info">Email sending isn't set up on this server, so this opens in your own email app. Send it from there, then press Mark as sent.</div>`}
+    <div class="field"><label for="dsTo">To</label><input id="dsTo" type="email" value="${esc(rc.to?.email || '')}" placeholder="name@company.com"></div>
+    <div class="field"><label for="dsCc">Cc</label><input id="dsCc" value="${esc((rc.cc || []).map((x) => x.email).join(', '))}" placeholder="Optional, comma separated"></div>
+    <div class="field"><label for="dsSubj">Subject</label><input id="dsSubj" value="${esc(d.subject)}"></div>
+    <div class="field"><label for="dsBody">Message</label><textarea id="dsBody" style="min-height:340px">${esc(d.body)}</textarea><div class="help">The steps are generated for each device's type. Edit anything before sending.</div></div>
+    <div id="dsMsg"></div>`,
+  `<button class="btn btn-outline" id="dsCopy">Copy text</button>${d.mail.configured ? '<button class="btn btn-outline" id="dsOwn">Use my email app</button><button class="btn btn-primary" id="dsSend">Approve and send</button>' : '<button class="btn btn-primary" id="dsOwn">Approve and open email</button>'}`);
+  const body = (send) => ({ to: $('#dsTo', w).value.trim(), cc: $('#dsCc', w).value, subject: $('#dsSubj', w).value, body: $('#dsBody', w).value, send });
+  $('#dsCopy', w).addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(`To: ${$('#dsTo', w).value}\nSubject: ${$('#dsSubj', w).value}\n\n${$('#dsBody', w).value}`); toast(ICONS.resolved, 'Copied'); } catch { $('#dsBody', w).select(); }
+  });
+  const go = async (send, btn) => {
+    btn.disabled = true;
+    try {
+      const r = await api(`/api/actions/${a.id}/approve`, { method: 'POST', body: body(send) });
+      if (r.sent) { toast(ICONS.resolved, `Emailed to ${$('#dsTo', w).value}`); closeDrawer(); viewInbox(args); return; }
+      window.location.href = r.mailto;
+      $('#dsMsg', w).innerHTML = `<div class="notice ok">Approved. Your email app should open with the message${r.text.length > 1800 ? ' (shortened: paste the full text with Copy text)' : ''}. When you've sent it, press Mark as sent.</div>`;
+      w.querySelector('.drawer-foot').innerHTML = '<button class="btn btn-outline" id="dsCopy2">Copy text</button><button class="btn btn-primary" id="dsMark">Mark as sent</button>';
+      $('#dsCopy2', w).addEventListener('click', () => navigator.clipboard.writeText(r.text).then(() => toast(ICONS.resolved, 'Copied')).catch(() => {}));
+      $('#dsMark', w).addEventListener('click', async () => { try { await api(`/api/actions/${a.id}/sent`, { method: 'POST', body: {} }); toast(ICONS.resolved, 'Marked as sent'); closeDrawer(); viewInbox(args); } catch (e) { $('#dsMsg', w).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; } });
+    } catch (e) { $('#dsMsg', w).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; btn.disabled = false; }
+  };
+  $('#dsSend', w)?.addEventListener('click', (e) => go(true, e.target));
+  $('#dsOwn', w).addEventListener('click', (e) => go(false, e.target));
+}
+
+function openDecline(a, args) {
+  if (!a) return;
+  let days = 30;
+  const w = drawer('Decline this action', `${esc(a.ref)} · ${esc(a.title)}`, `
+    <p class="muted" style="margin-top:0">The same issue on the same devices won't be proposed again until the quiet period ends. New devices with the same problem are still proposed.</p>
+    <div class="field"><label>Don't propose again for</label><div class="seg" id="dcDays">${[7, 30, 90, 365].map((n) => `<button data-d="${n}" class="${n === days ? 'on' : ''}">${n === 365 ? '1 year' : `${n} days`}</button>`).join('')}</div></div>
+    <div class="field"><label for="dcWhy">Reason (optional, goes in the audit log)</label><textarea id="dcWhy" style="min-height:70px;font-family:inherit;font-size:13px" placeholder="e.g. Room is being refurbished"></textarea></div><div id="dcMsg"></div>`,
+  '<button class="btn btn-outline" data-closedrawer>Cancel</button><button class="btn btn-danger" id="dcGo">Decline</button>');
+  w.querySelectorAll('#dcDays button').forEach((b) => b.addEventListener('click', () => { days = Number(b.dataset.d); w.querySelectorAll('#dcDays button').forEach((x) => x.classList.toggle('on', x === b)); }));
+  $('#dcGo', w).addEventListener('click', async () => {
+    try { await api(`/api/actions/${a.id}/decline`, { method: 'POST', body: { snoozeDays: days, reason: $('#dcWhy', w).value } }); toast(ICONS.resolved, 'Declined'); closeDrawer(); viewInbox(args); } catch (e) { $('#dcMsg', w).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; }
+  });
+}
+
+async function openAction(id) {
+  const a = await api(`/api/actions/${id}`);
+  const isDev = (i) => !!i.deviceId;
+  const rows = a.items.map((i) => {
+    if (i.connectionId) return `<tr><td><b>${esc(i.connectionName)}</b><div class="muted">${esc(i.oemName)}</div></td><td colspan="2">${esc(i.error || `Last success ${i.lastSuccessAt ? fmtDateTime(i.lastSuccessAt) : 'never'}`)}</td><td>${i.cleared ? '<span class="st healthy">Cleared</span>' : '<span class="st critical">Open</span>'}</td></tr>`;
+    if (!isDev(i)) return `<tr><td colspan="3"><b>${esc(i.room ? `${i.room}, ${i.site}` : i.site)}</b>${i.devices ? ` <span class="muted">${i.devices} devices</span>` : ''}</td><td>${i.cleared ? '<span class="st healthy">Fixed</span>' : '<span class="st warning">Open</span>'}</td></tr>`;
+    const detail = a.rule === 'firmware' ? `<span class="mono">${esc(i.firmware)}</span> → <span class="mono">${esc(i.target)}</span>`
+      : a.rule === 'warranty' ? `Warranty ${esc(i.warrantyExpires || '—')}` : a.rule === 'lifecycle' ? esc(i.lifecycle?.label || '')
+        : a.rule === 'recurring' ? `${i.incidents} incidents in 7 days${i.simulated ? ' <span class="muted">(simulated history)</span>' : ''}` : esc(i.healthReason || i.health);
+    return `<tr><td><a href="#" data-dev="${esc(i.deviceId)}"><b>${esc(shortModel(i.make, i.model))}</b></a><div class="muted">${esc(i.deviceType)}${i.serial ? ` · ${esc(i.serial)}` : ''}</div></td><td>${esc(i.room)}<div class="muted">${esc(i.site)}</div></td><td>${detail}${i.repeat ? `<div class="muted">Tried before in ${esc(i.repeat)}</div>` : ''}</td><td>${i.cleared ? '<span class="st healthy">Cleared</span>' : status(i.health && HLABEL[i.health] ? i.health : 'warning')}</td></tr>`;
+  }).join('');
+  const w = drawer(a.title, `${esc(a.ref)} · ${esc(a.customerName)} · ${esc(ACT_STATUS[a.status])}`, `
+    <p style="margin-top:0">${esc(a.reason)}</p>
+    <div class="act-exec" style="margin-bottom:14px">${execLine(a)}</div>
+    ${a.result?.results?.length ? `<h3 class="dr-h">Result</h3><ul class="act-results">${a.result.results.map((r) => `<li class="${r.ok ? 'ok' : 'bad'}"><b>${esc(r.label)}</b>: ${esc(r.message)}</li>`).join('')}</ul>` : ''}
+    ${a.dispatch ? `<h3 class="dr-h">Email</h3><dl class="kv"><dt>To</dt><dd>${esc(a.dispatch.to)}${a.dispatch.cc?.length ? ` (cc ${esc(a.dispatch.cc.join(', '))})` : ''}</dd><dt>Subject</dt><dd>${esc(a.dispatch.subject)}</dd><dt>Sent</dt><dd>${a.dispatch.sentAt ? `${fmtDateTime(a.dispatch.sentAt)} via ${esc(a.dispatch.via)}` : 'Not yet'}</dd></dl>` : ''}
+    <h3 class="dr-h">Affected (${a.items.length})</h3>
+    <div class="table-wrap flat"><table><thead><tr><th>${a.items.some(isDev) ? 'Device' : 'Item'}</th><th>${a.items.some(isDev) ? 'Room' : ''}</th><th>Detail</th><th>Now</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${a.moreItems ? `<div class="muted">…and ${a.moreItems} more</div>` : ''}
+    <h3 class="dr-h">History</h3>
+    <ul class="act-history">${a.history.map((h) => `<li><span class="muted">${fmtDateTime(h.at)}</span> <b>${esc(ACT_STATUS[h.status] || h.status)}</b>${h.by ? ` by ${esc(h.by)}` : ''}${h.note ? `: ${esc(h.note)}` : ''}</li>`).join('')}</ul>`);
+  w.querySelectorAll('[data-dev]').forEach((el) => el.addEventListener('click', (e) => { e.preventDefault(); openDevice(el.dataset.dev); }));
+}
+
+function openCheckSchedule(c, args) {
+  const w = drawer('Daily checks', 'Applies to every customer', `
+    <div class="field"><label><input type="checkbox" id="csOn" ${c.enabled ? 'checked' : ''}> Run the checks every day</label></div>
+    <div class="field"><label for="csHour">Time (UTC)</label><select id="csHour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === c.hourUtc ? 'selected' : ''}>${hourText(h)} (${new Date(Date.UTC(2026, 0, 1, h)).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} your time)</option>`).join('')}</select>
+      <div class="help">Admins can also run the checks at any time with Run checks now.</div></div><div id="csMsg"></div>`,
+  '<button class="btn btn-outline" data-closedrawer>Cancel</button><button class="btn btn-primary" id="csSave">Save</button>');
+  $('#csSave', w).addEventListener('click', async () => {
+    try { await api('/api/admin/checks', { method: 'PUT', body: { enabled: $('#csOn', w).checked, hourUtc: Number($('#csHour', w).value) } }); toast(ICONS.resolved, 'Schedule saved'); closeDrawer(); viewInbox(args); } catch (e) { $('#csMsg', w).innerHTML = `<div class="notice err">${esc(e.message)}</div>`; }
+  });
+}
+
+async function viewContacts(cid) {
+  if (!cid) { $('#view').innerHTML = '<div class="card empty">No customers yet.</div>'; return; }
+  const d = await api(`/api/contacts/${encodeURIComponent(cid)}`);
+  const ct = d.contacts;
+  const ro = d.canEdit ? '' : 'disabled';
+  const row = (attrs, label, sub, c = {}) => `<tr ${attrs}><td><b>${esc(label)}</b>${sub ? `<div class="muted">${esc(sub)}</div>` : ''}</td>
+    <td><input data-f="name" value="${esc(c?.name || '')}" placeholder="Name" ${ro}></td><td><input data-f="email" type="email" value="${esc(c?.email || '')}" placeholder="name@company.com" ${ro}></td>
+    <td><input data-f="phone" value="${esc(c?.phone || '')}" placeholder="Phone" ${ro}></td><td>${d.canEdit ? '<button class="btn btn-outline btn-sm" data-save>Save</button>' : ''}</td></tr>`;
+  const roomRows = Object.entries(ct.rooms || {}).map(([k, c]) => { const [site, room] = k.split('|'); return row(`data-scope="room" data-site="${esc(site)}" data-room="${esc(room)}"`, room, site, c); }).join('');
+  hero('Site contacts', `Who receives on-site steps (field dispatches) and requests for ${esc(d.customerName)}.`, `<a href="${inboxHash(cid)}">Action inbox</a>`);
+  $('#view').innerHTML = `
+    ${acting() ? '' : `<div class="card" style="margin-bottom:14px"><select id="ctCust" aria-label="Customer">${S.customers.map((c) => `<option value="${esc(c.id)}" ${c.id === cid ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>`}
+    <div class="card" style="margin-bottom:14px"><div class="card-head"><div><h2>Customer contacts</h2><div class="card-sub">Firmware update tasks go to the engineer or service desk. Warranty renewals and replacements go to the renewals contact.</div></div></div>
+      <div class="table-wrap"><table class="ct-table"><tbody>${row('data-scope="engineer"', 'Engineer / service desk', 'Firmware updates', ct.engineer)}${row('data-scope="renewals"', 'Renewals', 'Warranty and replacements', ct.renewals)}</tbody></table></div></div>
+    <div class="card" style="margin-bottom:14px"><div class="card-head"><div><h2>Site contacts (SPOC)</h2><div class="card-sub">The local person who gets step-by-step instructions when a device needs someone on site.</div></div></div>
+      <div class="table-wrap"><table class="ct-table"><thead><tr><th>Site</th><th>Name</th><th>Email</th><th>Phone</th><th></th></tr></thead><tbody>${d.sites.map((s) => row(`data-scope="site" data-site="${esc(s)}"`, s, '', ct.sites?.[s])).join('') || '<tr><td colspan="5" class="muted">No sites yet</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div class="card-head"><div><h2>Room contacts</h2><div class="card-sub">Optional. A room contact gets dispatches for that room, with the site contact in copy.</div></div></div>
+      <div class="table-wrap"><table class="ct-table"><tbody id="ctRooms">${roomRows || '<tr class="ct-none"><td colspan="5" class="muted">No room contacts</td></tr>'}</tbody></table></div>
+      ${d.canEdit && d.rooms.length ? `<div class="inbox-row" style="margin-top:12px"><select id="ctRoomPick" aria-label="Room">${d.rooms.map((r) => `<option value="${esc(`${r.site}|${r.room}`)}">${esc(r.room)} · ${esc(r.site)}</option>`).join('')}</select><button class="btn btn-outline btn-sm" id="ctAddRoom">Add room contact</button></div>` : ''}
+      <div id="ctMsg"></div></div>`;
+  $('#ctCust')?.addEventListener('change', (e) => { location.hash = inboxHash(e.target.value, 'contacts'); });
+  const bind = (tr) => tr.querySelector('[data-save]')?.addEventListener('click', async () => {
+    const v = (f) => tr.querySelector(`[data-f=${f}]`).value.trim();
+    const contact = v('name') || v('email') || v('phone') ? { name: v('name'), email: v('email'), phone: v('phone') } : null;
+    try { await api(`/api/contacts/${encodeURIComponent(cid)}`, { method: 'PUT', body: { scope: tr.dataset.scope, site: tr.dataset.site, room: tr.dataset.room, contact } }); toast(ICONS.resolved, contact ? 'Contact saved' : 'Contact removed'); } catch (e) { $('#ctMsg').innerHTML = `<div class="notice err">${esc(e.message)}</div>`; }
+  });
+  document.querySelectorAll('.ct-table tr[data-scope]').forEach(bind);
+  $('#ctAddRoom')?.addEventListener('click', () => {
+    const [site, room] = $('#ctRoomPick').value.split('|');
+    if (document.querySelector(`#ctRooms tr[data-site="${CSS.escape(site)}"][data-room="${CSS.escape(room)}"]`)) return;
+    $('#ctRooms .ct-none')?.remove();
+    const tmp = document.createElement('tbody');
+    tmp.innerHTML = row(`data-scope="room" data-site="${esc(site)}" data-room="${esc(room)}"`, room, site, {});
+    const tr = tmp.firstElementChild;
+    $('#ctRooms').appendChild(tr); bind(tr); tr.querySelector('[data-f=name]').focus();
+  });
+}
+
+/** Proposed actions waiting for a decision, on the Action inbox nav item. */
+function updateInboxBadge(summary) {
+  const el = $('#inboxBadge');
+  if (!el) return;
+  const apply = (s) => { const n = Object.values(s || {}).reduce((t, x) => t + x.proposed, 0); el.hidden = !n; el.textContent = n > 99 ? '99+' : n; el.title = `${n} actions to decide`; };
+  if (summary) apply(summary); else api('/api/actions/summary').then(apply).catch(() => {});
 }

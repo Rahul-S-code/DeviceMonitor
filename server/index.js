@@ -20,6 +20,9 @@ import { csvObjects, toCsv } from './lib/csv.js';
 import { LEVELS, LIFECYCLE_LIMITS, resolveFirmware } from './lib/baselines.js';
 import { compareVersions } from './lib/models.js';
 import { isBlockedHost } from './lib/net-guard.js';
+import { Mailer } from './lib/mailer.js';
+import { ChecksService } from './services/checks.js';
+import { registerInbox } from './routes/inbox.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -33,7 +36,7 @@ if (fs.existsSync(envFile)) {
   }
 }
 
-export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || 'data'), intervalMs, autoStart = true, persistence = null } = {}) {
+export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || 'data'), intervalMs, autoStart = true, persistence = null, mailer = null, checksMinDownMs } = {}) {
   persistence ||= new FilePersistence(dataDir);
   const store = new Store(dataDir, { persistence });
   const production = process.env.NODE_ENV === 'production';
@@ -70,6 +73,8 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   // SYNC_INTERVAL_SECONDS is only the starting default: admins change it on the Sync schedule page.
   const sync = new SyncService({ store, vault, inventory, history, persistence, intervalMs: intervalMs ?? (process.env.SYNC_INTERVAL_SECONDS ? Number(process.env.SYNC_INTERVAL_SECONDS) * 1000 : null) });
   const sessions = new Sessions();
+  mailer ||= new Mailer();
+  const checks = new ChecksService({ store, inventory, history, sync, minDownMs: checksMinDownMs ?? 15 * 60_000 });
   const apiTracker = new ApiTracker({ store, sync, mapLayers, intervalMinutes: Number(process.env.API_CHECK_MINUTES ?? 30) });
 
   const app = express();
@@ -964,11 +969,14 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.json(store.customers.filter((c) => allowed.has(c.id)));
   });
 
+  // --- action inbox: daily proactive checks, decisions, dispatch -----------
+  registerInbox(app, { store, inventory, sync, mailer, checks, scope, inScope, audit, actorOf, requireJson, lastAction });
+
   app.use(express.static(path.join(ROOT, 'public'), { index: 'index.html' }));
   app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 
-  if (autoStart) { sync.start(); apiTracker.start(); }
-  return { app, store, sync, inventory, vault, history, apiTracker };
+  if (autoStart) { sync.start(); apiTracker.start(); checks.start(); }
+  return { app, store, sync, inventory, vault, history, apiTracker, checks, mailer };
 }
 
 /** Start the server: Postgres when DATABASE_URL is set, otherwise JSON files in the data folder. */
@@ -984,7 +992,7 @@ export async function startServer({ port = Number(process.env.PORT || 8080) } = 
     if (stopping) return;
     stopping = true;
     console.log(`[shutdown] ${signal}: saving data`);
-    ctx.sync.stop(); ctx.apiTracker.stop?.();
+    ctx.sync.stop(); ctx.apiTracker.stop?.(); ctx.checks.stop();
     try { ctx.store.flush(); ctx.history.flush(); await persistence.close(); } catch (e) { console.error(`[shutdown] ${e.message}`); }
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 5000).unref();

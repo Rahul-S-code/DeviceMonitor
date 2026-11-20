@@ -20,6 +20,7 @@ const EMPTY = {
   customers: [], users: [], connections: [], siteDirectory: {}, roomDirectory: {},
   schematics: {}, deviceOverrides: {}, alerts: [], models: [], audit: [], manualDevices: [],
   designs: [], apiChecks: {}, baselines: { advisory: [], customers: {} }, settings: {},
+  actions: [], contacts: {}, counters: {},
 };
 const MAX_AUDIT = 5000;
 // Alert retention: newest ALERT_MAX alerts, none older than ALERT_RETENTION_DAYS.
@@ -156,6 +157,40 @@ export class Store {
   }
 
   clearOverride(deviceId) { delete this.data.deviceOverrides[deviceId]; }
+
+  // --- action inbox (proposed actions from the daily checks) --------------------
+  get actions() { if (!this.data.actions) this.data.actions = []; return this.data.actions; }
+  actionsFor(customerId) { return this.actions.filter((a) => a.customerId === customerId); }
+  action(id) { return this.actions.find((a) => a.id === id) ?? null; }
+  addAction(a) { this.actions.unshift(a); this.pruneActions(); this.save(); return a; }
+  /** Short reference used in emails, e.g. EM-1042. */
+  nextActionRef() {
+    if (!this.data.counters) this.data.counters = {};
+    this.data.counters.action = (this.data.counters.action || 1000) + 1;
+    return `EM-${this.data.counters.action}`;
+  }
+  /** Keep every open action; closed ones for ACTION_RETENTION_DAYS (default 180). */
+  pruneActions() {
+    const cutoff = new Date(Date.now() - (Number(process.env.ACTION_RETENTION_DAYS) || 180) * 86_400_000).toISOString();
+    this.data.actions = this.actions.filter((a) => ['proposed', 'approved', 'sent', 'failed'].includes(a.status) || a.updatedAt >= cutoff);
+  }
+
+  // --- contacts: site / room SPOCs and customer-level engineer and renewals contacts
+  contactsFor(customerId) {
+    if (!this.data.contacts) this.data.contacts = {};
+    return this.data.contacts[customerId] || { sites: {}, rooms: {}, engineer: null, renewals: null };
+  }
+  /** scope: 'site' | 'room' | 'engineer' | 'renewals'. contact null removes it. */
+  setContact(customerId, scope, key, contact) {
+    if (!this.data.contacts) this.data.contacts = {};
+    const c = this.data.contacts[customerId] ||= { sites: {}, rooms: {}, engineer: null, renewals: null };
+    if (scope === 'site' || scope === 'room') {
+      const map = scope === 'site' ? c.sites : c.rooms;
+      if (contact) map[key] = contact; else delete map[key];
+    } else c[scope] = contact;
+    this.save();
+    return c;
+  }
 
   // --- audit log ----------------------------------------------------------
   /** Append an audit entry. Never pass secret values in `details`. */
@@ -560,6 +595,8 @@ export class Store {
     this.data.alerts = this.data.alerts.filter((a) => a.customerId !== id);
     this.data.manualDevices = this.manualDevices.filter((d) => d.customerId !== id);
     delete this.baselines.customers[id];
+    if (this.data.contacts) delete this.data.contacts[id];
+    this.data.actions = this.actions.filter((a) => a.customerId !== id);
     for (const d of this.data.designs.filter((x) => x.customerId === id)) this.removeDesign(d.id);
     unregisterMockCustomer(id);
     this.save();

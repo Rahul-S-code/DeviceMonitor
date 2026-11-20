@@ -89,6 +89,27 @@ Admins see **Remote actions** in a device's panel. Every action runs through the
 
 Actions are confirmed with a second click, limited to one per device per minute, and written to the audit log (who, which action, which API, result). On demo (mock) connections nothing is sent; the panel says what a live connection would call. The read-only scopes used for monitoring are not enough: add the write permission above to the live credentials to enable actions.
 
+## Action inbox (proactive checks)
+
+Monitor › **Action inbox** (admins only). Every day (06:00 UTC by default; the super admin changes the hour or turns it off, and any admin can press **Run checks now**) each customer's estate is checked with deterministic rules, and each finding becomes a proposed action with a reason, the affected devices, a severity and how it will be carried out. The admin answers **Yes** or **No**.
+
+| Check | Yes does |
+| --- | --- |
+| Device offline 15+ minutes | Domotz PoE/PDU power-cycle when Domotz reports it; otherwise emails power-cycle steps to the site contact (an offline device can't take a cloud reboot) |
+| Device critical (online, faulty) | Restart through the vendor API that reports it (Poly Lens, Webex, Zoom Rooms, Neat, Yealink, Sony, Domotz); otherwise emails the steps to the site contact |
+| 3+ incidents in 7 days | Emails on-site inspection steps (cables, power, port, heat) to the site contact |
+| Firmware below the customer's baseline (per model) | Emails a task to the customer's engineer / service desk, with where to update in each vendor portal |
+| Warranty expired or expiring; model past the lifecycle limit | Emails the device list to the customer's renewals contact |
+| Connection failing or stale; credentials rejected | Retries the sync; or opens Connections to renew credentials |
+| Site with no contact, room with no platform, no warranty date | Opens the page to fix it |
+
+- **Field dispatch**: instructions are generated per device type (`server/lib/runbooks.js`) with the room, serial, MAC and what monitoring shows, grouped into one email per site. The admin can edit before sending.
+- **Contacts**: Action inbox › **Site contacts**: a SPOC (name, email, phone) per site, optional per-room contacts (room contact gets the email, site contact in Cc), an engineer contact and a renewals contact per customer.
+- **Email**: set `MAIL_FROM` plus `RESEND_API_KEY`, `SENDGRID_API_KEY` or `SMTP_URL` (`smtps://user:pass@host:465`, or `smtp://…:587` with STARTTLS). Railway blocks outbound SMTP on lower plans, so use Resend or SendGrid there. Without a provider the page says so and offers a mailto link and **Copy text**; the admin then presses **Mark as sent**.
+- **Status**: proposed › approved › sent / failed › done, or declined / cleared. An issue in an open action is never proposed twice; new devices with the same problem join the open proposal. **No** keeps those items quiet for 7/30/90/365 days. A sent dispatch closes itself when the next check finds the devices healthy; a remote fix that didn't hold is re-proposed as a site dispatch. Every decision, email and API call is audited; closed actions are kept `ACTION_RETENTION_DAYS` (180).
+- **Access**: admin-only and scoped like every other page (an admin inside one customer sees only that customer). Permissions are in one place, `server/lib/permissions.js` (`can(user, 'inbox.decide')`...). The schedule is super admin only.
+- **Code**: rules and dedupe in `server/services/checks.js`, routes in `server/routes/inbox.js`, email in `server/lib/mailer.js`. No AI is needed; an AI summary or ranking can be added on top later.
+
 ## Adding devices by hand
 
 Admins can add devices that no API reports (Devices › **+ Add device**, or **+ Add device** on a room page). Make and model are picked from the model master; for kit the master doesn't list, choose **Other** and type the manufacturer, model and device type. Devices with no API connector for their model (including everything entered under Other) are tagged **Not monitored**, and typed-in models appear on the Models tab for the super admin to catalogue. All manual devices show health **Not monitored**: they count in the inventory, lifecycle and warranty views but not in health alerts or SLA. If a connected API later reports the same serial number or MAC address, the records merge: live health and the OEM's location take over, and the asset tag, notes and warranty you entered are kept. 
@@ -117,7 +138,7 @@ Cisco Control Hub is the Webex admin portal and is covered by the **Cisco Contro
 `railway.json` sets the start command and health check. In Railway: New Project > Deploy from GitHub repo > pick this repository, then:
 
 1. Right-click the service > Attach volume, mount path `/data`. The app stores its data on the volume automatically (it reads `RAILWAY_VOLUME_MOUNT_PATH`; `DATA_DIR` overrides it). Without a volume, data is lost on every redeploy.
-2. Variables: `NODE_ENV=production`, `MASTER_KEY` (keep the same value when moving hosts, or saved API keys can't be decrypted), `SUPERADMIN_PASSWORD`, `DEMO_PASSWORD`, `SHOW_DEMO_ACCOUNTS=false`. Optional: `HOME_LINK_URL` / `HOME_LINK_NAME` (the "Back to UC Order Hub" link, defaults to https://rahul-s-code.github.io/L2O/; set it empty to hide), `SYNC_INTERVAL_SECONDS` (starting default 300; change it later under Configure > Sync schedule).
+2. Variables: `NODE_ENV=production`, `MASTER_KEY` (keep the same value when moving hosts, or saved API keys can't be decrypted), `SUPERADMIN_PASSWORD`, `DEMO_PASSWORD`, `SHOW_DEMO_ACCOUNTS=false`. For Action inbox emails: `MAIL_FROM` and `RESEND_API_KEY` or `SENDGRID_API_KEY` (Railway blocks outbound SMTP on lower plans). Optional: `HOME_LINK_URL` / `HOME_LINK_NAME` (the "Back to UC Order Hub" link, defaults to https://rahul-s-code.github.io/L2O/; set it empty to hide), `SYNC_INTERVAL_SECONDS` (starting default 300; change it later under Configure > Sync schedule).
 3. Settings > Networking > Generate Domain for a public https link.
 4. Set a usage limit under Workspace > Usage so a runaway service can't run up the bill.
 
