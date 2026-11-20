@@ -679,3 +679,23 @@ label.inline-chk input[type=checkbox] { width: auto; margin: 0; }
 .sn-chip.big { font-size: 12.5px; padding: 1px 9px; }
 a.sn-chip:hover { text-decoration: underline; }
 .sn-err { color: #b42318; overflow-wrap: anywhere; }
+
+/* Customer detail page */
+.cust-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.cust-grid { align-items: start; margin-top: 18px; }
+.cust-card { min-width: 0; }
+.cust-card .card-head { gap: 10px; flex-wrap: wrap; }
+.cust-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.cust-pills .pill b { margin-left: 4px; }
+.cust-list { display: grid; gap: 7px; font-size: 13.5px; }
+.cust-list > div { overflow-wrap: anywhere; }
+.cust-settings { overflow-wrap: anywhere; }
+.oem-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+.oem-dot.oem-manual { background: #9aa1b8; }
+.cust-card dl.kv dd { overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 760px) { .cust-card dl.kv { grid-template-columns: 1fr; gap: 2px 0; } .cust-card dl.kv dd { margin-bottom: 8px; } }
+.cust-card.wide { grid-column: 1 / -1; }
+.cust-src { display: flex; align-items: center; gap: 10px; min-width: 180px; }
+.cust-src .oem-logo { flex: none; width: 30px; height: 30px; font-size: 11px; }
+.cust-conn td { vertical-align: middle; }
+.cust-conn .cust-settings { max-width: 280px; font-size: 12px; }

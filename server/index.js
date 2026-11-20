@@ -536,6 +536,51 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     const mine = new Set(baseScope(req));
     res.json(store.customers.filter((c) => mine.has(c.id)).map(customerSummary));
   });
+  // Everything about one customer on one page: estate, connections, ServiceNow,
+  // standards, contacts, inbox, roles and recent changes. Secrets stay masked.
+  app.get('/api/admin/customers/:id/profile', manageCustomers, (req, res) => {
+    const c = store.customers.find((x) => x.id === req.params.id);
+    if (!c || !ownCustomer(req, c.id)) return res.status(404).json({ error: 'Customer not found' });
+    const devs = inventory.forCustomer(c.id);
+    const count = (key) => devs.reduce((m, d) => { const k = d[key] ?? 'unknown'; m[k] = (m[k] || 0) + 1; return m; }, {});
+    const bySource = {};
+    for (const d of devs) for (const s of d.sources || []) bySource[s.oem] = (bySource[s.oem] || 0) + 1;
+    const conns = store.connections.filter((x) => x.customerId === c.id).map((x) => publicConnection(x, can(req, 'connections.manage')));
+    let sla = null;
+    try {
+      const r = slaReport(history, devs.filter((d) => d.health !== 'unmonitored'), { window: '30d', targetFor: (id) => store.slaTarget(id) });
+      sla = { window: '30d', availability: r.overall.availability, incidents: r.overall.incidents, downtimeMin: r.overall.downtimeMin, mttrMin: r.overall.mttrMin, simulated: r.simulated };
+    } catch { sla = null; }
+    const bl = store.customerBaseline(c.id);
+    const ct = store.contactsFor(c.id);
+    const sites = Object.entries(store.sitesFor(c.id)).map(([name, s]) => ({ name, ...s, contact: ct.sites?.[name] || null, devices: devs.filter((d) => d.site === name).length }));
+    const actions = store.actionsFor(c.id);
+    const byStatus = actions.reduce((m, a) => { m[a.status] = (m[a.status] || 0) + 1; return m; }, {});
+    const tix = tickets.forCustomer(c.id);
+    const overrides = c.roleOverrides || {};
+    const auditRows = store.data.audit.filter((e) => e.customerId === c.id).slice(0, 12).map((e) => ({ at: e.at, action: e.action, target: e.target, by: e.actor?.email || null }));
+    res.json({
+      customer: { ...customerSummary(c), createdAt: c.createdAt || null, slaTarget: store.slaTarget(c.id) },
+      estate: {
+        devices: devs.length, rooms: new Set(devs.map((d) => `${d.site}|${d.room}`)).size, health: Inventory.healthCounts(devs),
+        manual: devs.filter((d) => d.manualId).length, mock: devs.filter((d) => d.mock).length,
+        bySource: Object.entries(bySource).map(([oem, n]) => ({ oem, name: (() => { try { return getConnectorClass(oem).displayName; } catch { return oem === 'manual' ? 'Added by hand or CSV' : oem; } })(), devices: n })).sort((a, b) => b.devices - a.devices),
+        firmware: count('firmwareStatus'), warranty: count('warrantyStatus'),
+        lifecycle: devs.reduce((m, d) => { const k = d.lifecycle?.stage || 'unknown'; m[k] = (m[k] || 0) + 1; return m; }, {}),
+      },
+      sla,
+      sites,
+      connections: conns,
+      servicenow: { ...tickets.publicConfig(c.id), recent: tix.slice(0, 5).map((t) => tickets.view(t)) },
+      baseline: bl ? { version: bl.version, level: bl.level, updatedAt: bl.createdAt || null, by: bl.createdBy?.email || bl.createdBy || null, models: Object.keys(bl.models || {}).length, policy: store.effectivePolicy(c.id) } : { version: 0, level: 'advisory', policy: store.effectivePolicy(c.id) },
+      contacts: { sites: Object.keys(ct.sites || {}).length, rooms: Object.keys(ct.rooms || {}).length, engineer: ct.engineer || null, renewals: ct.renewals || null, sitesWithout: sites.filter((s) => !s.contact?.email).map((s) => s.name) },
+      inbox: { byStatus, open: actions.filter((a) => ['proposed', 'approved', 'sent', 'failed'].includes(a.status)).length, lastCheck: store.settings.checks?.byCustomer?.[c.id] || null },
+      roles: { overrides: Object.keys(overrides).length, roles: Object.keys(overrides) },
+      email: mailer.status(),
+      audit: auditRows,
+      can: { connections: can(req, 'connections.manage'), users: can(req, 'users.manage'), roles: can(req, 'roles.manage'), baselines: can(req, 'baselines.edit'), contacts: can(req, 'sites.manage'), inbox: can(req, 'inbox.view'), audit: can(req, 'audit.view') },
+    });
+  });
   app.post('/api/admin/customers', manageCustomers, requireJson, async (req, res) => {
     const b = req.body || {};
     try {

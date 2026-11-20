@@ -268,3 +268,23 @@ test('only admins configure it, everyone in scope sees numbers, and customers ne
   const audit = ctx.store.data.audit.filter((e) => e.action === 'servicenow.settings');
   assert.ok(audit.length >= 2 && !JSON.stringify(audit).includes('secret-pw'));
 });
+
+test('customer profile gathers connections, ServiceNow and settings in one scoped call', async (t) => {
+  const { ctx, login } = await startApp(t);
+  const admin = await login('admin@provider.example');
+  await admin('/api/itsm/cust-demo', { enabled: true, mode: 'live', instanceUrl: 'dev1', username: 'estate.monitor', password: 'top-secret-pw' }, 'PUT');
+  const r = await admin('/api/admin/customers/cust-demo/profile');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const p = r.body;
+  assert.equal(p.customer.id, 'cust-demo');
+  assert.ok(p.connections.length > 0 && p.connections.every((c) => c.status && c.oemName));
+  assert.equal(p.servicenow.enabled, true); assert.equal(p.servicenow.mode, 'live'); assert.equal(p.servicenow.instanceUrl, 'https://dev1.service-now.com');
+  assert.ok(p.estate.devices > 0 && p.estate.bySource.length > 0);
+  assert.ok(p.sites.length > 0 && 'contact' in p.sites[0]);
+  assert.ok('version' in p.baseline && 'byStatus' in p.inbox && 'overrides' in p.roles);
+  assert.ok(!JSON.stringify(p).includes('top-secret-pw'), 'no secrets');
+  // Scope: customer roles can't open it, unknown ids are 404.
+  assert.equal((await (await login('admin@demo.example'))('/api/admin/customers/cust-demo/profile')).status, 403);
+  assert.equal((await admin('/api/admin/customers/nope/profile')).status, 404);
+  assert.ok(ctx.store.customers.some((c) => c.id === OTHER));
+});

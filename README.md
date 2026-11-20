@@ -137,6 +137,10 @@ Monitor › **Action inbox** (MSP admins, customer admins and technical users by
 - **Access**: scoped like every other page (an MSP admin sees only its customers; an admin inside one customer sees only that customer). `server/lib/permissions.js` maps the inbox checks onto the role matrix: `inbox.view`, `inbox.decide` (matrix *Decide inbox actions*), `inbox.run`, `contacts.view`, `contacts.edit` (*Manage sites and contacts*), `checks.schedule` (super admin).
 - **Code**: rules and dedupe in `server/services/checks.js`, routes in `server/routes/inbox.js`, email in `server/lib/mailer.js`. No AI is needed; an AI summary or ranking can be added on top later.
 
+## Customer page
+
+Configure › Customers › **Details** (`#/customers/<id>`, MSP admins and the super admin) shows one customer in full from `GET /api/admin/customers/:id/profile`: devices and health by source, firmware and warranty status, 30-day availability against the SLA target, every connection (mode, sync status, last good sync, interval, devices, live settings; secrets masked), ServiceNow settings and latest incidents, sites with SPOCs, engineer and renewals contacts, users and roles, baseline and lifecycle rules, role overrides, Action inbox status, email sending status and recent audit entries. Each section links to the page that edits it.
+
 ## ServiceNow incidents (per customer)
 
 Configure › **ServiceNow** (MSP admins by default; give customer admins *Manage connections and API keys* to let them set it up). Each customer has its own settings: on/off, **Mock** (simulated incidents, nothing sent) or **Live**, instance URL, integration user and password (encrypted), assignment group, category, caller, resolution code, which events raise incidents and their priority, the wait before raising, and auto-resolve.

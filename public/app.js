@@ -255,7 +255,7 @@ async function navigate() {
     else if (r.name === 'alerts') await viewAlerts();
     else if (r.name === 'connections' && can('connections.view')) await viewConnections();
     else if (r.name === 'map') await viewMap(r.args);
-    else if (r.name === 'customers' && can('customers.manage')) await viewCustomers();
+    else if (r.name === 'customers' && can('customers.manage')) await viewCustomers(r.args);
     else if (r.name === 'msps' && isSuper()) await viewMsps();
     else if (r.name === 'users' && can('users.manage')) await viewUsers();
     else if (r.name === 'roles') await viewRoles(r.args);
@@ -2032,7 +2032,8 @@ const CITY_PRESETS = [
   ['Singapore', 'Singapore', 'APAC', 1.3521, 103.8198], ['Hong Kong', 'Hong Kong', 'APAC', 22.3193, 114.1694], ['Tokyo', 'Japan', 'APAC', 35.6762, 139.6503], ['Sydney', 'Australia', 'APAC', -33.8688, 151.2093],
 ];
 
-async function viewCustomers() {
+async function viewCustomers(args = route().args) {
+  if (args[0]) return viewCustomer(args[0]);
   const list = await api('/api/admin/customers');
   hero('Customers', `${list.length} customer${list.length === 1 ? "" : "s"}${isSuper() ? ' across every MSP' : S.me.mspName ? ` of ${esc(S.me.mspName)}` : ''}. Onboard a new customer, add its users, or enter a customer to see exactly what they see.`);
   $('#view').innerHTML = `
@@ -2041,12 +2042,12 @@ async function viewCustomers() {
     <div class="conn-grid">${list.map((c) => `
       <div class="conn-card">
         <div class="conn-top"><div class="oem-logo" style="background:var(--grad)">${esc(c.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join(''))}</div>
-          <div><div class="sync-name">${esc(c.name)}</div><div class="sync-meta">${isSuper() && c.mspName ? `${esc(c.mspName)} · ` : ''}${c.sites.length} sites · ${c.users.length} users · ${c.connections.length} connections</div>
+          <div><div class="sync-name"><a href="#/customers/${encodeURIComponent(c.id)}">${esc(c.name)}</a></div><div class="sync-meta">${isSuper() && c.mspName ? `${esc(c.mspName)} · ` : ''}${c.sites.length} sites · ${c.users.length} users · ${c.connections.length} connections</div>
             <div style="margin-top:4px">${c.mockData === false ? '<span class="pill live" style="padding:1px 7px">Live and uploaded data only</span>' : '<span class="pill mock" style="padding:1px 7px">Mock data on</span>'}</div></div>
           ${status(c.health.total ? ['critical', 'offline', 'warning', 'healthy'].find((h) => c.health[h]) : 'none')}</div>
         <div class="brk-bar" style="height:8px">${HEALTH_BARS.filter((h) => c.health[h]).map((h) => `<span class="f-${h}" style="flex:${c.health[h]}"></span>`).join('')}</div>
         <div class="conn-stats"><div><span class="muted">Devices</span><b>${c.deviceCount}</b></div><div><span class="muted">Sites</span><b>${c.sites.length}</b></div><div><span class="muted">Platforms</span><b style="font-size:12px">${esc((c.platforms || []).join(', ') || '—')}</b></div></div>
-        <div class="conn-actions"><button class="btn btn-primary btn-sm" data-enter="${esc(c.id)}">Enter customer</button><button class="btn btn-outline btn-sm" data-edit="${esc(c.id)}">Sites &amp; users</button></div>
+        <div class="conn-actions"><a class="btn btn-primary btn-sm" href="#/customers/${encodeURIComponent(c.id)}">Details</a><button class="btn btn-outline btn-sm" data-enter="${esc(c.id)}">Enter customer</button><button class="btn btn-outline btn-sm" data-edit="${esc(c.id)}">Sites &amp; users</button></div>
       </div>`).join('')}</div>`;
   $('#onboard').addEventListener('click', () => openOnboarding());
   S.roleLabels = (await api('/api/users').catch(() => null))?.labels || S.roleLabels;
@@ -3524,4 +3525,93 @@ async function viewServiceNow(args = []) {
     try { const t = await api(`/api/tickets/${encodeURIComponent(b.dataset.retry)}/retry`, { method: 'POST', body: {} }); toast(t?.state === 'open' ? ICONS.resolved : ICONS.warning, t?.state === 'open' ? `Raised ${t.number}` : `Still not raised: ${t?.error || 'unknown error'}`); viewServiceNow([cid]); } catch (err) { toast(ICONS.critical, err.message); b.disabled = false; }
   }));
   w.querySelectorAll('button[data-dev]').forEach((b) => b.addEventListener('click', () => openDevice(b.dataset.dev)));
+}
+
+
+// ------------------------------------------------------------------ one customer, everything about it
+async function viewCustomer(cid) {
+  const p = await api(`/api/admin/customers/${encodeURIComponent(cid)}/profile`);
+  const c = p.customer;
+  const e = p.estate;
+  const sn = p.servicenow;
+  const q = encodeURIComponent(cid);
+  const roleLabel = (r) => (S.roleLabels || {})[r] || { customer_admin: 'Customer admin', technical_user: 'Technical user', end_user: 'End user' }[r] || r;
+  const manage = (ok, href, label = 'Manage') => (ok ? `<a class="btn btn-outline btn-sm" href="${href}">${label}</a>` : '');
+  const card = (title, sub, body, action = '') => `<div class="card cust-card"><div class="card-head"><div><h2>${title}</h2>${sub ? `<div class="card-sub">${sub}</div>` : ''}</div>${action}</div>${body}</div>`;
+  const pct = (v) => (v === null || v === undefined ? '—' : `${v.toFixed ? v.toFixed(2) : v}%`);
+  const counts = (obj, labels) => Object.entries(obj).filter(([, n]) => n).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<span class="pill">${esc(labels?.[k] || k)} <b>${n}</b></span>`).join(' ') || '<span class="muted">None</span>';
+  const contact = (x) => (x ? `${esc(x.name || x.email || '')}${x.email && x.name ? ` <span class="muted">${esc(x.email)}</span>` : ''}${x.phone ? ` <span class="muted">${esc(x.phone)}</span>` : ''}` : '<span class="muted">Not set</span>');
+  const liveN = p.connections.filter((x) => x.mode === 'live').length;
+  const errN = p.connections.filter((x) => x.status?.state === 'error').length;
+  const snState = !sn.enabled ? 'Off' : sn.mode === 'live' ? 'Live' : 'Mock';
+  hero(c.name, `${c.mspName ? `${esc(c.mspName)} · ` : ''}${c.createdAt ? `Customer since ${fmtDate(c.createdAt)} · ` : ''}${c.mockData === false ? 'Live and uploaded data only' : 'Mock data on'}`, '<a href="#/customers">Customers</a>');
+  $('#view').innerHTML = `
+    <div class="cust-actions"><button class="btn btn-primary btn-sm" id="cuEnter">Enter customer</button><button class="btn btn-outline btn-sm" id="cuEdit">Edit details, sites &amp; users</button></div>
+    <div class="stats">
+      ${statTile('Devices', e.devices.toLocaleString(), `${e.rooms} rooms · ${p.sites.length} sites`, '')}
+      ${statTile('Needs attention', ((e.health.critical || 0) + (e.health.offline || 0)).toLocaleString(), `${e.health.offline || 0} offline · ${e.health.critical || 0} critical · ${e.health.warning || 0} warning`, (e.health.critical || 0) + (e.health.offline || 0) ? 'crit' : 'good')}
+      ${statTile('Availability (30 days)', pct(p.sla?.availability), `Target ${c.slaTarget}%${p.sla?.simulated ? ' · includes simulated history' : ''}`, p.sla?.availability === null || p.sla?.availability === undefined ? '' : p.sla.availability >= c.slaTarget ? 'good' : 'crit')}
+      ${statTile('Connections', p.connections.length, `${liveN} live · ${p.connections.length - liveN} mock${errN ? ` · ${errN} failing` : ''}`, errN ? 'crit' : '')}
+      ${statTile('ServiceNow', snState, sn.enabled ? `${sn.openTickets} open incident${sn.openTickets === 1 ? '' : 's'}` : 'Not raising incidents', sn.enabled ? (sn.failedTickets ? 'crit' : 'good') : '')}
+      ${statTile('Action inbox', p.inbox.open, `${p.inbox.byStatus.proposed || 0} to decide`, '')}
+    </div>
+    <div class="grid cols-2 cust-grid">
+      ${card('Customer details', '', `<dl class="kv">
+        <dt>Name</dt><dd>${esc(c.name)}</dd>
+        ${c.mspName ? `<dt>MSP</dt><dd>${esc(c.mspName)}</dd>` : ''}
+        <dt>Customer ID</dt><dd class="mono">${esc(c.id)}</dd>
+        <dt>Meeting platforms</dt><dd>${esc((c.platforms || []).join(', ') || '—')}</dd>
+        <dt>SLA target</dt><dd>${esc(c.slaTarget)}% availability</dd>
+        <dt>Mock data</dt><dd>${c.mockData === false ? 'Off: live connections and uploaded devices only' : 'On: sample devices while connections are in mock mode'}</dd>
+        <dt>Email sending</dt><dd>${p.email.configured ? `${esc(p.email.provider)} from ${esc(p.email.from || '')}` : `<span class="muted">Not set up on the server (dispatches open in the admin's email app)</span>`}</dd>
+      </dl>`, '<button class="btn btn-outline btn-sm" data-cu-edit>Edit</button>')}
+      ${card('Estate', `${e.devices.toLocaleString()} devices${e.manual ? `, ${e.manual} added by hand or CSV` : ''}${e.mock ? `, ${e.mock} from mock data` : ''}`, `
+        <div class="brk-bar" style="height:10px;margin-bottom:10px">${HEALTH_BARS.filter((h) => e.health[h]).map((h) => `<span class="f-${h}" style="flex:${e.health[h]}" title="${esc(HLABEL[h])}: ${e.health[h]}"></span>`).join('')}</div>
+        <div class="cust-pills">${counts(Object.fromEntries(HEALTH_BARS.map((h) => [h, e.health[h] || 0])), HLABEL)}</div>
+        <div class="section-title">Reported by</div>
+        <div class="cust-pills">${e.bySource.map((x) => `<span class="pill"><span class="oem-dot oem-${esc(x.oem)}"></span>${esc(x.name)} <b>${x.devices}</b></span>`).join(' ') || '<span class="muted">No devices yet</span>'}</div>
+        <div class="section-title">Firmware</div><div class="cust-pills">${counts(e.firmware, FW_LABEL)}</div>
+        <div class="section-title">Warranty</div><div class="cust-pills">${counts(e.warranty, W_LABEL)}</div>`, `<button class="btn btn-outline btn-sm" id="cuDevices">Open devices</button>`)}
+      ${card('Connections', 'Where this customer\'s devices come from. Secrets are encrypted and never shown.', `
+        <div class="table-wrap flat"><table class="cust-conn"><thead><tr><th>Source</th><th>Mode</th><th>Status</th><th>Last good sync</th><th>Every</th><th>Devices</th><th>Live settings</th></tr></thead><tbody>
+        ${p.connections.map((x) => `<tr><td><div class="cust-src"><div class="oem-logo oem-${esc(x.oem)}">${esc(OEM_SHORT[x.oem] || '?')}</div><div><b>${esc(x.oemName)}</b><div class="muted">${esc(x.name)}</div></div></div></td>
+          <td><span class="pill ${x.mode === 'live' ? 'live' : 'mock'}" style="padding:0 6px">${x.mode === 'live' ? 'Live' : 'Mock'}</span></td>
+          <td>${syncState(x.status || { state: 'never' })}${x.status?.error ? `<div class="muted sn-err">${esc(x.status.error)}</div>` : ''}</td>
+          <td>${x.status?.lastSuccessAt ? ago(x.status.lastSuccessAt) : '—'}</td>
+          <td>${fmtInterval(x.status?.intervalSec || 300)}</td>
+          <td>${(x.status?.deviceCount || 0).toLocaleString()}</td>
+          <td class="cust-settings">${x.mode === 'live' ? `${x.hasCredentials ? '<span class="stored">✓ credentials</span>' : '<b>No credentials</b>'}${x.settings && Object.keys(x.settings).length ? `<div class="muted mono">${Object.entries(x.settings).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join('<br>')}</div>` : ''}` : '<span class="muted">—</span>'}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No connections</td></tr>'}
+        </tbody></table></div>`, manage(p.can.connections, '#/connections')).replace('class="card cust-card"', 'class="card cust-card wide"')}
+      ${card('ServiceNow', sn.enabled ? (sn.mode === 'live' ? esc(sn.instanceUrl) : 'Mock mode: incidents are simulated') : 'Not raising incidents for this customer', `
+        <dl class="kv">
+          <dt>Status</dt><dd>${snState}${sn.lastTest ? ` · last test ${sn.lastTest.ok ? 'passed' : 'failed'} ${ago(sn.lastTest.at)}` : ''}</dd>
+          ${sn.mode === 'live' ? `<dt>User</dt><dd>${esc(sn.username || '—')} ${sn.hasPassword ? '<span class="stored">✓ password stored</span>' : '<span class="muted">no password</span>'}</dd>` : ''}
+          <dt>Assignment group</dt><dd>${esc(sn.assignmentGroup || '—')}</dd>
+          <dt>Raises incidents for</dt><dd>${[['offline', 'offline', 'offline'], ['critical', 'critical', 'critical'], ['warning', 'warning', 'warning'], ['reports', 'user reports', 'report'], ['dispatches', 'inbox dispatches', 'dispatch']].filter(([k]) => sn.triggers[k]).map(([, l, pk]) => `${l} (P${sn.priorities[pk]})`).join(', ') || 'nothing'}</dd>
+          <dt>Wait, resolve</dt><dd>${sn.delayMinutes} min · ${sn.autoResolve ? 'resolves on recovery' : 'left open on recovery'}</dd>
+        </dl>
+        ${sn.recent.length ? `<div class="section-title">Latest incidents</div><div class="cust-list">${sn.recent.map((t) => `<div>${ticketChip(t)} ${esc(t.title)} <span class="muted">${ago(t.createdAt)}</span></div>`).join('')}</div>` : ''}`, manage(p.can.connections, `#/servicenow/${q}`, sn.enabled ? 'Manage' : 'Set up'))}
+      ${card('Sites and contacts', `${p.sites.length} sites${p.contacts.sitesWithout.length ? ` · <b>${p.contacts.sitesWithout.length} without a contact</b>` : ''}`, `
+        <div class="table-wrap flat"><table><thead><tr><th>Site</th><th>Location</th><th>Devices</th><th>Contact (SPOC)</th></tr></thead><tbody>
+        ${p.sites.map((x) => `<tr><td><b>${esc(x.name)}</b><div class="muted">${esc(x.region || '')}</div></td><td>${esc([x.city, x.country].filter(Boolean).join(', ') || '—')}${x.lat !== null && x.lat !== undefined && x.lat !== '' ? '' : ' <span class="muted">(not on map)</span>'}</td><td>${x.devices}</td><td>${contact(x.contact)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No sites</td></tr>'}
+        </tbody></table></div>
+        <dl class="kv" style="margin-top:12px"><dt>Engineer / service desk</dt><dd>${contact(p.contacts.engineer)}</dd><dt>Renewals</dt><dd>${contact(p.contacts.renewals)}</dd>${p.contacts.rooms ? `<dt>Room contacts</dt><dd>${p.contacts.rooms}</dd>` : ''}</dl>`,
+        `<div style="display:flex;gap:6px">${p.can.contacts && p.can.inbox ? manage(true, `#/inbox/contacts/${q}`, 'Contacts') : ''}<button class="btn btn-outline btn-sm" data-cu-edit>Sites</button></div>`)}
+      ${card('Users', `${c.users.length} login${c.users.length === 1 ? '' : 's'}`, `
+        <div class="cust-list">${c.users.map((u) => `<div><b>${esc(u.name || u.email)}</b> <span class="muted">${esc(u.email)}</span> <span class="pill">${esc(roleLabel(u.role))}</span>${u.disabled ? ' <span class="pill">Disabled</span>' : ''}</div>`).join('') || '<div class="muted">No users yet</div>'}</div>`, p.can.users ? '<button class="btn btn-outline btn-sm" data-cu-edit>Manage</button>' : '')}
+      ${card('Standards', 'Firmware, warranty and lifecycle rules for this customer', `
+        <dl class="kv">
+          <dt>Customer baseline</dt><dd>${p.baseline.version ? `v${p.baseline.version}, ${esc(p.baseline.level === 'latest' ? 'highest level' : 'follows advisory')}${p.baseline.models ? `, ${p.baseline.models} model rules` : ''}${p.baseline.updatedAt ? ` <span class="muted">${ago(p.baseline.updatedAt)}${p.baseline.by ? ` by ${esc(p.baseline.by)}` : ''}</span>` : ''}` : 'v0: follows the advisory baseline'}</dd>
+          <dt>Warranty required</dt><dd>${p.baseline.policy?.warrantyRequired ? `Yes, notice ${p.baseline.policy.warrantyNoticeDays ?? 90} days` : 'No'}</dd>
+          <dt>Lifecycle limit</dt><dd>${esc({ eosale: 'End of sale', eos: 'End of support', eol: 'End of life', none: 'None' }[p.baseline.policy?.lifecycleLimit] || p.baseline.policy?.lifecycleLimit || '—')}</dd>
+          <dt>Role permissions</dt><dd>${p.roles.overrides ? `Customised for ${p.roles.roles.map((r) => esc(roleLabel(r))).join(', ')}` : 'Platform and MSP defaults'}</dd>
+        </dl>`, `<div style="display:flex;gap:6px">${manage(true, `#/baselines/${q}`, 'Baseline')}${manage(p.can.roles, `#/roles/customer/${q}`, 'Roles')}</div>`)}
+      ${card('Action inbox', p.inbox.lastCheck ? `Last checked ${ago(p.inbox.lastCheck.at)}` : 'Not checked yet', `<div class="cust-pills">${counts(p.inbox.byStatus, { proposed: 'To decide', approved: 'Approved', sent: 'Sent', failed: 'Failed', done: 'Done', declined: 'Declined', resolved: 'Cleared' })}</div>`, manage(p.can.inbox, `#/inbox/${q}`, 'Open inbox'))}
+      ${p.can.audit ? card('Recent changes', 'From the audit log', `<div class="cust-list">${p.audit.map((a) => `<div><span class="muted">${ago(a.at)}</span> <b>${esc(a.action)}</b> ${esc(a.target || '')}${a.by ? ` <span class="muted">by ${esc(a.by)}</span>` : ''}</div>`).join('') || '<div class="muted">Nothing yet</div>'}</div>`, manage(true, '#/audit', 'Audit log')) : ''}
+    </div>`;
+  $('#cuEnter').addEventListener('click', () => enterCustomer(cid));
+  const edit = async () => { if (isSuper() && !S.msps) S.msps = await api('/api/admin/msps').catch(() => []); openCustomerEdit(c); };
+  $('#cuEdit').addEventListener('click', edit);
+  document.querySelectorAll('[data-cu-edit]').forEach((b) => b.addEventListener('click', edit));
+  $('#cuDevices').addEventListener('click', () => setFilter('customer', cid, '#/devices'));
 }
