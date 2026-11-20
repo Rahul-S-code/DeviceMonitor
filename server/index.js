@@ -582,6 +582,10 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   // Sites and site contacts (SPOC): customer admins look after their own; MSP and super admins too.
+  app.get('/api/customers/:id/sites', requirePerm('sites.manage'), (req, res) => {
+    if (!ownCustomer(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
+    res.json({ sites: Object.entries(store.sitesFor(req.params.id)).map(([name, s]) => ({ name, ...s })) });
+  });
   app.put('/api/customers/:id/sites', requirePerm('sites.manage'), requireJson, (req, res) => {
     if (!ownCustomer(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
     if (!Array.isArray(req.body?.sites)) return res.status(400).json({ error: 'sites must be a list' });

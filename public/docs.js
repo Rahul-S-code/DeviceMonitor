@@ -53,8 +53,16 @@ function connectorChapter(c) {
 }
 
 /** Sections of the Documentation page: [{ id, title, html }]. */
-export function docSections({ connectors = [], role = 'customer_viewer', status = (h) => h } = {}) {
-  const admin = role !== 'customer_viewer';
+export function docSections({ connectors = [], role = 'end_user', perms = null, status = (h) => h } = {}) {
+  role = { provider_admin: 'msp_admin', customer_viewer: 'end_user' }[role] || role;
+  // Platform and MSP admins see the setup chapters; customer roles see what applies to them.
+  const admin = role === 'super_admin' || role === 'msp_admin';
+  const RANKS = { super_admin: 0, msp_admin: 1, customer_admin: 2, technical_user: 3, end_user: 4 };
+  const has = (k, uptoRole) => (perms ? perms.includes(k) : RANKS[role] <= RANKS[uptoRole]);
+  const editor = has('estate.edit', 'customer_admin');
+  const designer = has('rooms.design', 'technical_user');
+  const actor = has('devices.actions', 'technical_user');
+  const inbox = has('inbox.view', 'technical_user');
   const oems = connectors.filter((c) => c.kind !== 'platform');
   const platforms = connectors.filter((c) => c.kind === 'platform');
   return [
@@ -62,10 +70,13 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
       id: 'start', title: 'Getting started',
       html: `<p>Estate Monitor shows the health of every meeting-room and AV device across your customers' estates in one place. It reads each manufacturer's cloud (Poly Lens, Logitech Sync, Yealink, Neat, Crestron, Q-SYS and more), the meeting-platform portals (Zoom, Cisco Control Hub) and network monitors (Domotz), merges the same device reported by several sources into one record, and turns their states into one health scale with error codes, likely causes and what to check.</p>
       <h4>Who can do what</h4>
+      <p>There are five levels, each inside the one above. These are the defaults; see ${link('roles', 'Roles and permissions')} for what your organisation has changed.</p>
       ${table(['Role', 'Sees', 'Can change'], [
-        ['<b>Super admin</b>', 'Every customer', 'Everything a provider admin can, plus onboarding and deleting customers, users, the model master, and running API checks'],
-        ['<b>Provider admin</b>', 'Every customer (or one, after <b>Enter customer</b>)', 'Connections and keys, rooms, schematics, adding and editing devices (one at a time or by CSV), remote actions, Action inbox decisions and site contacts; reads the audit log and API tracker'],
-        ['<b>Customer</b>', 'Their own estate only', 'Nothing: read-only views of health, alerts, SLA, lifecycle and error codes'],
+        ['<b>Super admin</b>', 'The whole platform: every MSP and customer', 'Everything: MSPs and their admins, the model master, the advisory baseline, platform default permissions, API checks and the default sync interval'],
+        ['<b>MSP admin</b>', 'The customers of their own MSP (or one, after <b>Enter customer</b>)', 'Onboarding customers, connections and API keys, customer baselines, everything a customer admin can, users below them, permissions for customer roles in their MSP'],
+        ['<b>Customer admin</b>', 'Their own organisation', 'Devices, rooms and schematics, sites and site contacts, Action inbox decisions, technical users and end users, permissions for those two roles; reads the audit log'],
+        ['<b>Technical user</b>', 'Their own organisation', 'Diagnostics, remote actions (reboot, restart), syncing a connection now, room schematics and drawings, deciding and running Action inbox actions'],
+        ['<b>End user</b>', 'Their own organisation, read only', 'Nothing in the estate; they see room and device status and can <b>report an issue</b>'],
       ])}
       <h4>Health colours</h4>
       ${table(['State', 'Meaning'], [
@@ -93,14 +104,14 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
         '<b>Error codes and likely causes</b>: every red or amber device carries an Estate Monitor code (for example EM-NET-001 Device offline), what it means, the likely causes with the most likely first, what to check, and the vendor\'s own value (such as Webex <span class="mono">cameraNotDetected</span>) so it can be looked up with the vendor.',
         '<b>Cables to check</b>: if the room has a schematic, the device\'s cables and ports are listed, with any marked faulty or suspect.',
         '<b>Sources</b>: each cloud or portal that reports the device and its ID there.',
-        admin ? '<b>Edit</b>: move the device to another room, set its platform, tags, notes and warranty. Edits are stored on top of what the source reports, so the next sync keeps them. <b>Reset</b> returns to the source values.' : null,
-        admin ? '<b>Remote actions</b>: reboot, restart or standby through the API that reports the device. The panel names the API set (OEM cloud, meeting platform or network monitor), the exact endpoint, and the permission it needs. You confirm with a second click, a device can take one action a minute, and every action is in the audit log. On demo connections nothing is sent.' : null,
+        editor ? '<b>Edit</b>: move the device to another room, set its platform, tags, notes and warranty. Edits are stored on top of what the source reports, so the next sync keeps them. <b>Reset</b> returns to the source values.' : null,
+        actor ? '<b>Remote actions</b>: reboot, restart or standby through the API that reports the device. The panel names the API set (OEM cloud, meeting platform or network monitor), the exact endpoint, and the permission it needs. You confirm with a second click, a device can take one action a minute, and every action is in the audit log. On demo connections nothing is sent.' : null,
       ].filter(Boolean))}`,
     },
     {
       id: 'rooms', title: 'Rooms, schematics and documents',
-      html: `<p>Each room page has a <b>Room schematic</b> card.${admin ? ' Admins open the designer to draw how the room is wired:' : ''}</p>
-      ${admin ? list([
+      html: `<p>Each room page has a <b>Room schematic</b> card.${designer ? ' Open the designer to draw how the room is wired:' : ''}</p>
+      ${designer ? list([
         'Drag building blocks (video bars, codecs, cameras, displays, DSPs, switchers, HDBaseT extenders, USB hubs, network switches, power) onto the canvas. The room\'s own monitored devices are at the top of the palette and are added already linked to their live health.',
         'Every block has typed ports (HDMI in and out, USB, LAN/PoE, audio, power and so on). Drag from one port to another, or click one then the other, to run a cable. A port takes one cable.',
         'Give each cable a tag, length, condition (tested OK, suspect, faulty) and a note.',
@@ -108,7 +119,7 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
       ]) : ''}
       <p>Outside the designer the drawing is the troubleshooting view: <b>Room check</b> lists every unhealthy device with the cables and ports it depends on and what it affects downstream. Click an item to trace its signal path. The <b>cable schedule</b> below exports to CSV.</p>
       <p>The <b>Design documents</b> card holds uploaded drawings for the room: PDF, PNG, JPEG, Visio (.vsdx) or AutoCAD (.dwg), up to 10 MB each and 20 per room.</p>
-      ${admin ? '<p>Set a room\'s meeting platform on its page when no source reports it (Logitech Sync, for example, has no platform field).</p>' : ''}`,
+      ${editor ? '<p>Set a room\'s meeting platform on its page when no source reports it (Logitech Sync, for example, has no platform field).</p>' : ''}`,
     },
     ...(admin ? [{
       id: 'adding', title: 'Adding devices by hand or by CSV',
@@ -131,7 +142,25 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
       <h4>${link('lifecycle', 'Lifecycle')}</h4><p>Firmware compliance against each customer's baseline (and how far it drifts from the advisory), the versions in use, warranty status (in warranty, expiring within 90 days, expired, not recorded) and each model's end-of-sale, end-of-support and end-of-life dates from the model master.</p>
       <h4>${link('errors', 'Error codes')}</h4><p>The reference for every Estate Monitor code: what it means, likely causes and checks. Codes are the same whichever vendor reported the fault, so one runbook covers every make.</p>`,
     },
-    ...(admin ? [{
+    {
+      id: 'roles', title: 'Roles, users and permissions',
+      html: `<p>Estate Monitor has five levels of user. Each level sits inside the one above, can add users only at the levels below it and only in its own organisation, and can never give anyone a permission it doesn't hold itself.</p>
+      ${table(['Level', 'Who it is for', 'Responsibilities by default'], [
+        ['1. <b>Super admin</b>', 'The company that runs the platform', 'Creates MSPs and their admins; maintains the model master and the advisory baseline; sets the platform default permissions and role names; runs API checks; sets the default sync interval and the daily check schedule.'],
+        ['2. <b>MSP admin</b>', 'A managed service provider', 'Sees only its own MSP\'s customers. Onboards customers, sets up connectors and API keys, sets each customer\'s baseline, adds customer admins, technical users and end users, and adjusts permissions for those roles across its customers.'],
+        ['3. <b>Customer admin</b>', 'The customer\'s IT or workplace lead', 'Runs their own estate: device records, rooms, schematics, sites and site contacts; decides Action inbox actions; adds technical users and end users; adjusts permissions for those two roles; reads their audit log.'],
+        ['4. <b>Technical user</b>', 'Engineers and support staff', 'Sees every device with its diagnostics, runs remote actions such as a reboot, syncs a connection now, edits room schematics and drawings, decides and runs Action inbox actions.'],
+        ['5. <b>End user</b>', 'People who use the rooms', 'Read-only status of rooms and devices, and <b>Report an issue</b> on a room or device. Reports appear in the alert feed (filter <b>Reported</b>).'],
+      ])}
+      <h4>${link('roles', 'Roles and permissions')}</h4>
+      <p>Everyone can open this page to see each role's responsibilities and the permission matrix that applies to them. Permissions are set in layers: the built-in defaults, then the <b>platform</b> layer (super admin), then each <b>MSP</b> (super admin or that MSP's admin), then each <b>customer</b> (super admin, its MSP admin or its customer admin). Each layer changes only the roles below the editor's own. A highlighted cell differs from what the layer inherits; <b>Reset to inherited</b> clears the layer. A lower role never keeps a permission the role above it has lost. <b>View the estate</b> is always on and <b>Run the platform</b> is always super admin only. The super admin can also rename the roles, for example "Field engineer" for technical user.</p>
+      ${admin || has('users.manage', 'customer_admin') ? `<h4>${link('users', 'Users')}</h4>
+      <p>Lists the users you look after. <b>Add user</b> offers only the roles below yours and the customers (or, for the super admin, MSPs) in your scope. <b>Manage</b> changes a user's name or role (between customer roles), sets a new password, disables the account (it can't sign in until enabled again) or removes it. You can't change your own account here or anyone at your level.</p>` : ''}
+      ${role === 'super_admin' ? `<h4>${link('msps', 'MSPs')}</h4><p>Create an MSP, add its admins and open its permission layer. An MSP can be deleted only when it has no customers; move a customer to another MSP from <b>Customers › Sites &amp; users</b>. Existing installations put every customer and every former provider admin in a <b>Default MSP</b> (rename it here, or set <span class="mono">DEFAULT_MSP_NAME</span> before the first start).</p>` : ''}
+      ${has('sites.manage', 'customer_admin') && !admin ? `<h4>${link('sites', 'Sites')}</h4><p>Customer admins keep their own site list and map positions here. Site, room, engineer and renewals contacts are under <b>Site contacts</b> in the Action inbox.</p>` : ''}
+      <p>Every sign-in, user change, role change and permission change is recorded in the ${link('audit', 'audit log')}. MSP admins see the entries for their own customers and MSP; customer admins see their own customer's.</p>`,
+    },
+    ...(inbox ? [{
       id: 'inbox', title: 'Action inbox',
       html: `<p>Every day the ${link('inbox', 'Action inbox')} checks each customer's estate and proposes actions. You answer <b>Yes</b> or <b>No</b>. Pick a customer at the top, or look at all customers at once.</p>
       <h4>What the daily check looks for</h4>
@@ -159,17 +188,17 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
       <h4>Site contacts</h4>
       <p><b>Site contacts</b> on the inbox page holds, per customer: a local contact (SPOC) for each site with name, email and phone; optional room contacts (a room contact gets that room's dispatches, with the site contact in copy); an engineer or service desk contact for firmware tasks; and a renewals contact for warranty and replacements.</p>
       <h4>Schedule</h4>
-      <p>The checks run every day at 06:00 UTC by default. The super admin changes the time or switches them off with <b>Change</b> beside the schedule. Any admin can press <b>Run checks now</b> for one customer or all of them.</p>
-      ${note('Only admins see the Action inbox. An admin who has entered a customer sees and decides only that customer\'s actions.')}`,
+      <p>The checks run every day at 06:00 UTC by default. The super admin changes the time or switches them off with <b>Change</b> beside the schedule. Anyone who can decide actions can press <b>Run checks now</b> for the customers they look after.</p>
+      ${note('By default MSP admins, customer admins and technical users see the Action inbox and decide its actions; end users don\'t. Site contacts are edited by admins. The checks schedule is set by the super admin. An admin who has entered a customer sees and decides only that customer\'s actions.')}`,
     }] : []),
     ...(admin ? [{
       id: 'configure', title: 'Configuration',
       html: `<h4>${link('connections', 'Connections')}</h4>
       <p>A connection links one customer to one source. Each starts on <b>Mock data</b> (built-in demo data in the same format as the real API, no keys needed). To go live: <b>Configure</b>, choose <b>Live API</b>, paste the settings and secrets, press <b>Test connection</b>, then <b>Save</b>. Secrets are encrypted (AES-256-GCM) before they are stored and are never shown again; to change one, paste a new value. <b>Sync now</b> runs a sync straight away; otherwise every connection syncs on a schedule: every 5 minutes by default, changed under <b>Configure › Sync schedule</b> (a default for all connections, and an interval per connection).</p>
       <h4>${link('models', 'Model master')}</h4><p>The catalogue of make, model and device type, which connectors can monitor each model, the approved firmware baseline, lifecycle dates and known releases. Every firmware version first seen in the fleet is added automatically. Only the super admin edits it.</p>
-      ${role === 'super_admin' ? `<h4>${link('customers', 'Customers')}</h4><p><b>Onboard customer</b> creates the customer, its sites (city presets fill in map positions), user logins, connections (on demo data to start) and optionally pre-loaded rooms and schematics. Set each customer's SLA target under Sites and users.</p>` : ''}
+      <h4>${link('customers', 'Customers')}</h4><p><b>Onboard customer</b> creates the customer, its sites (city presets fill in map positions), its first user logins with a role each (customer admin by default), connections (on demo data to start) and optionally pre-loaded rooms and schematics. MSP admins onboard into their own MSP; the super admin picks the MSP. Set each customer's SLA target under Sites and users.</p>
       <h4>${link('apis', 'API tracker')}</h4><p>Every external API the app uses, which customers and connections use it, live call counts and errors, and the result of reachability checks (a 401 or 403 counts as up because the service answered). The super admin runs <b>Check all APIs</b>, which also tests each connection with its own credentials. Checks also run every 30 minutes.</p>
-      <h4>${link('audit', 'Audit log')}</h4><p>Sign-ins, customer views, device edits and imports, actions, Action inbox decisions and dispatch emails, site contacts, room and schematic changes, onboarding, users, connection changes and tests (never secret values), model master changes and API checks. Filter and export to CSV.</p>`,
+      <h4>${link('audit', 'Audit log')}</h4><p>Sign-ins, customer views, device edits and imports, actions, Action inbox decisions and dispatch emails, site contacts, room and schematic changes, onboarding, MSPs, users, role changes and permission changes, reported issues, connection changes and tests (never secret values), model master changes and API checks. Filter and export to CSV.</p>`,
     }] : []),
     {
       id: 'connectors', title: 'Connectors',
@@ -202,6 +231,7 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
       ${table(['Setting', 'What it does'], [
         ['<span class="mono">MASTER_KEY</span>', 'Encrypts API secrets. 64 hex characters. Generated into data/master.key if not set.'],
         ['<span class="mono">SUPERADMIN_PASSWORD</span>, <span class="mono">DEMO_PASSWORD</span>', 'Passwords for the super admin and the demo users.'],
+        ['<span class="mono">DEFAULT_MSP_NAME</span>', 'Name of the MSP that existing customers and provider admins move into when upgrading to five-tier roles (default "Default MSP"; rename it later under MSPs).'],
         ['<span class="mono">SHOW_DEMO_ACCOUNTS</span>', 'Shows the demo logins on the sign-in page.'],
         ['<span class="mono">SYNC_INTERVAL_SECONDS</span>', 'Starting default for how often connections sync (default 300 seconds). Configure › Sync schedule overrides it.'],
         ['<span class="mono">SYNC_CONCURRENCY</span>, <span class="mono">SYNC_TIMEOUT_SECONDS</span>', 'Connections that may sync at once (default 4) and how long one sync may take (default 120 s).'],

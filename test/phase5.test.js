@@ -528,7 +528,7 @@ test('bulk import respects the customer an admin has entered', async (t) => {
 
 test('documentation covers every connector and hides admin chapters from customers', async (t) => {
   const connectors = CONNECTORS.map((C) => C.describe());
-  const admin = docSections({ connectors, role: 'provider_admin' });
+  const admin = docSections({ connectors, role: 'msp_admin' });
   const html = admin.map((s) => s.html).join('');
   for (const C of CONNECTORS) {
     assert.ok(html.includes(`id="doc-conn-${C.oem}"`), `${C.oem} chapter`);
@@ -536,7 +536,7 @@ test('documentation covers every connector and hides admin chapters from custome
   }
   assert.ok(admin.some((s) => s.id === 'adding') && admin.some((s) => s.id === 'hosting'));
   assert.ok(html.includes('Cisco Control Hub'));
-  const viewer = docSections({ connectors, role: 'customer_viewer' });
+  const viewer = docSections({ connectors, role: 'end_user' });
   assert.ok(!viewer.some((s) => ['adding', 'configure', 'hosting'].includes(s.id)));
   assert.ok(new Set(admin.map((s) => s.id)).size === admin.length);
   const { base } = await startApp(t);
