@@ -135,6 +135,7 @@ const NAV_ICON = {
   devices: '<rect x="2" y="3" width="12" height="8" rx="1.5"/><path d="M5.5 14h5M8 11v3"/>',
   alerts: '<path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 2h-11zM6.5 14.5h3"/>',
   sla: '<path d="M2 12a6 6 0 1 1 12 0"/><path d="M8 12l3-4"/>',
+  baselines: '<path d="M8 1.5l5.5 2v4.2c0 3.2-2.3 5.8-5.5 6.8-3.2-1-5.5-3.6-5.5-6.8V3.5z"/><path d="M5.5 8.2l1.7 1.7 3.3-3.4"/>',
   lifecycle: '<path d="M13.5 6.5A5.5 5.5 0 0 0 3 5M2.5 9.5A5.5 5.5 0 0 0 13 11"/><path d="M3 2v3h3M13 14v-3h-3"/>',
   connections: '<circle cx="4" cy="8" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="12" cy="12" r="2"/><path d="M5.8 7l4.4-2.2M5.8 9l4.4 2.2"/>',
   models: '<path d="M2.5 4.5L8 2l5.5 2.5v7L8 14l-5.5-2.5z"/><path d="M2.5 4.5L8 7l5.5-2.5M8 7v7"/>',
@@ -145,12 +146,12 @@ const NAV_ICON = {
   docs: '<path d="M3 2.5h7l3 3v8H3z"/><path d="M10 2.5v3h3M5.5 8h5M5.5 10.5h5"/>',
 };
 const navIcon = (k) => `<svg class="nav-ic" viewBox="0 0 16 16" aria-hidden="true">${NAV_ICON[k]}</svg>`;
-const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation' };
+const ROUTE_TITLE = { overview: 'Overview', map: 'Map', estate: 'Sites & rooms', devices: 'Devices', alerts: 'Alerts', sla: 'Service levels', lifecycle: 'Lifecycle', baselines: 'Baselines', connections: 'Connections', models: 'Model master', customers: 'Customers', audit: 'Audit log', apis: 'API tracker', errors: 'Error codes', docs: 'Documentation' };
 
 function navGroups() {
   return [
     ['Monitor', ['overview', 'map', 'estate', 'devices', 'alerts']],
-    ['Service', ['sla', 'lifecycle', 'errors']],
+    ['Service', ['sla', 'lifecycle', 'baselines', 'errors']],
     ['Configure', ['connections', ...(isAdmin() ? ['models'] : []), ...(isSuper() ? ['customers'] : []), ...(isAdmin() ? ['apis', 'audit'] : [])]],
     ['Help', ['docs']],
   ];
@@ -229,6 +230,7 @@ async function navigate() {
     else if (r.name === 'map') await viewMap(r.args);
     else if (r.name === 'customers' && isSuper()) await viewCustomers();
     else if (r.name === 'lifecycle') await viewLifecycle();
+    else if (r.name === 'baselines') await viewBaselines(r.args);
     else if (r.name === 'sla') await viewSla();
     else if (r.name === 'models' && isAdmin()) await viewModels();
     else if (r.name === 'audit' && isAdmin()) await viewAudit();
@@ -378,9 +380,9 @@ function serviceStrip(sla, life) {
   if (life) {
     const f = life.firmware; const n = (k) => f[k] || 0;
     const rated = n('compliant') + n('ahead') + n('behind');
-    tiles.push(['#/lifecycle', 'Firmware compliance', rated ? `${(((n('compliant') + n('ahead')) / rated) * 100).toFixed(1)}%` : '—', `${n('behind')} below approved baseline`, n('behind') ? 'warn' : 'good']);
+    tiles.push(['#/lifecycle', 'Firmware compliance', rated ? `${(((n('compliant') + n('ahead')) / rated) * 100).toFixed(1)}%` : '—', `${n('behind')} below customer baseline`, n('behind') ? 'warn' : 'good']);
     const w = life.warranty;
-    tiles.push(['#/lifecycle', 'Warranty', `${w.expired || 0} expired`, `${w.expiring || 0} expire within 90 days`, w.expired ? 'crit' : w.expiring ? 'warn' : 'good']);
+    tiles.push(['#/lifecycle', 'Warranty', `${w.expired || 0} expired`, `${w.expiring || 0} expire within the notice period`, w.expired ? 'crit' : w.expiring ? 'warn' : 'good']);
   }
   return `<div class="stats service-strip">${tiles.map(([href, l, v, sub, tone]) => `<a class="stat ${tone}" href="${href}"><div class="lbl">${l}</div><div class="val">${v}</div><div class="pct">${sub}</div></a>`).join('')}</div>`;
 }
@@ -2116,7 +2118,7 @@ function openCustomerEdit(c) {
 // ------------------------------------------------------------------ lifecycle helpers
 const FW_LABEL = { compliant: 'At baseline', ahead: 'Ahead of baseline', behind: 'Below baseline', 'no-baseline': 'No baseline set', uncatalogued: 'Model not in master', unknown: 'Not reported' };
 const FW_TONE = { compliant: 'good', ahead: 'good', behind: 'crit', 'no-baseline': 'mute', uncatalogued: 'mute', unknown: 'mute' };
-const W_LABEL = { active: 'In warranty', expiring: 'Expires within 90 days', expired: 'Expired', unknown: 'Not recorded' };
+const W_LABEL = { active: 'In warranty', expiring: 'Expiring soon', expired: 'Expired', unknown: 'Not recorded' };
 const W_TONE = { active: 'good', expiring: 'warn', expired: 'crit', unknown: 'mute' };
 const LC_LABEL = { supported: 'Supported', soon: 'Milestone within 12 months', eosale: 'End of sale', eos: 'End of support', eol: 'End of life', nodates: 'No lifecycle dates', notannounced: 'EOL not announced', discontinued: 'Discontinued, no dates', unknown: 'Not in model master' };
 const LC_TONE = { supported: 'good', soon: 'warn', eosale: 'warn', eos: 'crit', eol: 'crit', nodates: 'mute', notannounced: 'mute', discontinued: 'warn', unknown: 'mute' };
@@ -2157,7 +2159,8 @@ function lifecycleSection(d) {
   return `<div class="section-title">Firmware, warranty and lifecycle</div>
     <dl class="kv">
       <dt>Firmware</dt><dd><span class="mono">${esc(d.firmware || '—')}</span> ${chip(FW_LABEL[d.firmwareStatus] || 'Unknown', FW_TONE[d.firmwareStatus])}</dd>
-      <dt>Approved baseline</dt><dd class="mono">${esc(d.baseline || '—')}</dd>
+      <dt>Customer baseline</dt><dd><span class="mono">${esc(d.baseline || '—')}</span> <span class="muted" style="font-size:12px">${esc({ advisory: 'follows advisory', latest: 'highest level', customer: 'set by customer', 'not enforced': 'not enforced' }[d.baselineSource] || '')} · <a href="#/baselines/${esc(d.customerId)}">v${d.baselineVersion ?? 0}</a></span></dd>
+      <dt>Advisory baseline</dt><dd><span class="mono">${esc(d.advisoryBaseline || '—')}</span> ${d.baselineDrift && d.baselineDrift !== 'same' ? chip(DRIFT_LABEL[d.baselineDrift] || d.baselineDrift, DRIFT_TONE[d.baselineDrift]) : ''}${d.advisoryStatus === 'behind' && d.firmwareStatus !== 'behind' ? ` ${chip('Below advisory', 'warn')}` : ''}</dd>
       <dt>Warranty</dt><dd>${chip(W_LABEL[d.warrantyStatus] || 'Not recorded', W_TONE[d.warrantyStatus])} ${d.warrantyExpires ? `until ${fmtDate(d.warrantyExpires)}` : ''}
         ${d.warrantyType || d.warrantySource ? `<div class="muted" style="font-size:12px">${esc([d.warrantyType, d.warrantySource && `from ${d.warrantySource}`].filter(Boolean).join(' · '))}</div>` : ''}</dd>
       ${d.contractRef ? `<dt>Contract</dt><dd class="mono">${esc(d.contractRef)}</dd>` : ''}
@@ -2174,7 +2177,7 @@ function lifecycleSection(d) {
 // ------------------------------------------------------------------ lifecycle view
 async function viewLifecycle() {
   const lc = await api(`/api/lifecycle${qs()}`);
-  hero('Lifecycle', `Firmware against the approved baseline, warranty cover, and end-of-sale, support and life dates from the model master. ${lc.total} devices.`);
+  hero('Lifecycle', `Firmware, warranty and lifecycle against each customer's baseline, with drift from our advisory baseline. ${lc.total} devices.`);
   const n = (o, k) => o[k] || 0;
   const f = lc.firmware; const w = lc.warranty; const l = lc.lifecycle;
   const rated = n(f, 'compliant') + n(f, 'ahead') + n(f, 'behind');
@@ -2182,16 +2185,22 @@ async function viewLifecycle() {
   const pastSupport = n(l, 'eos') + n(l, 'eol');
   $('#view').innerHTML = `
     <div class="stats">
-      ${statTile('Firmware compliance', compliance, `${n(f, 'behind')} devices below baseline · ${rated} with a baseline`, n(f, 'behind') ? 'warn' : 'good')}
-      ${statTile('Warranty expired', n(w, 'expired'), `${n(w, 'expiring')} more expire within 90 days`, n(w, 'expired') ? 'crit' : 'good')}
+      ${statTile('Firmware compliance', compliance, `${n(f, 'behind')} below customer baseline · ${n(lc.advisoryFirmware, 'behind')} below advisory`, n(f, 'behind') ? 'warn' : 'good')}
+      ${statTile('Warranty expired', n(w, 'expired'), `${n(w, 'expiring')} more expire within the notice period`, n(w, 'expired') ? 'crit' : 'good')}
       ${statTile('Past end of support', pastSupport, `${n(l, 'eol')} end of life · ${n(l, 'eosale')} end of sale`, pastSupport ? 'crit' : 'good')}
       ${statTile('Missing lifecycle dates', n(l, 'nodates') + n(l, 'unknown'), isSuper() ? '<a href="#/models">Add them in the model master</a>' : 'Maintained in the model master', '')}
     </div>
+    <div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Baselines in force</h2><div class="card-sub">Each customer's own baseline (versioned). Advisory v${lc.advisory.version}: ${esc(policyText(lc.advisory.policy))}</div></div><a class="pill blue" href="#/baselines">Baselines</a></div>
+      <div class="table-wrap flat"><table><thead><tr><th>Customer</th><th>Version</th><th>Firmware level</th><th>Warranty and lifecycle rules</th><th>Meets baseline</th><th>Meets own, below advisory</th></tr></thead><tbody>
+      ${lc.baselines.map((x) => `<tr><td><a href="#/baselines/${esc(x.customerId)}"><b>${esc(x.customerName)}</b></a></td><td>v${x.version}${x.updatedAt ? `<div class="muted" style="font-size:12px">${fmtDate(x.updatedAt)}</div>` : ''}</td>
+        <td>${esc(LEVEL_SHORT[x.level] || x.level)}${x.exceptions ? ` · ${x.exceptions} exception${x.exceptions === 1 ? '' : 's'}` : ''}</td><td style="font-size:12.5px">${x.policySource === 'customer' ? 'Own: ' : 'Advisory: '}${esc(policyText(x.policy))}</td>
+        <td>${x.devices ? `${x.compliant} of ${x.devices}` : '—'}</td><td>${x.meetsCustomerBelowAdvisory ? chip(x.meetsCustomerBelowAdvisory, 'warn') : '0'}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No customers</td></tr>'}
+      </tbody></table></div></div>
     <div class="grid cols-2" style="margin-bottom:18px">
-      <div class="card"><div class="card-head"><div><h2>Firmware by model</h2><div class="card-sub">Versions running in the fleet against the approved baseline</div></div>${isAdmin() ? '<a class="pill blue" href="#/models">Model master</a>' : ''}</div>
-        <div class="table-wrap flat"><table><thead><tr><th>Model</th><th>Baseline</th><th>Devices</th><th>Below</th><th>Versions in fleet</th></tr></thead><tbody>
-        ${lc.models.map((m) => `<tr><td><b>${esc(m.make)}</b> ${esc(shortModel(m.make, m.model))}${m.modelId ? '' : ' <span class="muted">(not in master)</span>'}</td><td class="mono">${esc(m.baseline || '—')}</td><td>${m.total}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td>
-          <td>${Object.entries(m.versions).sort((a, b) => cmpVer(b[0], a[0])).map(([v, c]) => `<span class="pill mono ${m.baseline && cmpVer(v, m.baseline) < 0 ? 'bad' : ''}">${esc(v)} × ${c}</span>`).join(' ') || '—'}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No devices</td></tr>'}
+      <div class="card"><div class="card-head"><div><h2>Firmware by model</h2><div class="card-sub">Versions running in the fleet against the customer's target and our advisory</div></div>${isAdmin() ? '<a class="pill blue" href="#/models">Model master</a>' : ''}</div>
+        <div class="table-wrap flat"><table><thead><tr><th>Model</th><th>Advisory</th><th>Customer target</th><th>Devices</th><th>Below target</th><th>Versions in fleet</th></tr></thead><tbody>
+        ${lc.models.map((m) => `<tr><td><b>${esc(m.make)}</b> ${esc(shortModel(m.make, m.model))}${m.modelId ? '' : ' <span class="muted">(not in master)</span>'}</td><td class="mono">${esc(m.advisory || '—')}</td><td class="mono">${m.mixedTargets ? '<span class="muted">Varies by customer</span>' : esc(m.baseline || '—')}${!m.mixedTargets && m.baseline && m.advisory && m.baseline !== m.advisory ? ` ${chip(cmpVer(m.baseline, m.advisory) > 0 ? 'above' : 'below', cmpVer(m.baseline, m.advisory) > 0 ? 'good' : 'warn')}` : ''}</td><td>${m.total}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td>
+          <td>${Object.entries(m.versions).sort((a, b) => cmpVer(b[0], a[0])).map(([v, c]) => `<span class="pill mono ${m.baseline && cmpVer(v, m.baseline) < 0 ? 'bad' : ''}">${esc(v)} × ${c}</span>`).join(' ') || '—'}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No devices</td></tr>'}
         </tbody></table></div></div>
       <div class="card"><div class="card-head"><div><h2>Warranty</h2><div class="card-sub">From Logitech Sync where it reports it, otherwise entered on the device</div></div></div>
         ${barList(['active', 'expiring', 'expired', 'unknown'].map((k) => ({ label: W_LABEL[k], n: n(w, k), tone: W_TONE[k] })), lc.total)}
@@ -2199,15 +2208,132 @@ async function viewLifecycle() {
         ${barList(['supported', 'soon', 'eosale', 'eos', 'eol', 'discontinued', 'notannounced', 'nodates', 'unknown'].map((k) => ({ label: LC_LABEL[k], n: n(l, k), tone: LC_TONE[k] })).filter((x) => x.n), lc.total)}
       </div>
     </div>
-    <div class="card"><div class="card-head"><div><h2>Devices needing attention</h2><div class="card-sub">${lc.attentionTotal} devices below baseline, out of warranty or past a lifecycle milestone${lc.attentionTotal > lc.attention.length ? ` (first ${lc.attention.length} shown)` : ''}</div></div></div>
+    <div class="card"><div class="card-head"><div><h2>Devices needing attention</h2><div class="card-sub">${lc.attentionTotal} devices failing their customer's baseline (firmware, warranty or lifecycle limit), or close to it${lc.attentionTotal > lc.attention.length ? ` (first ${lc.attention.length} shown)` : ''}</div></div></div>
       ${lc.attention.length ? `<div class="table-wrap"><table><thead><tr><th>Device</th>${isAdmin() && !acting() ? '<th>Customer</th>' : ''}<th>Site / room</th><th>Firmware</th><th>Warranty</th><th>Lifecycle</th></tr></thead><tbody>
         ${lc.attention.map((d) => `<tr data-id="${esc(d.id)}"><td><b>${esc(d.make)}</b> ${esc(shortModel(d.make, d.model))}<div class="muted mono" style="font-size:11.5px">${esc(d.serial || '')}</div></td>${isAdmin() && !acting() ? `<td>${esc(d.customerName)}</td>` : ''}
           <td>${esc(d.site)}<div class="muted">${esc(d.room)}</div></td>
-          <td><span class="mono">${esc(d.firmware || '—')}</span> ${d.firmwareStatus === 'behind' ? chip(`baseline ${d.baseline}`, 'crit') : ''}</td>
+          <td><span class="mono">${esc(d.firmware || '—')}</span> ${d.firmwareStatus === 'behind' ? chip(`target ${d.baseline}`, 'crit') : d.advisoryStatus === 'behind' ? chip(`advisory ${d.advisoryBaseline}`, 'warn') : ''}</td>
           <td>${chip(W_LABEL[d.warrantyStatus], W_TONE[d.warrantyStatus])}${d.warrantyExpires ? `<div class="muted" style="font-size:12px">${fmtDate(d.warrantyExpires)}</div>` : ''}</td>
           <td>${chip(d.lifecycle?.label || '—', LC_TONE[d.lifecycle?.stage])}${d.lifecycle?.date ? `<div class="muted" style="font-size:12px">${fmtDate(d.lifecycle.date)}</div>` : ''}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">Nothing needs attention</div>'}</div>`;
   document.querySelectorAll('tbody tr[data-id]').forEach((tr) => tr.addEventListener('click', () => openDevice(tr.dataset.id)));
+}
+
+// ------------------------------------------------------------------ baselines view
+// Two tiers: the provider's advisory baseline (model master firmware + advisory policy),
+// and each customer's own versioned baseline, which can follow, lower or raise it.
+const DRIFT_LABEL = { above: 'Above advisory', same: 'Same as advisory', below: 'Below advisory', 'not-enforced': 'Not enforced', 'no-advisory': 'No advisory set' };
+const DRIFT_TONE = { above: 'good', same: 'mute', below: 'warn', 'not-enforced': 'warn', 'no-advisory': 'mute' };
+const LEVEL_SHORT = { advisory: 'Follows advisory', latest: 'Highest level' };
+const LC_LIMIT = { eosale: 'end of sale', eos: 'end of support', eol: 'end of life', none: 'none' };
+const policyText = (p) => (p ? `Warranty ${p.warrantyRequired ? 'required' : 'not required'} · ${p.warrantyNoticeDays}-day notice · ${p.lifecycleLimit === 'none' ? 'lifecycle not enforced' : `fails at ${LC_LIMIT[p.lifecycleLimit] || p.lifecycleLimit}`}` : '');
+function ruleOptions(m, level, rule) {
+  const def = level === 'latest' ? `Default: highest (${m.latest || m.advisory || '—'})` : `Default: advisory (${m.advisory || '—'})`;
+  const vers = [...new Set([...(m.releases || []), ...(rule && !['advisory', 'latest', 'none'].includes(rule) ? [rule] : [])])].sort((a, b) => cmpVer(b, a));
+  const o = (v, l) => `<option value="${esc(v)}" ${(rule || '') === v ? 'selected' : ''}>${esc(l)}</option>`;
+  return [o('', def), level === 'latest' ? o('advisory', `Advisory (${m.advisory || '—'})`) : o('latest', `Highest (${m.latest || '—'})`), o('none', 'Not enforced'),
+    `<optgroup label="Pin a version">${vers.map((v) => o(v, `${v}${v === m.advisory ? ' (advisory)' : ''}${v === m.latest ? ' (newest)' : ''}`)).join('')}</optgroup>`, o('__other', 'Other version…')].join('');
+}
+
+async function viewBaselines(args = []) {
+  const custs = S.customers;
+  const cid = acting() || S.me.customerId || (custs.some((c) => c.id === args[0]) ? args[0] : custs[0]?.id);
+  hero('Baselines', 'The provider\'s advisory baseline, and each customer\'s own baseline for firmware, warranty and lifecycle. A customer can follow the advisory, aim for the highest level, or set individual models lower or higher. Devices are judged against their customer\'s baseline, with drift from the advisory shown alongside.');
+  if (!cid) { $('#view').innerHTML = '<div class="card"><div class="empty">No customers yet</div></div>'; return; }
+  const viewVersion = args[1] !== undefined && args[1] !== '' ? Number(args[1]) : null;
+  const [adv, b] = await Promise.all([api('/api/baselines/advisory'), api(`/api/baselines/customers/${encodeURIComponent(cid)}${viewVersion !== null ? `?version=${viewVersion}` : ''}`)]);
+  const historic = viewVersion !== null && viewVersion !== b.latestVersion;
+  const canEdit = isAdmin() && !historic;
+  const pol = b.current.policy || adv.policy;
+  const custPolicy = !!b.current.policy;
+  const withDevices = b.models.filter((m) => m.devices);
+  const below = withDevices.filter((m) => m.drift === 'below' || m.drift === 'not-enforced').length;
+  const above = withDevices.filter((m) => m.drift === 'above').length;
+  const limitOpts = (sel) => Object.entries(adv.lifecycleLimits).map(([k, l]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  const custPick = !acting() && isAdmin() && custs.length > 1 ? `<select id="blCust" class="pill" style="font-weight:600">${custs.map((c) => `<option value="${esc(c.id)}" ${c.id === cid ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '';
+  $('#view').innerHTML = `
+    <div class="stats">
+      ${statTile(`${esc(b.customerName)} baseline`, `v${b.current.version}`, `${esc(LEVEL_SHORT[b.current.level] || b.current.level)} · ${b.current.exceptions} model exception${b.current.exceptions === 1 ? '' : 's'}`, '')}
+      ${statTile('Models above advisory', above, 'Customer asks for newer firmware than advised', above ? 'good' : '')}
+      ${statTile('Models below advisory', below, 'Lower than advised, or not enforced', below ? 'warn' : 'good')}
+      ${statTile('Advisory baseline', `v${adv.version}`, policyText(adv.policy, adv.lifecycleLimits), '')}
+    </div>
+    <div class="grid cols-2" style="margin-bottom:18px">
+      <div class="card"><div class="card-head"><div><h2>Advisory baseline</h2><div class="card-sub">Recommended by us for every customer. Firmware targets are the approved baselines in the model master.</div></div>${isAdmin() ? '<a class="pill blue" href="#/models">Model master</a>' : ''}</div>
+        <div id="advMsg"></div>
+        <div class="grid cols-2" style="gap:10px">
+          <div class="field"><label class="inline-chk"><input type="checkbox" id="advW" ${adv.policy.warrantyRequired ? 'checked' : ''} ${isSuper() ? '' : 'disabled'}> Warranty cover required</label><div class="help">Expired warranty fails the baseline.</div></div>
+          <div class="field"><label>Warranty notice (days)</label><input id="advDays" type="number" min="0" max="730" value="${adv.policy.warrantyNoticeDays}" ${isSuper() ? '' : 'disabled'}></div>
+          <div class="field"><label>Lifecycle limit</label><select id="advLc" ${isSuper() ? '' : 'disabled'}>${limitOpts(adv.policy.lifecycleLimit)}</select><div class="help">Devices at or past this stage fail the baseline.</div></div>
+          ${isSuper() ? '<div class="field"><label>Change note</label><input id="advNote" placeholder="Why it changed"></div>' : ''}
+        </div>
+        ${isSuper() ? '<div style="display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" id="advSave">Save advisory as new version</button></div>' : ''}
+        ${adv.versions.length ? `<div class="section-title">Advisory history</div><div class="table-wrap flat"><table><thead><tr><th>Version</th><th>Saved</th><th>Policy</th><th>Note</th></tr></thead><tbody>
+          ${adv.versions.map((v) => `<tr><td><b>v${v.version}</b></td><td>${fmtDate(v.createdAt)}<div class="muted" style="font-size:12px">${esc(v.createdBy || '')}</div></td><td style="font-size:12.5px">${esc(policyText(v.policy, adv.lifecycleLimits))}</td><td>${esc(v.note || '')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="help block">Version 0: the built-in default policy.</div>'}
+      </div>
+      <div class="card"><div class="card-head"><div><h2>${esc(b.customerName)} baseline ${historic ? `v${b.current.version} <span class="chip warn">Earlier version</span>` : `v${b.current.version}`}</h2><div class="card-sub">${b.current.createdAt ? `Saved ${fmtDate(b.current.createdAt)}${b.current.createdBy ? ` by ${esc(b.current.createdBy)}` : ''}` : 'Not customised yet: follows the advisory'}${b.current.note ? ` · ${esc(b.current.note)}` : ''}</div></div>${custPick}</div>
+        <div id="blMsg"></div>
+        ${historic ? `<div class="notice info">You're looking at version ${b.current.version}. The current version is v${b.latestVersion}. <a href="#/baselines/${esc(cid)}">Back to current</a></div>` : ''}
+        <div class="field"><label>Firmware level</label><select id="blLevel" ${canEdit ? '' : 'disabled'}>${Object.entries(b.levels).map(([k, l]) => `<option value="${k}" ${b.current.level === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          <div class="help">The default for every model. Set exceptions per model in the table below, lower or higher than advisory.</div></div>
+        <div class="field"><label class="inline-chk"><input type="checkbox" id="blOwnPol" ${custPolicy ? 'checked' : ''} ${canEdit ? '' : 'disabled'}> Own warranty and lifecycle rules (otherwise follow the advisory policy)</label></div>
+        <div class="grid cols-2" style="gap:10px" id="blPol">
+          <div class="field"><label class="inline-chk"><input type="checkbox" id="blW" ${pol.warrantyRequired ? 'checked' : ''}> Warranty cover required</label></div>
+          <div class="field"><label>Warranty notice (days)</label><input id="blDays" type="number" min="0" max="730" value="${pol.warrantyNoticeDays}"></div>
+          <div class="field"><label>Lifecycle limit</label><select id="blLc">${limitOpts(pol.lifecycleLimit)}</select></div>
+        </div>
+        ${canEdit ? `<div class="field"><label>Change note</label><input id="blNote" placeholder="e.g. Exec floor on newest firmware"></div>
+          <div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn btn-primary btn-sm" id="blSave">Save as v${b.latestVersion + 1}</button></div>` : !isAdmin() ? '<div class="help block">Your service provider maintains this baseline. Ask them to change it.</div>' : ''}
+        <div class="section-title">Version history</div>
+        <div class="table-wrap flat"><table><thead><tr><th>Version</th><th>Saved</th><th>Level</th><th>Exceptions</th><th>Rules</th><th>Note</th><th></th></tr></thead><tbody>
+          ${[...b.versions, { version: 0, level: 'advisory', exceptions: 0, policy: null, note: 'Default: follows the advisory', createdAt: null }].map((v) => `<tr><td><b>v${v.version}</b>${v.version === b.latestVersion ? ` ${chip('current', 'good')}` : ''}</td><td>${v.createdAt ? `${fmtDate(v.createdAt)}<div class="muted" style="font-size:12px">${esc(v.createdBy || '')}</div>` : '—'}</td>
+            <td>${esc(LEVEL_SHORT[v.level] || v.level)}</td><td>${v.exceptions}</td><td style="font-size:12.5px">${v.policy ? 'Own' : 'Advisory'}</td><td>${esc(v.note || '')}${v.restoredFrom !== null && v.restoredFrom !== undefined ? ` <span class="muted">(from v${v.restoredFrom})</span>` : ''}</td>
+            <td style="white-space:nowrap">${v.version !== b.latestVersion && v.version ? `<a class="linkbtn" href="#/baselines/${esc(cid)}/${v.version}">View</a>` : ''}${isAdmin() && v.version !== b.latestVersion ? ` <button class="linkbtn" data-restore="${v.version}">Restore</button>` : ''}</td></tr>`).join('')}
+        </tbody></table></div>
+      </div>
+    </div>
+    <div class="card"><div class="card-head"><div><h2>Firmware by model</h2><div class="card-sub">${esc(b.customerName)}'s target per model against the advisory. Models in use are listed first.</div></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Model</th><th>Devices</th><th>Advisory</th><th>Newest known</th><th>Customer rule</th><th>Target</th><th>Drift</th><th>Below target</th><th>Below advisory</th></tr></thead><tbody>
+      ${b.models.map((m) => `<tr data-m="${esc(m.id)}"${m.devices ? '' : ' class="muted"'}><td><b>${esc(m.make)}</b> ${esc(shortModel(m.make, m.model))}<div class="muted" style="font-size:12px">${esc(m.deviceType)}</div></td><td>${m.devices}</td>
+        <td class="mono">${esc(m.advisory || '—')}</td><td class="mono">${esc(m.latest || '—')}</td>
+        <td><select class="blRule" data-id="${esc(m.id)}" ${canEdit ? '' : 'disabled'} style="max-width:220px">${ruleOptions(m, b.current.level, m.rule)}</select><input class="blOther mono" data-id="${esc(m.id)}" placeholder="e.g. 4.2.0" hidden style="width:110px;margin-left:6px"></td>
+        <td class="mono"><b>${esc(m.target || '—')}</b></td><td>${chip(DRIFT_LABEL[m.drift] || m.drift, DRIFT_TONE[m.drift])}</td>
+        <td>${m.behind ? chip(m.behind, 'crit') : '0'}</td><td>${m.behindAdvisory ? chip(m.behindAdvisory, 'warn') : '0'}</td></tr>`).join('') || '<tr><td colspan="9" class="empty">No models in the master</td></tr>'}
+      </tbody></table></div></div>`;
+
+  $('#blCust')?.addEventListener('change', (e) => { location.hash = `#/baselines/${encodeURIComponent(e.target.value)}`; });
+  const polBox = $('#blPol');
+  const syncPol = () => { const own = $('#blOwnPol').checked; polBox.style.opacity = own ? 1 : 0.55; polBox.querySelectorAll('input,select').forEach((x) => { x.disabled = !own || !canEdit; }); };
+  $('#blOwnPol').addEventListener('change', syncPol); syncPol();
+  document.querySelectorAll('.blRule').forEach((sel) => sel.addEventListener('change', () => {
+    const other = sel.parentElement.querySelector('.blOther');
+    other.hidden = sel.value !== '__other';
+    if (!other.hidden) other.focus();
+  }));
+  document.querySelectorAll('[data-restore]').forEach((btn) => btn.addEventListener('click', async () => {
+    if (!btn.dataset.confirm) { btn.dataset.confirm = 1; btn.textContent = `Restore v${btn.dataset.restore} as v${b.latestVersion + 1}?`; return; }
+    try { await api(`/api/baselines/customers/${encodeURIComponent(cid)}/restore`, { method: 'POST', body: { version: Number(btn.dataset.restore) } }); toast(ICONS.resolved, `Restored v${btn.dataset.restore} as v${b.latestVersion + 1}`); location.hash = `#/baselines/${encodeURIComponent(cid)}`; viewBaselines([cid]); } catch (e) { $('#blMsg').innerHTML = `<div class="notice err">${esc(e.message)}</div>`; }
+  }));
+  $('#blSave')?.addEventListener('click', async (e) => {
+    const models = {};
+    document.querySelectorAll('.blRule').forEach((s) => {
+      const v = s.value === '__other' ? s.parentElement.querySelector('.blOther').value.trim() : s.value;
+      if (v) models[s.dataset.id] = v;
+    });
+    const body = {
+      level: $('#blLevel').value, models, note: $('#blNote').value.trim() || null,
+      policy: $('#blOwnPol').checked ? { warrantyRequired: $('#blW').checked, warrantyNoticeDays: Number($('#blDays').value), lifecycleLimit: $('#blLc').value } : null,
+    };
+    e.target.disabled = true;
+    try { const r = await api(`/api/baselines/customers/${encodeURIComponent(cid)}`, { method: 'POST', body }); toast(ICONS.resolved, `${b.customerName} baseline saved as v${r.current.version}`); viewBaselines([cid]); } catch (err) { $('#blMsg').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; e.target.disabled = false; }
+  });
+  $('#advSave')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      const v = await api('/api/baselines/advisory', { method: 'PUT', body: { policy: { warrantyRequired: $('#advW').checked, warrantyNoticeDays: Number($('#advDays').value), lifecycleLimit: $('#advLc').value }, note: $('#advNote').value.trim() || null } });
+      toast(ICONS.resolved, `Advisory baseline saved as v${v.version}`); viewBaselines(args);
+    } catch (err) { $('#advMsg').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; e.target.disabled = false; }
+  });
 }
 
 // ------------------------------------------------------------------ SLA view
@@ -2376,7 +2502,7 @@ function openModel(m, preset = {}) {
 }
 
 // ------------------------------------------------------------------ audit log
-const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 'Enter customer'], ['device.', 'Device edits and actions'], ['room.', 'Rooms and schematics'], ['customer.', 'Customers'], ['user.', 'Users'], ['connection.', 'Connections and keys'], ['model.', 'Model master'], ['firmware.', 'New firmware seen'], ['api.', 'API checks'], ['audit.', 'Audit exports']];
+const AUDIT_GROUPS = [['', 'All activity'], ['auth.', 'Sign-ins'], ['session.', 'Enter customer'], ['device.', 'Device edits and actions'], ['room.', 'Rooms and schematics'], ['customer.', 'Customers'], ['user.', 'Users'], ['connection.', 'Connections and keys'], ['model.', 'Model master'], ['baseline.', 'Baselines'], ['firmware.', 'New firmware seen'], ['api.', 'API checks'], ['audit.', 'Audit exports']];
 const AUDIT_LABEL = {
   'auth.login': 'Signed in', 'auth.login_failed': 'Failed sign-in', 'auth.logout': 'Signed out',
   'session.enter_customer': 'Entered customer', 'session.exit_customer': 'Left customer',
@@ -2386,6 +2512,7 @@ const AUDIT_LABEL = {
   'user.create': 'Added user', 'user.delete': 'Removed user',
   'connection.create': 'Added connection', 'connection.update': 'Changed connection', 'connection.test': 'Tested connection', 'connection.sync': 'Ran sync', 'connection.delete': 'Removed connection',
   'model.create': 'Added model', 'model.update': 'Changed model', 'model.delete': 'Deleted model', 'model.release_add': 'Added firmware release', 'model.release_remove': 'Removed firmware release', 'model.import': 'Imported models from estate',
+  'baseline.advisory_save': 'Changed advisory baseline', 'baseline.customer_save': 'Changed customer baseline', 'baseline.customer_restore': 'Restored customer baseline version',
   'firmware.detected': 'New firmware seen in fleet', 'audit.export': 'Exported audit log',
 };
 function auditDetails(e) {

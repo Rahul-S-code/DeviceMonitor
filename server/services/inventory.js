@@ -6,6 +6,7 @@ import { getConnectorClass } from '../connectors/registry.js';
 import { compareVersions, modelKey, lifecycleStage, warrantyStatus } from '../lib/models.js';
 import { makeDevice, PLATFORMS } from '../lib/device-model.js';
 import { issue, explain } from '../lib/issues.js';
+import { resolveFirmware, firmwareStatus, lifecycleBreach } from '../lib/baselines.js';
 
 export { compareVersions };
 
@@ -115,8 +116,9 @@ export class Inventory {
       else if (inferred) { d.platform = inferred; d.platformSource = 'inferred from room'; }
       else { d.platform = 'Unassigned'; d.platformSource = null; }
     }
-    // Firmware: compare with the approved baseline in the model master. Models
-    // without a baseline fall back to the newest version seen in the estate.
+    // Firmware: compare with the customer's baseline (which follows, raises or
+    // lowers the provider's advisory baseline from the model master). Models
+    // with no target fall back to the newest version seen in the estate.
     const catalogue = new Map(s.models.map((m) => [modelKey(m.make, m.model), m]));
     const newest = new Map();
     for (const d of devices) {
@@ -125,30 +127,49 @@ export class Inventory {
       if (!cur || compareVersions(d.firmware, cur) > 0) newest.set(d.model, d.firmware);
     }
     const now = Date.now();
+    const baselineOf = new Map();
+    const custBaseline = (id) => {
+      if (!baselineOf.has(id)) baselineOf.set(id, { cb: s.customerBaseline(id), policy: s.effectivePolicy(id) });
+      return baselineOf.get(id);
+    };
     for (const d of devices) {
       const m = catalogue.get(modelKey(d.make, d.model)) || null;
+      const { cb, policy } = custBaseline(d.customerId);
+      const fw = resolveFirmware(m, cb);
       d.modelId = m?.id ?? null;
-      d.baseline = m?.baseline ?? null;
+      d.baseline = fw.target;
+      d.advisoryBaseline = fw.advisory;
+      d.baselineRule = fw.rule;
+      d.baselineSource = fw.source;
+      d.baselineDrift = m ? fw.drift : null;
+      d.baselineVersion = cb?.version ?? 0;
+      d.policy = policy;
       if (!d.firmware) d.firmwareStatus = 'unknown';
       else if (!m) d.firmwareStatus = 'uncatalogued';
-      else if (!m.baseline) d.firmwareStatus = 'no-baseline';
-      else d.firmwareStatus = compareVersions(d.firmware, m.baseline) < 0 ? 'behind' : compareVersions(d.firmware, m.baseline) > 0 ? 'ahead' : 'compliant';
+      else if (!fw.target) d.firmwareStatus = 'no-baseline';
+      else d.firmwareStatus = firmwareStatus(d.firmware, fw.target);
+      d.advisoryStatus = d.firmware && m && fw.advisory ? firmwareStatus(d.firmware, fw.advisory) : null;
       const lc = lifecycleStage(m, now);
       d.lifecycle = {
         ...lc, endOfSale: m?.endOfSale ?? null, endOfSupport: m?.endOfSupport ?? null, endOfLife: m?.endOfLife ?? null,
         status: m?.lifecycleStatus ?? null, note: m?.lifecycleNote ?? null, url: m?.lifecycleUrl ?? null,
         refs: m?.lifecycleRefs ?? [], checkedAt: m?.lifecycleCheckedAt ?? null,
       };
-      d.warrantyStatus = warrantyStatus(d.warrantyExpires, now);
+      d.warrantyStatus = warrantyStatus(d.warrantyExpires, now, policy.warrantyNoticeDays);
+      // Compliance with the customer's baseline: firmware, warranty and lifecycle.
+      const fwOk = d.firmwareStatus !== 'behind';
+      const wOk = !policy.warrantyRequired || d.warrantyStatus !== 'expired';
+      const lcOk = !lifecycleBreach(lc.stage, policy.lifecycleLimit);
+      d.compliance = { firmware: fwOk, warranty: wOk, lifecycle: lcOk, ok: fwOk && wOk && lcOk };
 
       // Derived health for sources without native health (Poly Lens, Zoom).
       const noNative = d.sources.every((x) => getConnectorClass(x.oem).nativeHealth === false);
       if (!noNative || d.health !== 'healthy' || !d.firmware) continue;
       if (d.firmwareStatus === 'behind') {
         d.health = 'warning';
-        d.healthReason = `Firmware ${d.firmware} is below the approved baseline ${d.baseline}`;
+        d.healthReason = `Firmware ${d.firmware} is below the customer's baseline ${d.baseline}`;
         d.issues = [...(d.issues || []), issue('EM-FW-001', 'Estate Monitor', `firmware ${d.firmware} < baseline ${d.baseline}`)];
-      } else if (!d.baseline) {
+      } else if (!d.baseline && d.baselineRule !== 'none') {
         const latest = newest.get(d.model);
         if (latest && compareVersions(d.firmware, latest) < 0) {
           d.health = 'warning';
@@ -165,24 +186,47 @@ export class Inventory {
     }
   }
 
-  /** Firmware compliance, warranty and lifecycle roll-up for the Lifecycle tab. */
-  lifecycle(devs) {
+  /** Firmware compliance, warranty and lifecycle roll-up for the Lifecycle tab, against each customer's baseline. */
+  lifecycle(devs, customerIds = null) {
     const count = (fn) => devs.reduce((acc, d) => { const k = fn(d); acc[k] = (acc[k] || 0) + 1; return acc; }, {});
     const models = new Map();
     for (const d of devs) {
       const k = d.modelId || `x|${d.make}|${d.model}`;
-      if (!models.has(k)) models.set(k, { modelId: d.modelId, make: d.make, model: d.model, deviceType: d.deviceType, baseline: d.baseline, lifecycle: d.lifecycle, total: 0, behind: 0, versions: {} });
+      if (!models.has(k)) models.set(k, { modelId: d.modelId, make: d.make, model: d.model, deviceType: d.deviceType, baseline: d.baseline, advisory: d.advisoryBaseline, targets: {}, drift: {}, lifecycle: d.lifecycle, total: 0, behind: 0, behindAdvisory: 0, versions: {} });
       const m = models.get(k);
       m.total++;
       if (d.firmwareStatus === 'behind') m.behind++;
+      if (d.advisoryStatus === 'behind') m.behindAdvisory++;
+      if (d.baseline) m.targets[d.baseline] = (m.targets[d.baseline] || 0) + 1;
+      if (d.baselineDrift) m.drift[d.baselineDrift] = (m.drift[d.baselineDrift] || 0) + 1;
       if (d.firmware) m.versions[d.firmware] = (m.versions[d.firmware] || 0) + 1;
     }
-    const attention = devs.filter((d) => d.firmwareStatus === 'behind' || ['expired', 'expiring'].includes(d.warrantyStatus) || ['eol', 'eos', 'eosale', 'soon', 'discontinued'].includes(d.lifecycle?.stage));
+    // One target per model when every device in scope shares it (e.g. one customer).
+    for (const m of models.values()) { const t = Object.keys(m.targets); m.baseline = t.length === 1 ? t[0] : null; m.mixedTargets = t.length > 1; }
+    const attention = devs.filter((d) => !d.compliance?.ok || (d.policy?.warrantyRequired && d.warrantyStatus === 'expiring') || d.lifecycle?.stage === 'soon');
+    const ids = customerIds || [...new Set(devs.map((d) => d.customerId))];
+    const baselines = ids.map((id) => {
+      const cb = this.store.customerBaseline(id);
+      const mine = devs.filter((d) => d.customerId === id);
+      return {
+        customerId: id, customerName: this.store.customerName(id),
+        version: cb?.version ?? 0, level: cb?.level ?? 'advisory', exceptions: Object.keys(cb?.models || {}).length,
+        policy: this.store.effectivePolicy(id), policySource: cb?.policy ? 'customer' : 'advisory',
+        updatedAt: cb?.createdAt ?? null, updatedBy: cb?.createdBy?.email ?? null,
+        devices: mine.length, compliant: mine.filter((d) => d.compliance?.ok).length,
+        meetsCustomerBelowAdvisory: mine.filter((d) => d.firmwareStatus !== 'behind' && d.advisoryStatus === 'behind').length,
+      };
+    });
     return {
       total: devs.length,
       firmware: count((d) => d.firmwareStatus),
+      advisoryFirmware: count((d) => d.advisoryStatus || 'none'),
+      drift: count((d) => d.baselineDrift || 'none'),
+      compliance: { ok: devs.filter((d) => d.compliance?.ok).length, firmware: devs.filter((d) => d.compliance && !d.compliance.firmware).length, warranty: devs.filter((d) => d.compliance && !d.compliance.warranty).length, lifecycle: devs.filter((d) => d.compliance && !d.compliance.lifecycle).length },
       warranty: count((d) => d.warrantyStatus),
       lifecycle: count((d) => d.lifecycle?.stage || 'unknown'),
+      baselines,
+      advisory: { version: this.store.advisoryVersion(), policy: this.store.advisoryPolicy() },
       models: [...models.values()].sort((a, b) => b.behind - a.behind || b.total - a.total),
       attention: attention.slice(0, 500),
       attentionTotal: attention.length,

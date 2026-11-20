@@ -115,10 +115,10 @@ export function lifecycleStage(m, now = Date.now()) {
   return { stage: 'supported', label: 'Supported' };
 }
 
-export function warrantyStatus(expires, now = Date.now()) {
+export function warrantyStatus(expires, now = Date.now(), noticeDays = WARRANTY_SOON_DAYS) {
   if (!expires) return 'unknown';
   const t = Date.parse(expires);
   if (t < now) return 'expired';
-  if (t - now < WARRANTY_SOON_DAYS * DAY) return 'expiring';
+  if (t - now < noticeDays * DAY) return 'expiring';
   return 'active';
 }

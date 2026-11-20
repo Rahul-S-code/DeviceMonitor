@@ -11,11 +11,12 @@ import { classifyDeviceType } from './device-model.js';
 import { avDemoModels } from '../mock/av-estate.js';
 import { CONNECTORS, AV_DEMO_OEMS } from '../connectors/registry.js';
 import { hashPassword } from './auth.js';
+import { cleanPolicy, cleanCustomerBaseline, DEFAULT_ADVISORY_POLICY } from './baselines.js';
 
 const EMPTY = {
   customers: [], users: [], connections: [], siteDirectory: {}, roomDirectory: {},
   schematics: {}, deviceOverrides: {}, alerts: [], models: [], audit: [], manualDevices: [],
-  designs: [], apiChecks: {},
+  designs: [], apiChecks: {}, baselines: { advisory: [], customers: {} },
 };
 const MAX_AUDIT = 5000;
 export const DEFAULT_SLA_TARGET = 99.5;
@@ -230,6 +231,59 @@ export class Store {
   /** Demo connections for the AV and network sources (Yealink, Neat, Crestron, Q-SYS, Domotz...). */
   addAvConnections(c) {
     for (const oem of AV_DEMO_OEMS) if (!this.connections.some((x) => x.customerId === c.id && x.oem === oem)) this.addMockConnection(c, oem);
+  }
+
+  // --- baseline standards: provider advisory + per-customer, both versioned ---
+  get baselines() {
+    if (!this.data.baselines) this.data.baselines = { advisory: [], customers: {} };
+    return this.data.baselines;
+  }
+
+  /** Advisory policy versions, newest last. Version 0 is the built-in default. */
+  advisoryVersions() { return this.baselines.advisory; }
+
+  advisoryPolicy() {
+    const v = this.baselines.advisory.at(-1);
+    return v ? v.policy : { ...DEFAULT_ADVISORY_POLICY };
+  }
+
+  advisoryVersion() { return this.baselines.advisory.at(-1)?.version ?? 0; }
+
+  saveAdvisoryPolicy(input, actor) {
+    const policy = cleanPolicy(input.policy || input, this.advisoryPolicy());
+    const v = { version: this.advisoryVersion() + 1, policy, note: input.note ? String(input.note).trim().slice(0, 300) : null, createdAt: new Date().toISOString(), createdBy: actor || null };
+    this.baselines.advisory.push(v);
+    this.save();
+    return v;
+  }
+
+  customerBaselineVersions(customerId) { return this.baselines.customers[customerId] ?? []; }
+
+  /** The customer's current baseline, or null while they follow the advisory by default (version 0). */
+  customerBaseline(customerId) { return this.customerBaselineVersions(customerId).at(-1) ?? null; }
+
+  /** Warranty and lifecycle rules in force for a customer. */
+  effectivePolicy(customerId) { return this.customerBaseline(customerId)?.policy || this.advisoryPolicy(); }
+
+  saveCustomerBaseline(customerId, input, actor, restoredFrom = null) {
+    if (!this.customers.some((c) => c.id === customerId)) throw new Error('Customer not found');
+    const clean = cleanCustomerBaseline(input, new Set(this.models.map((m) => m.id)));
+    const list = (this.baselines.customers[customerId] ||= []);
+    const v = { version: (list.at(-1)?.version ?? 0) + 1, ...clean, restoredFrom, advisoryVersion: this.advisoryVersion(), createdAt: new Date().toISOString(), createdBy: actor || null };
+    list.push(v);
+    this.save();
+    return v;
+  }
+
+  /** Make an earlier version current again, as a new version (history is never rewritten). */
+  restoreCustomerBaseline(customerId, version, actor) {
+    const n = Number(version);
+    if (n === 0) return this.saveCustomerBaseline(customerId, { level: 'advisory', models: {}, policy: null, note: 'Back to the advisory baseline' }, actor, 0);
+    const old = this.customerBaselineVersions(customerId).find((v) => v.version === n);
+    if (!old) throw new Error('Baseline version not found');
+    const known = new Set(this.models.map((m) => m.id));
+    const models = Object.fromEntries(Object.entries(old.models).filter(([id]) => known.has(id)));
+    return this.saveCustomerBaseline(customerId, { level: old.level, models, policy: old.policy, note: `Restored version ${n}${old.note ? `: ${old.note}` : ''}` }, actor, n);
   }
 
   // --- devices added by hand (kit with no API, or not yet connected) ------
@@ -462,6 +516,7 @@ export class Store {
     for (const map of [this.data.roomDirectory, this.data.schematics]) for (const k of Object.keys(map)) if (k.startsWith(`${id}|`)) delete map[k];
     this.data.alerts = this.data.alerts.filter((a) => a.customerId !== id);
     this.data.manualDevices = this.manualDevices.filter((d) => d.customerId !== id);
+    delete this.baselines.customers[id];
     for (const d of this.data.designs.filter((x) => x.customerId === id)) this.removeDesign(d.id);
     unregisterMockCustomer(id);
     this.save();

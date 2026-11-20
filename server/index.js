@@ -16,6 +16,8 @@ import { History, slaReport, WINDOWS } from './services/history.js';
 import { CONNECTORS, getConnectorClass, createConnector } from './connectors/registry.js';
 import { PLATFORMS } from './lib/device-model.js';
 import { csvObjects, toCsv } from './lib/csv.js';
+import { LEVELS, LIFECYCLE_LIMITS, resolveFirmware } from './lib/baselines.js';
+import { compareVersions } from './lib/models.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -701,7 +703,73 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
   });
 
   // --- lifecycle: firmware compliance, warranty, end of sale / support / life --
-  app.get('/api/lifecycle', requireUser, (req, res) => res.json(inventory.lifecycle(inventory.query(scope(req), req.query))));
+  app.get('/api/lifecycle', requireUser, (req, res) => {
+    const ids = req.query.customer ? scope(req).filter((id) => String(req.query.customer).split(',').includes(id)) : scope(req);
+    res.json(inventory.lifecycle(inventory.query(scope(req), req.query), ids));
+  });
+
+  // --- baseline standards: provider advisory + per-customer (versioned) -----
+  const versionSummary = (v) => ({ version: v.version, level: v.level, exceptions: Object.keys(v.models || {}).length, policy: v.policy, note: v.note, restoredFrom: v.restoredFrom ?? null, advisoryVersion: v.advisoryVersion ?? null, createdAt: v.createdAt, createdBy: v.createdBy?.email ?? null });
+  app.get('/api/baselines/advisory', requireUser, (_req, res) => res.json({
+    version: store.advisoryVersion(), policy: store.advisoryPolicy(), levels: LEVELS, lifecycleLimits: LIFECYCLE_LIMITS,
+    versions: store.advisoryVersions().map((v) => ({ version: v.version, policy: v.policy, note: v.note, createdAt: v.createdAt, createdBy: v.createdBy?.email ?? null })).reverse(),
+  }));
+  app.put('/api/baselines/advisory', requireSuper, requireJson, (req, res) => {
+    try {
+      const before = store.advisoryPolicy();
+      const v = store.saveAdvisoryPolicy(req.body || {}, actorOf(req.user));
+      audit(req, 'baseline.advisory_save', { target: `Advisory baseline v${v.version}`, details: { from: before, to: v.policy, note: v.note } });
+      sync.refresh();
+      res.json(v);
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  const customerBaselineView = (customerId, version = null) => {
+    const versions = store.customerBaselineVersions(customerId);
+    const cb = version === null ? versions.at(-1) ?? null : versions.find((v) => v.version === version) ?? null;
+    const devs = inventory.devices.filter((d) => d.customerId === customerId);
+    const models = store.models.map((m) => {
+      const mine = devs.filter((d) => d.modelId === m.id);
+      const fw = resolveFirmware(m, cb);
+      const behind = (t) => (t ? mine.filter((d) => d.firmware && compareVersions(d.firmware, t) < 0).length : 0);
+      return {
+        id: m.id, make: m.make, model: m.model, deviceType: m.deviceType, releases: m.releases.map((r) => r.version),
+        rule: cb?.models?.[m.id] ?? null, ...fw, devices: mine.length, behind: behind(fw.target), behindAdvisory: behind(fw.advisory),
+      };
+    }).sort((a, b) => (b.devices > 0) - (a.devices > 0) || (a.make + a.model).localeCompare(b.make + b.model));
+    return {
+      customerId, customerName: store.customerName(customerId),
+      current: cb ? versionSummary(cb) : { version: 0, level: 'advisory', exceptions: 0, policy: null, note: 'Following the advisory baseline (default)', createdAt: null, createdBy: null },
+      latestVersion: versions.at(-1)?.version ?? 0,
+      policy: cb?.policy || store.advisoryPolicy(), policySource: cb?.policy ? 'customer' : 'advisory',
+      advisory: { version: store.advisoryVersion(), policy: store.advisoryPolicy() },
+      levels: LEVELS, lifecycleLimits: LIFECYCLE_LIMITS,
+      versions: versions.map(versionSummary).reverse(),
+      models,
+    };
+  };
+  app.get('/api/baselines/customers/:id', requireUser, (req, res) => {
+    if (!inScope(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
+    const v = req.query.version !== undefined ? Number(req.query.version) : null;
+    res.json(customerBaselineView(req.params.id, Number.isInteger(v) ? v : null));
+  });
+  app.post('/api/baselines/customers/:id', requireAdmin, requireJson, (req, res) => {
+    if (!inScope(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
+    try {
+      const v = store.saveCustomerBaseline(req.params.id, req.body || {}, actorOf(req.user));
+      audit(req, 'baseline.customer_save', { customerId: req.params.id, target: `${store.customerName(req.params.id)} baseline v${v.version}`, details: { level: v.level, exceptions: v.models, policy: v.policy || 'advisory', note: v.note } });
+      sync.refresh();
+      res.json(customerBaselineView(req.params.id));
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  app.post('/api/baselines/customers/:id/restore', requireAdmin, requireJson, (req, res) => {
+    if (!inScope(req, req.params.id)) return res.status(404).json({ error: 'Customer not found' });
+    try {
+      const v = store.restoreCustomerBaseline(req.params.id, req.body?.version, actorOf(req.user));
+      audit(req, 'baseline.customer_restore', { customerId: req.params.id, target: `${store.customerName(req.params.id)} baseline v${v.version}`, details: { restoredFrom: v.restoredFrom } });
+      sync.refresh();
+      res.json(customerBaselineView(req.params.id));
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
 
   // --- SLA ----------------------------------------------------------------
   app.get('/api/sla', requireUser, (req, res) => {

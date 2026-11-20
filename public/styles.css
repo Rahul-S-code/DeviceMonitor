@@ -596,3 +596,7 @@ label.chk { display: flex; gap: 8px; align-items: center; font-size: 13px; margi
 .switch input:checked + .slider::before { transform: translateX(18px); }
 .switch input:focus-visible + .slider { outline: 2px solid var(--blue-600); outline-offset: 2px; }
 .mock-off [data-k=mockRooms] { display: none; }
+
+/* Baselines: checkbox beside its label */
+label.inline-chk { display: flex; align-items: center; gap: 8px; }
+label.inline-chk input[type=checkbox] { width: auto; margin: 0; }
