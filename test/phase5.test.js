@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createApp } from '../server/index.js';
+import { addSecondCustomer } from './fixtures.js';
 import { CONNECTORS, AV_DEMO_OEMS, createConnector, getConnectorClass } from '../server/connectors/registry.js';
 import { YealinkYmcsConnector, YealinkHttpTransport, YEALINK_REGIONS } from '../server/connectors/yealink-ymcs/index.js';
 import { NeatPulseConnector, NeatPulseHttpTransport } from '../server/connectors/neat-pulse/index.js';
@@ -24,7 +25,7 @@ import { parseCsv, toCsv, csvObjects } from '../server/lib/csv.js';
 import { Store } from '../server/lib/store.js';
 import { docSections, BULK_COLUMNS_DOC } from '../public/docs.js';
 
-const conn = (oem, extra = {}) => ({ id: `c-${oem}`, customerId: 'cust-helix', oem, mode: 'mock', settings: {}, ...extra });
+const conn = (oem, extra = {}) => ({ id: `c-${oem}`, customerId: 'cust-demo', oem, mode: 'mock', settings: {}, ...extra });
 
 /** A fetch stand-in: route(url, init) returns { status, body } and every call is recorded. */
 function fakeFetch(route) {
@@ -42,6 +43,7 @@ async function startApp(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm5-'));
   process.env.MASTER_KEY = crypto.randomBytes(32).toString('hex');
   const ctx = createApp({ dataDir, autoStart: false });
+  addSecondCustomer(ctx.store);
   await ctx.sync.syncAll();
   const server = ctx.app.listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -89,7 +91,7 @@ test('demo-only connectors cannot go live and say why', async (t) => {
   }
   const { login } = await startApp(t);
   const admin = await login('admin@provider.example');
-  const res = await admin('/api/connections', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', oem: 'netgear-insight', mode: 'live', name: 'x' }) });
+  const res = await admin('/api/connections', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', oem: 'netgear-insight', mode: 'live', name: 'x' }) });
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /no public API/i);
 });
@@ -177,7 +179,7 @@ test('Crestron XiO live: subscription key header, paged status, room groups, fau
 });
 
 test('Crestron mock pages like the real API', async () => {
-  const inner = new CrestronXioMockTransport('cust-helix');
+  const inner = new CrestronXioMockTransport('cust-demo');
   const seen = [];
   const transport = { get: (p) => { seen.push(p); return inner.get(p.replace('/pagesize/100/', '/pagesize/5/')); } };
   const paged = await new CrestronXioConnector({ connection: conn('crestron-xio'), transport }).sync();
@@ -263,7 +265,7 @@ test('BrightSign live: client-credentials token, network selected once, marker p
 });
 
 test('BrightSign mock pages with markers', async () => {
-  const inner = new BrightSignMockTransport('cust-helix');
+  const inner = new BrightSignMockTransport('cust-demo');
   const transport = { get: (p) => inner.get(p.replace('pageSize=100', 'pageSize=2')) };
   const a = await new BrightSignBsnConnector({ connection: conn('brightsign-bsn'), transport }).sync();
   const b = await new BrightSignBsnConnector({ connection: conn('brightsign-bsn') }).sync();
@@ -359,7 +361,7 @@ test('every connector has a unique badge and documentation', () => {
 
 test('demo customers get the AV demo connections once, and old stores are migrated once', async (t) => {
   const { ctx, login, dataDir } = await startApp(t);
-  for (const id of ['cust-helix', 'cust-northwind', 'cust-meridian']) {
+  for (const id of ['cust-demo']) {
     const oems = ctx.store.connections.filter((c) => c.customerId === id).map((c) => c.oem);
     for (const o of AV_DEMO_OEMS) assert.ok(oems.includes(o), `${id} has ${o}`);
   }
@@ -379,11 +381,40 @@ test('demo customers get the AV demo connections once, and old stores are migrat
   fs.writeFileSync(path.join(dir2, 'store.json'), JSON.stringify(old));
   const s = new Store(dir2);
   assert.equal(s.migrate('pw'), true);
-  assert.equal(s.connections.filter((c) => c.oem === 'domotz').length, 3);
+  assert.equal(s.connections.filter((c) => c.oem === 'domotz').length, 1);
   s.data.connections = s.connections.filter((c) => c.oem !== 'domotz');
   s.migrate('pw');
   assert.equal(s.connections.filter((c) => c.oem === 'domotz').length, 0);
   s.close?.();
+});
+
+test('old stores with three demo customers move to the single Demo Customer once, keeping real customers', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm6m-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const old = {
+    customers: [
+      { id: 'cust-helix', name: 'Helix Financial' }, { id: 'cust-northwind', name: 'Northwind Retail' },
+      { id: 'cust-meridian', name: 'Meridian Health' }, { id: 'cust-real', name: 'Real Co', mockData: false },
+    ],
+    users: [{ id: 'u-helix', email: 'it@helix.example', role: 'customer_viewer', customerId: 'cust-helix' }, { id: 'u-real', email: 'it@real.example', role: 'customer_viewer', customerId: 'cust-real' }],
+    connections: [{ id: 'x1', customerId: 'cust-helix', oem: 'poly-lens', mode: 'mock' }, { id: 'x2', customerId: 'cust-real', oem: 'poly-lens', mode: 'live' }],
+    siteDirectory: { 'cust-helix': { 'London HQ': { region: 'EMEA' } } },
+    phase3: true, phase5: true,
+  };
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify(old));
+  const s = new Store(dir);
+  assert.equal(s.migrate('pw', 'demo-pw'), true);
+  assert.deepEqual(s.customers.map((c) => c.name).sort(), ['Demo Customer', 'Real Co']);
+  assert.ok(!s.users.some((u) => u.email === 'it@helix.example'));
+  assert.ok(s.users.some((u) => u.email === 'it@demo.example' && u.customerId === 'cust-demo'));
+  assert.ok(s.connections.some((c) => c.id === 'x2'));
+  assert.ok(!s.connections.some((c) => c.customerId === 'cust-helix'));
+  assert.ok(s.connections.filter((c) => c.customerId === 'cust-demo').length > 5);
+  // Runs once: deleting the demo customer afterwards sticks.
+  s.deleteCustomer('cust-demo');
+  s.migrate('pw', 'demo-pw');
+  assert.ok(!s.customers.some((c) => c.id === 'cust-demo'));
+  s.close();
 });
 
 // ------------------------------------------------------------------ CSV
@@ -413,15 +444,15 @@ test('bulk import: template, row-by-row preview, import, duplicates and permissi
 
   const csv = [
     'customer,site,room,make,model,serial,mac,firmware,warranty_end,notes',
-    'Helix Financial,London HQ,Atlas 4.01,Poly,Poly Studio X50,BULK0001,00:11:22:33:44:01,4.2.0,2028-01-31,first',
+    'Demo Customer,London HQ,Atlas 4.01,Poly,Poly Studio X50,BULK0001,00:11:22:33:44:01,4.2.0,2028-01-31,first',
     ',London HQ,Atlas 4.01,Poly,Poly TC8,BULK0002,,,,',
-    'Helix Financial,London HQ,Atlas 4.01,Acme,Widget 9000,BULK0003,,,,',
-    'Helix Financial,London HQ,,Poly,Poly TC8,BULK0004,,,,',
-    'Helix Financial,London HQ,Atlas 4.01,Poly,Poly TC8,BULK0001,,,,',
+    'Demo Customer,London HQ,Atlas 4.01,Acme,Widget 9000,BULK0003,,,,',
+    'Demo Customer,London HQ,,Poly,Poly TC8,BULK0004,,,,',
+    'Demo Customer,London HQ,Atlas 4.01,Poly,Poly TC8,BULK0001,,,,',
     'Nope Ltd,London HQ,Atlas 4.01,Poly,Poly TC8,BULK0005,,,,',
-    'Helix Financial,London HQ,Atlas 4.01,Poly,Poly TC8,BULK0006,zz,,,',
-    'Helix Financial,London HQ,Atlas 4.01,Poly,Poly TC8,BULK0007,,,31/12/2028,',
-    '"Helix Financial","New ""Wing""",Room 1,poly,poly studio x50,BULK0008,,,,"multi, comma"',
+    'Demo Customer,London HQ,Atlas 4.01,Poly,Poly TC8,BULK0006,zz,,,',
+    'Demo Customer,London HQ,Atlas 4.01,Poly,Poly TC8,BULK0007,,,31/12/2028,',
+    '"Demo Customer","New ""Wing""",Room 1,poly,poly studio x50,BULK0008,,,,"multi, comma"',
     '# a comment line from the template,,,,,,',
   ].join('\n');
   const post = (body) => admin('/api/manual-devices/import', { method: 'POST', body: JSON.stringify(body) });
@@ -442,11 +473,11 @@ test('bulk import: template, row-by-row preview, import, duplicates and permissi
   assert.equal(ctx.store.manualDevices.length, 0, 'preview saves nothing');
 
   // Default customer and unlisted models allowed.
-  r = await (await post({ csv, customerId: 'cust-helix', allowUnlisted: true })).json();
+  r = await (await post({ csv, customerId: 'cust-demo', allowUnlisted: true })).json();
   assert.equal(r.valid, 4);
   assert.equal(r.rows.find((x) => x.line === 4).linked, false);
 
-  r = await (await post({ csv, customerId: 'cust-helix', allowUnlisted: true, commit: true })).json();
+  r = await (await post({ csv, customerId: 'cust-demo', allowUnlisted: true, commit: true })).json();
   assert.equal(r.added, 4);
   assert.equal(ctx.store.manualDevices.length, 4);
   const devices = await (await admin('/api/devices?q=BULK')).json();
@@ -455,7 +486,7 @@ test('bulk import: template, row-by-row preview, import, duplicates and permissi
   const widget = devices.find((d) => d.serial === 'BULK0003');
   assert.equal(widget.make, 'Acme');
   // Importing the same file again: every serial is now taken.
-  r = await (await post({ csv, customerId: 'cust-helix', allowUnlisted: true, commit: true })).json();
+  r = await (await post({ csv, customerId: 'cust-demo', allowUnlisted: true, commit: true })).json();
   assert.equal(r.added, 0);
   const audit = await (await admin('/api/audit?action=device.bulk_import')).json();
   assert.ok(audit.entries.some((e) => e.action === 'device.bulk_import' && /4 devices from CSV/.test(e.target)));
@@ -465,18 +496,18 @@ test('bulk import: template, row-by-row preview, import, duplicates and permissi
   assert.equal(res.status, 400); assert.match((await res.json()).error, /site, room, make, model/);
   res = await post({ csv: '' });
   assert.equal(res.status, 400);
-  res = await post({ csv: `site,room,make,model\n${'a,b,Poly,Poly TC8\n'.repeat(2001)}`, customerId: 'cust-helix' });
+  res = await post({ csv: `site,room,make,model\n${'a,b,Poly,Poly TC8\n'.repeat(2001)}`, customerId: 'cust-demo' });
   assert.equal(res.status, 400); assert.match((await res.json()).error, /2000 rows/);
-  res = await post({ csv: 'site,room,make,model\n"a,b', customerId: 'cust-helix' });
+  res = await post({ csv: 'site,room,make,model\n"a,b', customerId: 'cust-demo' });
   assert.equal(res.status, 400); assert.match((await res.json()).error, /never closed/);
   // A large file (over the normal 256 kB body limit) is accepted.
   const big = `site,room,make,model,notes\n${Array.from({ length: 1900 }, (_, i) => `S,R${i},Poly,Poly TC8,${'n'.repeat(150)}`).join('\n')}`;
-  res = await post({ csv: big, customerId: 'cust-helix' });
+  res = await post({ csv: big, customerId: 'cust-demo' });
   assert.equal(res.status, 200);
   assert.equal((await res.json()).valid, 1900);
 
   // Customers cannot import or download the template.
-  const viewer = await login('it@helix.example');
+  const viewer = await login('it@demo.example');
   assert.equal((await viewer('/api/manual-devices/template.csv')).status, 403);
   assert.equal((await viewer('/api/manual-devices/import', { method: 'POST', body: JSON.stringify({ csv }) })).status, 403);
 });
@@ -486,7 +517,7 @@ test('bulk import respects the customer an admin has entered', async (t) => {
   const admin = await login('admin@provider.example');
   const enter = await admin('/api/session/enter', { method: 'POST', body: JSON.stringify({ customerId: 'cust-northwind' }) });
   assert.equal(enter.status, 200);
-  const csv = 'customer,site,room,make,model\nHelix Financial,London HQ,Atlas,Poly,Poly TC8\nNorthwind Retail,Chicago,Lake,Poly,Poly TC8';
+  const csv = 'customer,site,room,make,model\nDemo Customer,London HQ,Atlas,Poly,Poly TC8\nNorthwind Retail,Chicago,Lake,Poly,Poly TC8';
   const r = await (await admin('/api/manual-devices/import', { method: 'POST', body: JSON.stringify({ csv }) })).json();
   assert.equal(r.rows[0].ok, false);
   assert.match(r.rows[0].error, /not found/);

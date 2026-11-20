@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createApp } from '../server/index.js';
+import { addSecondCustomer } from './fixtures.js';
 import { validateSchematic, withBlockPorts, SCHEMATIC_TEMPLATES, BLOCKS } from '../server/lib/schematic.js';
 import { detectDesignType } from '../server/lib/designs.js';
 import { probe, apiCatalogue } from '../server/services/api-tracker.js';
@@ -14,6 +15,7 @@ async function startApp(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-'));
   process.env.MASTER_KEY = crypto.randomBytes(32).toString('hex');
   const ctx = createApp({ dataDir, autoStart: false });
+  addSecondCustomer(ctx.store);
   await ctx.sync.syncAll();
   const server = ctx.app.listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -79,7 +81,7 @@ test('design files: type comes from the content, not the name', () => {
 test('room design documents: upload, list, download, scoping and removal', async (t) => {
   const { login } = await startApp(t);
   const admin = await login('admin@provider.example');
-  const room = 'customerId=cust-helix&site=London&room=Board%20Room';
+  const room = 'customerId=cust-demo&site=London&room=Board%20Room';
   const up = (body, name, headers = { 'x-requested-with': 'estate-monitor' }) => admin(`/api/rooms/designs?${room}&name=${encodeURIComponent(name)}&title=As-built`, { method: 'POST', body, headers: { 'content-type': 'application/octet-stream', ...headers } });
   assert.equal((await up(PNG, 'plan.png', {})).status, 415, 'needs the app header');
   assert.equal((await up(Buffer.from('<html><script>'), 'plan.png')).status, 400);
@@ -96,7 +98,7 @@ test('room design documents: upload, list, download, scoping and removal', async
   const other = await login('it@northwind.example');
   assert.equal((await other(d.url)).status, 404, 'other customers cannot read it');
   assert.equal((await other(`/api/designs/${d.id}`, { method: 'DELETE' })).status, 403);
-  const helix = await login('it@helix.example');
+  const helix = await login('it@demo.example');
   assert.equal((await helix(d.url)).status, 200, 'the customer can read its own');
   assert.equal((await admin(`/api/designs/${d.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await admin(d.url)).status, 404);
@@ -129,7 +131,7 @@ test('API tracker: lists every API, checks are super admin only and recorded', a
   ctx.apiTracker.fetchImpl = async (url) => { seen.push(String(url)); return new Response('', { status: String(url).includes('webexapis') ? 503 : 401 }); };
   const admin = await login('admin@provider.example');
   const sup = await login('superadmin@provider.example');
-  const viewer = await login('it@helix.example');
+  const viewer = await login('it@demo.example');
   assert.equal((await viewer('/api/admin/apis')).status, 403);
   const before = await (await admin('/api/admin/apis')).json();
   assert.ok(before.apis.some((a) => a.id === 'poly-lens-graphql' && a.state === 'unchecked'));
@@ -215,10 +217,10 @@ test('error codes: every red or amber device has a code with causes, from each s
     assert.ok(d.diagnosis.every((x) => ERROR_CODES[x.code] && x.source && x.causes.length));
   }
   assert.ok(ctx.inventory.devices.filter((d) => d.health === 'healthy').every((d) => !d.issues.length));
-  const viewer = await login('it@helix.example');
+  const viewer = await login('it@demo.example');
   const codes = await (await viewer('/api/error-codes')).json();
   assert.ok(codes.find((c) => c.code === 'EM-NET-001'));
-  const offline = bad.find((d) => d.customerId === 'cust-helix' && d.errorCodes.includes('EM-NET-001'));
+  const offline = bad.find((d) => d.customerId === 'cust-demo' && d.errorCodes.includes('EM-NET-001'));
   if (offline) assert.ok((await (await viewer('/api/devices?q=EM-NET-001')).json()).some((d) => d.id === offline.id), 'search finds devices by code');
 });
 
@@ -226,7 +228,7 @@ test('mock flag: only devices fed solely by demo connections', async (t) => {
   const { ctx } = await startApp(t);
   const devs = ctx.inventory.devices;
   assert.ok(devs.filter((d) => d.sources.every((s) => s.oem !== 'manual')).every((d) => d.mock === true), 'demo estate is all mock');
-  ctx.store.addManualDevice({ customerId: 'cust-helix', site: 'London HQ', room: 'Room X', make: 'Neat', model: 'Bar Pro', deviceType: 'Video bar' }, { name: 't' });
+  ctx.store.addManualDevice({ customerId: 'cust-demo', site: 'London HQ', room: 'Room X', make: 'Neat', model: 'Bar Pro', deviceType: 'Video bar' }, { name: 't' });
   ctx.sync.refresh();
   assert.equal(ctx.inventory.devices.find((d) => d.model === 'Bar Pro').mock, false, 'manual devices are not mock');
   const conn = ctx.store.connections[0];

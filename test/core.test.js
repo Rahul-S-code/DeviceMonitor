@@ -8,6 +8,7 @@ import { dedupeDevices } from '../server/services/dedupe.js';
 import { makeDevice } from '../server/lib/device-model.js';
 import { Vault } from '../server/lib/vault.js';
 import { createApp } from '../server/index.js';
+import { addSecondCustomer } from './fixtures.js';
 
 const dev = (o) => makeDevice({ customerId: 'A', site: 'S', room: 'R', deviceType: 'Video bar', make: 'Poly', model: 'Poly Studio', health: 'healthy', ...o });
 
@@ -54,6 +55,7 @@ async function startApp(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-'));
   process.env.MASTER_KEY = crypto.randomBytes(32).toString('hex');
   const ctx = createApp({ dataDir, autoStart: false });
+  addSecondCustomer(ctx.store);
   await ctx.sync.syncAll();
   const server = ctx.app.listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -73,20 +75,20 @@ test('customers only see their own devices, alerts and connections', async (t) =
   assert.equal((await fetch(`${base}/api/devices`)).status, 401);
   const admin = await login('admin@provider.example');
   const all = await (await admin('/api/devices')).json();
-  assert.equal(new Set(all.map((d) => d.customerId)).size, 3);
+  assert.equal(new Set(all.map((d) => d.customerId)).size, 2);
 
-  const helix = await login('it@helix.example');
+  const helix = await login('it@demo.example');
   const mine = await (await helix('/api/devices')).json();
   assert.ok(mine.length > 0);
-  assert.ok(mine.every((d) => d.customerId === 'cust-helix'));
+  assert.ok(mine.every((d) => d.customerId === 'cust-demo'));
   // Asking for another customer via the filter returns nothing.
   assert.equal((await (await helix('/api/devices?customer=cust-northwind')).json()).length, 0);
-  const other = all.find((d) => d.customerId !== 'cust-helix');
+  const other = all.find((d) => d.customerId !== 'cust-demo');
   assert.equal((await helix(`/api/devices/${encodeURIComponent(other.id)}`)).status, 404);
   const alerts = await (await helix('/api/alerts')).json();
-  assert.ok(alerts.every((a) => a.customerId === 'cust-helix'));
+  assert.ok(alerts.every((a) => a.customerId === 'cust-demo'));
   const conns = await (await helix('/api/connections')).json();
-  assert.ok(conns.every((c) => c.customerId === 'cust-helix'));
+  assert.ok(conns.every((c) => c.customerId === 'cust-demo'));
   assert.ok(conns.every((c) => c.settings === undefined && c.credentials === undefined));
   // Customer users cannot change connections.
   assert.equal((await helix(`/api/connections/${conns[0].id}`, { method: 'PUT', body: JSON.stringify({ mode: 'live' }) })).status, 403);

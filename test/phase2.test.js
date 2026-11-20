@@ -5,12 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createApp } from '../server/index.js';
+import { addSecondCustomer } from './fixtures.js';
 import { validateSchematic, SCHEMATIC_TEMPLATES } from '../server/lib/schematic.js';
 
 async function startApp(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm2-'));
   process.env.MASTER_KEY = crypto.randomBytes(32).toString('hex');
   const ctx = createApp({ dataDir, autoStart: false });
+  addSecondCustomer(ctx.store);
   await ctx.sync.syncAll();
   const server = ctx.app.listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -72,15 +74,15 @@ test('admins can enter a customer and see only that estate', async (t) => {
   assert.equal(me.actingCustomerName, 'Northwind Retail');
   assert.ok((await sup.json('/api/devices')).every((d) => d.customerId === 'cust-northwind'));
   await sup('/api/session/exit', { method: 'POST' });
-  assert.equal(new Set((await sup.json('/api/devices')).map((d) => d.customerId)).size, 3);
-  const viewer = await login('it@helix.example');
+  assert.equal(new Set((await sup.json('/api/devices')).map((d) => d.customerId)).size, 2);
+  const viewer = await login('it@demo.example');
   assert.equal((await viewer('/api/session/enter', { method: 'POST', body: JSON.stringify({ customerId: 'cust-northwind' }) })).status, 403);
 });
 
 test('bulk update groups devices into a room and can be reset', async (t) => {
   const { login } = await startApp(t);
   const admin = await login('admin@provider.example');
-  const devs = (await admin.json('/api/devices?customer=cust-helix')).slice(0, 3);
+  const devs = (await admin.json('/api/devices?customer=cust-demo')).slice(0, 3);
   const ids = devs.map((d) => d.id);
   const r = await admin.json('/api/devices/bulk', { method: 'POST', body: JSON.stringify({ ids, set: { site: 'London HQ', room: 'War Room', platform: 'Zoom', addTags: ['VIP'] } }) });
   assert.equal(r.updated, 3);
@@ -97,12 +99,12 @@ test('bulk update groups devices into a room and can be reset', async (t) => {
 test('room schematics are saved, validated and scoped', async (t) => {
   const { login } = await startApp(t);
   const admin = await login('admin@provider.example');
-  const room = { customerId: 'cust-helix', site: 'London HQ', room: 'Test Room' };
+  const room = { customerId: 'cust-demo', site: 'London HQ', room: 'Test Room' };
   const bad = await admin('/api/rooms/schematic', { method: 'PUT', body: JSON.stringify({ ...room, schematic: { nodes: [{ id: 'a' }], links: [{ from: 'a', to: 'b' }] } }) });
   assert.equal(bad.status, 400);
   const ok = await admin('/api/rooms/schematic', { method: 'PUT', body: JSON.stringify({ ...room, schematic: SCHEMATIC_TEMPLATES[2].schematic }) });
   assert.equal(ok.status, 200);
-  const q = `customerId=cust-helix&site=London%20HQ&room=Test%20Room`;
+  const q = `customerId=cust-demo&site=London%20HQ&room=Test%20Room`;
   assert.equal((await admin.json(`/api/rooms/schematic?${q}`)).nodes.length, SCHEMATIC_TEMPLATES[2].schematic.nodes.length);
   const other = await login('it@northwind.example');
   assert.equal((await other(`/api/rooms/schematic?${q}`)).status, 404);
@@ -128,18 +130,18 @@ test('mock data switch: a customer onboarded with it off has no devices, and swi
   assert.ok(add.status === 201 || add.status === 200, `manual add ${add.status}`);
 
   // Switch mock data off on a demo customer: its mock devices and mock alerts go.
-  const before = ctx.inventory.devices.filter((d) => d.customerId === 'cust-helix').length;
+  const before = ctx.inventory.devices.filter((d) => d.customerId === 'cust-demo').length;
   assert.ok(before > 0);
-  const off = await sup('/api/admin/customers/cust-helix', { method: 'PUT', body: JSON.stringify({ mockData: false }) });
+  const off = await sup('/api/admin/customers/cust-demo', { method: 'PUT', body: JSON.stringify({ mockData: false }) });
   assert.equal(off.status, 200);
   const offBody = await off.json();
   assert.equal(offBody.mockData, false);
   assert.equal(offBody.deviceCount, 0);
-  assert.ok(!ctx.store.data.alerts.some((a) => a.customerId === 'cust-helix' && a.kind === 'device'));
+  assert.ok(!ctx.store.data.alerts.some((a) => a.customerId === 'cust-demo' && a.kind === 'device'));
   assert.ok(ctx.inventory.devices.some((d) => d.customerId === 'cust-northwind'), 'other customers keep their mock data');
 
   // And back on.
-  const on = await (await sup('/api/admin/customers/cust-helix', { method: 'PUT', body: JSON.stringify({ mockData: true }) })).json();
+  const on = await (await sup('/api/admin/customers/cust-demo', { method: 'PUT', body: JSON.stringify({ mockData: true }) })).json();
   assert.equal(on.deviceCount, before);
   assert.equal(ctx.inventory.devices.filter((d) => d.customerId === c.id).length, 1, 'manual device kept with mock data off');
 });

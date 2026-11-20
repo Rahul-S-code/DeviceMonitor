@@ -7,34 +7,19 @@
 
 export const MOCK_CUSTOMERS = [
   {
-    id: 'cust-helix', name: 'Helix Financial',
+    id: 'cust-demo', name: 'Demo Customer',
     sites: [
       { name: 'London HQ', region: 'EMEA', country: 'United Kingdom', lat: 51.5154, lng: -0.0922, city: 'London', rooms: 7 },
       { name: 'Frankfurt', region: 'EMEA', country: 'Germany', lat: 50.1109, lng: 8.6821, city: 'Frankfurt', rooms: 4 },
       { name: 'New York', region: 'AMER', country: 'United States', lat: 40.7549, lng: -73.984, city: 'New York', rooms: 6 },
       { name: 'Singapore', region: 'APAC', country: 'Singapore', lat: 1.2834, lng: 103.8607, city: 'Singapore', rooms: 4 },
     ],
-    platforms: ['Microsoft Teams', 'Microsoft Teams', 'Microsoft Teams', 'Zoom'],
-  },
-  {
-    id: 'cust-northwind', name: 'Northwind Retail',
-    sites: [
-      { name: 'Chicago', region: 'AMER', country: 'United States', lat: 41.8826, lng: -87.6233, city: 'Chicago', rooms: 6 },
-      { name: 'Toronto', region: 'AMER', country: 'Canada', lat: 43.6481, lng: -79.3815, city: 'Toronto', rooms: 4 },
-      { name: 'Manchester', region: 'EMEA', country: 'United Kingdom', lat: 53.4794, lng: -2.2453, city: 'Manchester', rooms: 5 },
-    ],
-    platforms: ['Zoom', 'Zoom', 'Google Meet'],
-  },
-  {
-    id: 'cust-meridian', name: 'Meridian Health',
-    sites: [
-      { name: 'Mumbai', region: 'APAC', country: 'India', lat: 19.0596, lng: 72.8656, city: 'Mumbai', rooms: 6 },
-      { name: 'Sydney', region: 'APAC', country: 'Australia', lat: -33.8651, lng: 151.2099, city: 'Sydney', rooms: 4 },
-      { name: 'Boston', region: 'AMER', country: 'United States', lat: 42.3554, lng: -71.0605, city: 'Boston', rooms: 5 },
-    ],
-    platforms: ['Cisco Webex', 'Cisco Webex', 'Microsoft Teams'],
+    platforms: ['Microsoft Teams', 'Microsoft Teams', 'Zoom', 'Cisco Webex', 'Google Meet'],
   },
 ];
+// Demo customers seeded by earlier versions. Stores that still hold them are
+// moved to the single Demo Customer once (see Store.migrate).
+export const RETIRED_DEMO_IDS = ['cust-helix', 'cust-northwind', 'cust-meridian'];
 
 const ROOM_NAMES = ['Boardroom', 'Atlas', 'Orion', 'Harbour', 'Summit', 'Cedar', 'Willow', 'Lumen', 'Nova', 'Quartz', 'Delta', 'Aurora'];
 

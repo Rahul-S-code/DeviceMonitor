@@ -12,7 +12,7 @@ import { CONNECTORS } from '../server/connectors/registry.js';
 import { BaseConnector } from '../server/connectors/base.js';
 import { HEALTH_ORDER } from '../server/lib/device-model.js';
 
-const conn = (oem, extra = {}) => ({ id: `c-${oem}`, customerId: 'cust-helix', oem, mode: 'mock', settings: {}, ...extra });
+const conn = (oem, extra = {}) => ({ id: `c-${oem}`, customerId: 'cust-demo', oem, mode: 'mock', settings: {}, ...extra });
 
 test('every registered connector implements the shared interface', () => {
   for (const C of CONNECTORS) {
@@ -26,7 +26,7 @@ test('Poly Lens mock produces valid common devices', async () => {
   const devices = await new PolyLensConnector({ connection: conn('poly-lens') }).sync();
   assert.ok(devices.length > 10);
   for (const d of devices) {
-    assert.equal(d.customerId, 'cust-helix');
+    assert.equal(d.customerId, 'cust-demo');
     assert.equal(d.make, 'Poly');
     assert.ok(HEALTH_ORDER.includes(d.health));
     assert.ok(['healthy', 'offline'].includes(d.health), 'Poly Lens only reports connected/disconnected');
@@ -35,7 +35,7 @@ test('Poly Lens mock produces valid common devices', async () => {
 });
 
 test('Poly Lens connector follows nextToken pagination', async () => {
-  const inner = new PolyLensMockTransport('cust-helix');
+  const inner = new PolyLensMockTransport('cust-demo');
   let pages = 0;
   const transport = {
     graphql: (q, v) => {

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { MOCK_CUSTOMERS, buildEstate, registerMockCustomer, unregisterMockCustomer, demoModels } from '../mock/estate.js';
+import { MOCK_CUSTOMERS, RETIRED_DEMO_IDS, buildEstate, registerMockCustomer, unregisterMockCustomer, demoModels } from '../mock/estate.js';
 import { modelKey, cleanModel, cleanRelease, sortReleases } from './models.js';
 import { classifyDeviceType } from './device-model.js';
 import { avDemoModels } from '../mock/av-estate.js';
@@ -463,31 +463,36 @@ export class Store {
     this.save();
   }
 
-  /** First-run demo data: three fictional customers, each with a mock Poly Lens and Logitech Sync connection. */
+  /** First-run demo data: one fictional customer ("Demo Customer") with mock connections for every source. */
   seedIfEmpty(demoPassword) {
     if (this.customers.length) return false;
-    for (const c of MOCK_CUSTOMERS) {
-      this.customers.push({ id: c.id, name: c.name, platforms: [...new Set(c.platforms)], slaTarget: DEFAULT_SLA_TARGET });
-      this.data.siteDirectory[c.id] = Object.fromEntries(c.sites.map((s) => [s.name, cleanSite(s)]));
-      for (const r of buildEstate(c.id).rooms) {
-        // Logitech Sync has no platform field, so rooms it manages get a room-directory entry.
-        if (r.oem !== 'poly') this.data.roomDirectory[roomKey(c.id, r.site, r.room)] = r.platform;
-      }
-      for (const oem of ['poly-lens', 'logitech-sync']) this.addMockConnection(c, oem);
-      this.addAvConnections(c);
-      this.addPlatformConnections(c);
-    }
+    const pw = hashPassword(demoPassword);
+    for (const c of MOCK_CUSTOMERS) this.seedDemoCustomer(c, pw);
     this.seedModels();
     this.data.phase3 = true;
     this.data.phase5 = true;
-    const pw = hashPassword(demoPassword);
+    this.data.phase6 = true;
     this.users.push({ id: 'u-admin', email: 'admin@provider.example', name: 'Service Desk Admin', role: 'provider_admin', customerId: null, password: pw });
-    for (const c of MOCK_CUSTOMERS) {
-      const slug = c.id.replace('cust-', '');
-      this.users.push({ id: `u-${slug}`, email: `it@${slug}.example`, name: `${c.name} IT`, role: 'customer_viewer', customerId: c.id, password: pw });
-    }
     this.flush();
     return true;
+  }
+
+  /** One demo customer: sites, room platforms, mock connections and its viewer login. */
+  seedDemoCustomer(c, pwHash) {
+    this.customers.push({ id: c.id, name: c.name, platforms: [...new Set(c.platforms)], slaTarget: DEFAULT_SLA_TARGET, mockData: true });
+    this.data.siteDirectory[c.id] = Object.fromEntries(c.sites.map((s) => [s.name, cleanSite(s)]));
+    for (const r of buildEstate(c.id).rooms) {
+      // Logitech Sync has no platform field, so rooms it manages get a room-directory entry.
+      if (r.oem !== 'poly') this.data.roomDirectory[roomKey(c.id, r.site, r.room)] = r.platform;
+    }
+    for (const oem of ['poly-lens', 'logitech-sync']) this.addMockConnection(c, oem);
+    this.addAvConnections(c);
+    this.addPlatformConnections(c);
+    const slug = c.id.replace('cust-', '');
+    const email = `it@${slug}.example`;
+    if (!this.users.some((u) => u.email === email)) {
+      this.users.push({ id: `u-${slug}`, email, name: `${c.name} IT`, role: 'customer_viewer', customerId: c.id, password: pwHash });
+    }
   }
 
   addMockConnection(c, oem) {
@@ -505,7 +510,7 @@ export class Store {
   }
 
   /** Bring older data files up to date (adds the super admin and site coordinates). */
-  migrate(superPassword) {
+  migrate(superPassword, demoPassword = superPassword) {
     let changed = false;
     if (!this.users.some((u) => u.role === 'super_admin')) {
       this.users.unshift({ id: 'u-super', email: 'superadmin@provider.example', name: 'Super Admin', role: 'super_admin', customerId: null, password: hashPassword(superPassword) });
@@ -536,6 +541,16 @@ export class Store {
       }
       if (this.models.length) this.seedAvModels();
       this.data.phase5 = true;
+      changed = true;
+    }
+    // Phase 6: one demo customer instead of three. The old seeded demo customers
+    // (and only those) are removed, and "Demo Customer" is added unless one exists.
+    if (!this.data.phase6) {
+      for (const id of RETIRED_DEMO_IDS) if (this.customers.some((c) => c.id === id)) this.deleteCustomer(id);
+      for (const c of MOCK_CUSTOMERS) {
+        if (!this.customers.some((x) => x.id === c.id || x.name.toLowerCase() === c.name.toLowerCase())) this.seedDemoCustomer(c, hashPassword(demoPassword));
+      }
+      this.data.phase6 = true;
       changed = true;
     }
     if (changed) this.flush();

@@ -106,9 +106,7 @@ async function renderLogin(error) {
         ${S.config?.showDemoAccounts ? `<div class="demo-users">Demo accounts (password is <span class="mono">DEMO_PASSWORD</span>, default <span class="mono">demo1234</span>):
           <button type="button" data-u="superadmin@provider.example">superadmin@provider.example · super admin, onboards customers</button>
           <button type="button" data-u="admin@provider.example">admin@provider.example · provider admin, all customers</button>
-          <button type="button" data-u="it@helix.example">it@helix.example · Helix Financial only</button>
-          <button type="button" data-u="it@northwind.example">it@northwind.example · Northwind Retail only</button>
-          <button type="button" data-u="it@meridian.example">it@meridian.example · Meridian Health only</button>
+          <button type="button" data-u="it@demo.example">it@demo.example · Demo Customer only</button>
         </div>` : ''}
       </form>
     </div>
@@ -957,7 +955,7 @@ function openConnection(conn, preset = {}) {
       <div id="connMsg"></div>
       ${creating ? `<div class="field"><label>Customer</label><select id="cCust">${S.customers.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div>
         <div class="field"><label>Source</label><select id="cOem">${['oem', 'platform'].map((k) => `<optgroup label="${k === 'oem' ? 'Manufacturer clouds' : 'Meeting-platform portals'}">${S.connectors.filter((x) => x.kind === k).map((x) => `<option value="${x.oem}" ${x.oem === oem ? 'selected' : ''}>${esc(x.displayName)}</option>`).join('')}</optgroup>`).join('')}</select></div>` : ''}
-      <div class="field"><label>Connection name</label><input id="cName" type="text" autocomplete="off" ${NO_AUTOFILL} name="em-name-${Math.random().toString(36).slice(2, 8)}" value="${esc(conn?.name || '')}" placeholder="e.g. Helix Financial · ${esc(C.displayName)}"></div>
+      <div class="field"><label>Connection name</label><input id="cName" type="text" autocomplete="off" ${NO_AUTOFILL} name="em-name-${Math.random().toString(36).slice(2, 8)}" value="${esc(conn?.name || '')}" placeholder="e.g. Demo Customer · ${esc(C.displayName)}"></div>
       <div class="field"><label>Data source</label><div class="seg" id="cMode"><button data-m="mock" class="${mode === 'mock' ? 'on' : ''}">Mock data</button><button data-m="live" class="${mode === 'live' ? 'on' : ''}" ${C.liveSupported === false ? 'disabled title="No public API available"' : ''}>Live API</button></div>
         <div class="help">${mode === 'mock' ? 'Uses built-in sample data in the same format as the real API. No keys needed.' : `Calls the real ${esc(C.displayName)} API with the credentials below.`}</div></div>
       ${C.liveSupported === false ? `<div class="notice info">${esc(C.liveNote)}</div>` : `<div class="section-title">How to get credentials</div>
@@ -1899,7 +1897,7 @@ const CITY_PRESETS = [
 
 async function viewCustomers() {
   const list = await api('/api/admin/customers');
-  hero('Customers', `${list.length} customers. Onboard a new customer, add its users, or enter a customer to see exactly what they see.`);
+  hero('Customers', `${list.length} customer${list.length === 1 ? "" : "s"}. Onboard a new customer, add its users, or enter a customer to see exactly what they see.`);
   $('#view').innerHTML = `
     <div class="cta"><div><h3>Onboard a new customer</h3><p>Add the customer, its sites (for the map), user logins, OEM connections and room schematics in one go.</p></div>
       <div><button class="btn btn-grad" id="onboard">Onboard customer</button></div></div>

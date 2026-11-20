@@ -26,11 +26,9 @@ Demo sign-ins (password `demo1234`, or whatever `DEMO_PASSWORD` is set to on fir
 |---|---|
 | `superadmin@provider.example` | Everything, plus the Customers page: onboard customers, add their logins, enter any customer (password: `SUPERADMIN_PASSWORD`, else `DEMO_PASSWORD`) |
 | `admin@provider.example` | All customers, can manage connections, credentials, rooms and devices |
-| `it@helix.example` | Helix Financial only |
-| `it@northwind.example` | Northwind Retail only |
-| `it@meridian.example` | Meridian Health only |
+| `it@demo.example` | Demo Customer only |
 
-The three customers, their sites and devices are fictional mock data.
+The demo customer, its sites and devices are fictional mock data. Each customer has a Mock data switch (Customers > Sites & users, or when onboarding); with it off the customer starts with no devices and only shows devices from live API connections and manual or CSV uploads.
 
 ## What's in phase 1
 

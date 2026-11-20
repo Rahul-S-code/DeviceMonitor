@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createApp } from '../server/index.js';
+import { addSecondCustomer } from './fixtures.js';
 import { ZoomRoomsConnector } from '../server/connectors/zoom-rooms/index.js';
 import { WebexConnector, WebexHttpTransport } from '../server/connectors/webex/index.js';
 import { modelKey, lifecycleStage, warrantyStatus } from '../server/lib/models.js';
@@ -14,6 +15,7 @@ async function startApp(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-'));
   process.env.MASTER_KEY = crypto.randomBytes(32).toString('hex');
   const ctx = createApp({ dataDir, autoStart: false });
+  addSecondCustomer(ctx.store);
   await ctx.sync.syncAll();
   const server = ctx.app.listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -87,7 +89,7 @@ test('Teams Rooms and Google Meet cannot be switched to live', async (t) => {
   const res = await admin(`/api/connections/${teams.id}`, { method: 'PUT', body: JSON.stringify({ mode: 'live' }) });
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /teamworkDevice/);
-  const create = await admin('/api/connections', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', oem: 'google-meet-hardware', mode: 'live' }) });
+  const create = await admin('/api/connections', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', oem: 'google-meet-hardware', mode: 'live' }) });
   assert.equal(create.status, 400);
 });
 
@@ -131,8 +133,8 @@ test('warranty comes from Logitech Sync and can be overridden in bulk', async (t
 test('SLA report is scoped per customer and uses the customer target', async (t) => {
   const { login } = await startApp(t);
   const sup = await login('superadmin@provider.example');
-  await sup('/api/admin/customers/cust-helix', { method: 'PUT', body: JSON.stringify({ slaTarget: 99.9 }) });
-  const helix = await login('it@helix.example');
+  await sup('/api/admin/customers/cust-demo', { method: 'PUT', body: JSON.stringify({ slaTarget: 99.9 }) });
+  const helix = await login('it@demo.example');
   const r = await (await helix('/api/sla?window=30d')).json();
   assert.equal(r.byCustomer.length, 1);
   assert.equal(r.byCustomer[0].target, 99.9);
@@ -140,7 +142,7 @@ test('SLA report is scoped per customer and uses the customer target', async (t)
   assert.ok(r.overall.availability > 90 && r.overall.availability <= 100);
   assert.equal(r.trend.length, 30);
   assert.ok(r.simulated);
-  assert.ok(r.incidents.every((i) => i.customerId === 'cust-helix'));
+  assert.ok(r.incidents.every((i) => i.customerId === 'cust-demo'));
 });
 
 test('audit log records changes, hides secrets, and is admin-only', async (t) => {
@@ -158,7 +160,7 @@ test('audit log records changes, hides secrets, and is admin-only', async (t) =>
   const csv = await (await admin('/api/audit.csv')).text();
   assert.ok(!csv.includes('TOP-SECRET-VALUE') && !JSON.stringify(r).includes('TOP-SECRET-VALUE'));
   assert.match(csv.split('\r\n')[0], /Time \(UTC\)/);
-  const helix = await login('it@helix.example');
+  const helix = await login('it@demo.example');
   assert.equal((await helix('/api/audit')).status, 403);
 });
 
@@ -194,32 +196,32 @@ test('manual devices: model master only, Not monitored, merge with live data by 
   const { models } = await (await admin('/api/models')).json();
   const scribe = models.find((m) => m.model === 'Scribe');
   // Unknown model is rejected.
-  const bad = await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', modelId: 'nope', site: 'London HQ', room: 'Lab' }) });
+  const bad = await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', modelId: 'nope', site: 'London HQ', room: 'Lab' }) });
   assert.equal(bad.status, 400);
-  const res = await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', modelId: scribe.id, site: 'London HQ', room: 'Lab', serial: 'MANUAL-001', assetTag: 'A-1' }) });
+  const res = await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', modelId: scribe.id, site: 'London HQ', room: 'Lab', serial: 'MANUAL-001', assetTag: 'A-1' }) });
   assert.equal(res.status, 201);
   const devs = await (await admin('/api/devices?health=unmonitored')).json();
   const mine = devs.find((d) => d.serial === 'MANUAL-001');
   assert.ok(mine && mine.health === 'unmonitored' && mine.make === 'Logitech' && mine.oems[0] === 'manual');
-  const summary = await (await admin('/api/summary?customer=cust-helix')).json();
+  const summary = await (await admin('/api/summary?customer=cust-demo')).json();
   assert.equal(summary.totals.unmonitored, 1);
   // Not in SLA, no alert.
   const sla = await (await admin('/api/sla?window=24h')).json();
   assert.ok(!sla.worstDevices.some((d) => d.id === mine.id));
   assert.ok(!ctx.store.data.alerts.some((a) => a.deviceId === mine.id));
   // Same serial as a live-reported device: merged, live health wins, manual fields kept.
-  const live = (await (await admin('/api/devices?customer=cust-helix')).json()).find((d) => d.serial && d.oems.includes('poly-lens'));
+  const live = (await (await admin('/api/devices?customer=cust-demo')).json()).find((d) => d.serial && d.oems.includes('poly-lens'));
   const polyModel = models.find((m) => m.make === live.make && live.model.endsWith(m.model.replace(/^Poly\s+/, ''))) || models.find((m) => m.make === 'Poly');
-  await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', modelId: polyModel.id, site: 'Somewhere', room: 'Else', serial: live.serial, assetTag: 'A-2' }) });
-  const merged = (await (await admin('/api/devices?customer=cust-helix')).json()).filter((d) => d.serial === live.serial);
+  await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', modelId: polyModel.id, site: 'Somewhere', room: 'Else', serial: live.serial, assetTag: 'A-2' }) });
+  const merged = (await (await admin('/api/devices?customer=cust-demo')).json()).filter((d) => d.serial === live.serial);
   assert.equal(merged.length, 1);
   assert.notEqual(merged[0].health, 'unmonitored');
   assert.equal(merged[0].site, live.site, 'OEM location wins');
   assert.equal(merged[0].assetTag, 'A-2');
   assert.ok(merged[0].oems.includes('manual'));
   // Customers cannot add; audit records the add.
-  const helix = await login('it@helix.example');
-  assert.equal((await helix('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', modelId: scribe.id, site: 'x', room: 'y' }) })).status, 403);
+  const helix = await login('it@demo.example');
+  assert.equal((await helix('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', modelId: scribe.id, site: 'x', room: 'y' }) })).status, 403);
   const audit = await (await admin('/api/audit?action=device.manual')).json();
   assert.equal(audit.entries.filter((e) => e.action === 'device.manual_add').length, 2);
   // Delete.
@@ -230,9 +232,9 @@ test('manual devices: model master only, Not monitored, merge with live data by 
 test('manual devices: "Other" make and model, tagged Not monitored when no API connector', async (t) => {
   const { login } = await startApp(t);
   const admin = await login('admin@provider.example');
-  const r = await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', make: 'Neat', model: 'Bar Pro', deviceType: 'Video bar', site: 'London HQ', room: 'Lab', serial: 'NEAT-1' }) });
+  const r = await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', make: 'Neat', model: 'Bar Pro', deviceType: 'Video bar', site: 'London HQ', room: 'Lab', serial: 'NEAT-1' }) });
   assert.equal(r.status, 201);
-  assert.equal((await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', make: 'Neat', site: 'London HQ', room: 'Lab' }) })).status, 400);
+  assert.equal((await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', make: 'Neat', site: 'London HQ', room: 'Lab' }) })).status, 400);
   const devs = await (await admin('/api/devices?q=NEAT-1')).json();
   assert.equal(devs.length, 1);
   assert.equal(devs[0].make, 'Neat');
@@ -245,12 +247,12 @@ test('manual devices: "Other" make and model, tagged Not monitored when no API c
   // A model the master knows, with a connector, is not tagged.
   const { models } = await (await admin('/api/models')).json();
   const rally = models.find((m) => m.model === 'Rally Bar');
-  await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', modelId: rally.id, site: 'London HQ', room: 'Lab', serial: 'RB-NEW-1' }) });
+  await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', modelId: rally.id, site: 'London HQ', room: 'Lab', serial: 'RB-NEW-1' }) });
   const rb = (await (await admin('/api/devices?q=RB-NEW-1')).json())[0];
   assert.equal(rb.health, 'unmonitored');
   assert.ok(!rb.tags?.includes('Not monitored'));
   assert.match(rb.healthReason, /Waiting for Logitech Sync/);
   // Typing a make/model that is in the master links to it.
-  await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-helix', make: 'logitech', model: 'Rally Bar', site: 'London HQ', room: 'Lab', serial: 'RB-NEW-2' }) });
+  await admin('/api/manual-devices', { method: 'POST', body: JSON.stringify({ customerId: 'cust-demo', make: 'logitech', model: 'Rally Bar', site: 'London HQ', room: 'Lab', serial: 'RB-NEW-2' }) });
   assert.equal((await (await admin('/api/devices?q=RB-NEW-2')).json())[0].modelId, rally.id);
 });
