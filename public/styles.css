@@ -615,3 +615,8 @@ label.inline-chk input[type=checkbox] { width: auto; margin: 0; }
   .pager { justify-content: center; }
   .sy-filter { max-width: none; }
 }
+
+/* Back link to the app Estate Monitor is opened from (HOME_LINK_URL) */
+.nav a.nav-home { margin-top: auto; border-top: 1px solid rgba(255, 255, 255, .08); border-radius: 0; padding-top: 12px; }
+.login-home { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin-bottom: 18px; }
+.login-home .nav-ic { stroke-width: 1.8; }

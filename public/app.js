@@ -98,6 +98,7 @@ async function renderLogin(error) {
     </div>
     <div class="login-form">
       <form id="loginForm">
+        ${homeLinkHTML('login-home')}
         <h2>Sign in</h2>
         <p class="muted" style="margin:0 0 18px">Use your Estate Monitor account.</p>
         ${error ? `<div class="notice err">${esc(error)}</div>` : ''}
@@ -159,6 +160,13 @@ function navGroups() {
   ];
 }
 
+/** "Back to" link for the app Estate Monitor is opened from (L2O, the UC Order Hub), set by HOME_LINK_URL. */
+function homeLinkHTML(cls) {
+  const h = S.config?.homeLink;
+  if (!h?.url || !/^https?:\/\//i.test(h.url)) return '';
+  return `<a class="${cls}" href="${esc(h.url)}" title="Back to ${esc(h.name)}"><svg class="nav-ic" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg><span>Back to ${esc(h.name)}</span></a>`;
+}
+
 function renderShell() {
   const initials = (S.me.name || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('');
   const label = { estate: 'Sites &amp; rooms', sla: 'SLA', models: 'Models' };
@@ -166,7 +174,7 @@ function renderShell() {
   <div class="shell">
     <aside class="side" id="side">
       <a class="brand" href="#/overview"><div class="brand-mark">${pulseMark()}</div><div>Estate Monitor<small>${esc(S.me.customerName || S.me.actingCustomerName || (isSuper() ? 'Super admin' : isAdmin() ? 'Service provider' : 'Customer view'))}</small></div></a>
-      <nav class="nav" id="nav">${navGroups().map(([g, items]) => `<div class="nav-group">${esc(g)}</div>${items.map((k) => `<a href="#/${k}" data-r="${k}">${navIcon(k)}<span>${label[k] || ROUTE_TITLE[k]}</span>${k === 'alerts' ? '<b class="nav-badge" id="alertBadge" hidden></b>' : ''}</a>`).join('')}`).join('')}</nav>
+      <nav class="nav" id="nav">${navGroups().map(([g, items]) => `<div class="nav-group">${esc(g)}</div>${items.map((k) => `<a href="#/${k}" data-r="${k}">${navIcon(k)}<span>${label[k] || ROUTE_TITLE[k]}</span>${k === 'alerts' ? '<b class="nav-badge" id="alertBadge" hidden></b>' : ''}</a>`).join('')}`).join('')}${homeLinkHTML('nav-home')}</nav>
       <div class="side-foot">
         <span class="avatar">${esc(initials)}</span>
         <span class="who">${esc(S.me.name)}<small>${esc({ super_admin: 'Super admin', provider_admin: 'Provider admin', customer_viewer: 'Customer' }[S.me.role] || S.me.role)}</small></span>
@@ -1128,8 +1136,8 @@ function openEvents() {
 // ------------------------------------------------------------------ boot
 async function boot() {
   try { S.me = await api('/api/me'); } catch { renderLogin(); return; }
-  const [options, connectors, alerts, customers] = await Promise.all([api('/api/filters'), api('/api/connectors'), api('/api/alerts?limit=100'), api('/api/customers')]);
-  Object.assign(S, { options, connectors, alerts, customers });
+  const [options, connectors, alerts, customers, config] = await Promise.all([api('/api/filters'), api('/api/connectors'), api('/api/alerts?limit=100'), api('/api/customers'), S.config ? S.config : fetch('/api/config').then((r) => r.json()).catch(() => ({}))]);
+  Object.assign(S, { options, connectors, alerts, customers, config });
   for (const c of connectors) { OEM_SHORT[c.oem] = c.short || c.displayName.slice(0, 2).toUpperCase(); OEM_NAME[c.oem] = c.displayName; }
   // Drop saved filter values the user can no longer see.
   for (const [k] of FILTER_KEYS) {

@@ -131,7 +131,9 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
     res.clearCookie(COOKIE, { path: '/' });
     res.json({ ok: true });
   });
-  app.get('/api/config', (_req, res) => res.json({ showDemoAccounts, mapLayers }));
+  // Link back to the app Estate Monitor is opened from (L2O, the UC Order Hub). HOME_LINK_URL="" hides it.
+  const homeLink = process.env.HOME_LINK_URL === '' ? null : { url: process.env.HOME_LINK_URL || 'https://rahul-s-code.github.io/L2O/', name: process.env.HOME_LINK_NAME || 'UC Order Hub' };
+  app.get('/api/config', (_req, res) => res.json({ showDemoAccounts, mapLayers, homeLink }));
   app.get('/api/me', requireUser, (req, res) => {
     const { id, email, name, role, customerId } = req.user;
     const acting = isAdminRole(req.user) && req.session.actingCustomerId && store.customers.some((c) => c.id === req.session.actingCustomerId) ? req.session.actingCustomerId : null;

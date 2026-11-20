@@ -117,7 +117,7 @@ Cisco Control Hub is the Webex admin portal and is covered by the **Cisco Contro
 `railway.json` sets the start command and health check. In Railway: New Project > Deploy from GitHub repo > pick this repository, then:
 
 1. Right-click the service > Attach volume, mount path `/data`. The app stores its data on the volume automatically (it reads `RAILWAY_VOLUME_MOUNT_PATH`; `DATA_DIR` overrides it). Without a volume, data is lost on every redeploy.
-2. Variables: `NODE_ENV=production`, `MASTER_KEY` (keep the same value when moving hosts, or saved API keys can't be decrypted), `SUPERADMIN_PASSWORD`, `DEMO_PASSWORD`, `SHOW_DEMO_ACCOUNTS=false`. Optional: `SYNC_INTERVAL_SECONDS` (starting default 300; change it later under Configure > Sync schedule).
+2. Variables: `NODE_ENV=production`, `MASTER_KEY` (keep the same value when moving hosts, or saved API keys can't be decrypted), `SUPERADMIN_PASSWORD`, `DEMO_PASSWORD`, `SHOW_DEMO_ACCOUNTS=false`. Optional: `HOME_LINK_URL` / `HOME_LINK_NAME` (the "Back to UC Order Hub" link, defaults to https://rahul-s-code.github.io/L2O/; set it empty to hide), `SYNC_INTERVAL_SECONDS` (starting default 300; change it later under Configure > Sync schedule).
 3. Settings > Networking > Generate Domain for a public https link.
 4. Set a usage limit under Workspace > Usage so a runaway service can't run up the bill.
 
