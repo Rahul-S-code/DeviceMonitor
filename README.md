@@ -112,6 +112,17 @@ Admins can add devices that no API reports (Devices › **+ Add device**, or **+
 
 Cisco Control Hub is the Webex admin portal and is covered by the **Cisco Control Hub (Webex)** connector. Domotz reports network-attached kit by MAC address, so it merges with the vendor record of the same device (a Sony display, a NETGEAR switch). Every connector has a demo (mock) mode returning its API's own JSON shape. The in-app **Documentation** page (Help › Documentation) has the full setup guide for each connector, built from the connectors' own metadata.
 
+## Publish it online (Railway)
+
+`railway.json` sets the start command and health check. In Railway: New Project > Deploy from GitHub repo > pick this repository, then:
+
+1. Right-click the service > Attach volume, mount path `/data`. The app stores its data on the volume automatically (it reads `RAILWAY_VOLUME_MOUNT_PATH`; `DATA_DIR` overrides it). Without a volume, data is lost on every redeploy.
+2. Variables: `NODE_ENV=production`, `MASTER_KEY` (keep the same value when moving hosts, or saved API keys can't be decrypted), `SUPERADMIN_PASSWORD`, `DEMO_PASSWORD`, `SHOW_DEMO_ACCOUNTS=false`. Optional: `SYNC_INTERVAL_SECONDS` (default 30).
+3. Settings > Networking > Generate Domain for a public https link.
+4. Set a usage limit under Workspace > Usage so a runaway service can't run up the bill.
+
+A Railway Postgres can be added to the same project later; its `DATABASE_URL` can be referenced from this service's variables.
+
 ## Publish it online (Render)
 
 GitHub stores the code but cannot run a Node server, so the app is hosted on Render, which deploys straight from this repository:

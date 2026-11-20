@@ -31,7 +31,7 @@ if (fs.existsSync(envFile)) {
   }
 }
 
-export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR || 'data'), intervalMs, autoStart = true } = {}) {
+export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || 'data'), intervalMs, autoStart = true } = {}) {
   const store = new Store(dataDir);
   const production = process.env.NODE_ENV === 'production';
   // In production, never fall back to a well-known password.
