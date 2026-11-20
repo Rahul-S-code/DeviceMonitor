@@ -2513,9 +2513,9 @@ async function viewModels() {
         <td><span class="src-tags">${(m.monitoredBy || []).map((o) => `<span class="pill" title="${esc(OEM_NAME[o] || o)}">${OEM_SHORT[o] || esc(o)}</span>`).join('') || '<span class="muted">Not monitored</span>'}</span></td>
         <td class="mono">${esc(m.baseline || '—')}</td><td class="mono">${esc(m.latest || '—')}${m.latest && m.baseline && cmpVer(m.latest, m.baseline) > 0 ? ` ${chip('newer', 'warn')}` : ''}</td>
         <td>${lcDate(m.endOfSale, m.lifecycleStatus)}</td><td>${lcDate(m.endOfSupport, m.lifecycleStatus)}</td><td>${lcDate(m.endOfLife, m.lifecycleStatus)}</td>
-        <td>${(m.lifecycleRefs?.[0] || m.lifecycleUrl) ? `<a href="${esc(m.lifecycleRefs?.[0]?.url || m.lifecycleUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${m.lifecycleStatus === 'discontinued' ? 'Discontinued' : 'Vendor page'}</a>` : m.lifecycleStatus ? '<span class="muted">No notice</span>' : '—'}</td><td>${m.devices}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td></tr>`).join('') || '<tr><td colspan="12" class="empty">No models yet</td></tr>'}
+        <td>${(m.lifecycleRefs?.[0] || m.lifecycleUrl) ? `<a href="${esc(m.lifecycleRefs?.[0]?.url || m.lifecycleUrl)}" target="_blank" rel="noopener">${m.lifecycleStatus === 'discontinued' ? 'Discontinued' : 'Vendor page'}</a>` : m.lifecycleStatus ? '<span class="muted">No notice</span>' : '—'}</td><td>${m.devices}</td><td>${m.behind ? chip(m.behind, 'crit') : '0'}</td></tr>`).join('') || '<tr><td colspan="12" class="empty">No models yet</td></tr>'}
       </tbody></table></div></div>`;
-  document.querySelectorAll('tr[data-model]').forEach((tr) => tr.addEventListener('click', () => openModel(S.modelList.find((m) => m.id === tr.dataset.model))));
+  document.querySelectorAll('tr[data-model]').forEach((tr) => tr.addEventListener('click', (e) => { if (e.target.closest('a')) return; openModel(S.modelList.find((m) => m.id === tr.dataset.model)); }));
   $('#mAdd')?.addEventListener('click', () => openModel(null));
   document.querySelectorAll('[data-unc]').forEach((b) => b.addEventListener('click', () => openModel(null, r.uncatalogued[b.dataset.unc])));
   $('#mImport')?.addEventListener('click', async (e) => {
