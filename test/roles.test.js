@@ -158,9 +158,9 @@ test('default permissions follow the role descriptions', async (t) => {
   assert.equal((await tech('/api/audit')).status, 403);
   // Customer admin: estate, sites and contacts, audit; no connections or baselines.
   assert.equal((await cadmin.send('POST', '/api/devices/bulk', { ids: [dev.id], set: { notes: 'x' } })).status, 200);
-  const sites = await cadmin.send('PUT', '/api/customers/cust-demo/sites', { sites: [{ name: 'London HQ', region: 'EMEA', spocName: 'Priya Shah', spocEmail: 'priya@demo.example', spocPhone: '+44 20 7946 0000' }] });
+  const sites = await cadmin.send('PUT', '/api/customers/cust-demo/sites', { sites: [{ name: 'London HQ', region: 'EMEA', city: 'London', lat: 51.5, lng: -0.12 }] });
   assert.equal(sites.status, 200);
-  assert.equal((await sites.json()).sites[0].spocName, 'Priya Shah');
+  assert.equal((await sites.json()).sites[0].city, 'London');
   assert.equal((await cadmin.send('PUT', '/api/customers/cust-northwind/sites', { sites: [] })).status, 404);
   assert.equal((await cadmin.send('POST', '/api/connections', { customerId: 'cust-demo', oem: 'poly-lens' })).status, 403);
   assert.equal((await cadmin.send('POST', '/api/baselines/customers/cust-demo', { level: 'latest' })).status, 403);
@@ -241,4 +241,35 @@ test('phase 7 migration: provider admins become MSP admins of a default MSP, vie
   again.migrate('pw', 'demo-pw');
   assert.equal(again.users.length, s.users.length);
   assert.equal(again.msps.length, 1);
+});
+
+test('action inbox follows the roles: technical users decide, end users have no access, MSPs stay apart', async (t) => {
+  const { ctx, login } = await startApp(t);
+  const { acme } = await secondMsp(login);
+  const dflt = await login('admin@provider.example');
+  assert.equal((await dflt.send('POST', '/api/checks/run', {})).status < 300, true);
+  const tech = await login('tech@demo.example');
+  const end = await login('it@demo.example');
+  const actions = await tech.json('/api/actions');
+  const list = actions.actions || actions.items || actions;
+  assert.ok(Array.isArray(list));
+  assert.ok(list.every((a) => a.customerId === 'cust-demo'));
+  const open = list.find((a) => a.status === 'proposed');
+  if (open) assert.equal((await tech.send('POST', `/api/actions/${open.id}/decline`, { reason: 'test' })).status, 200);
+  assert.equal((await end('/api/actions')).status, 403);
+  assert.equal((await end('/api/contacts/cust-demo')).status, 403);
+  assert.equal((await tech.send('PUT', '/api/contacts/cust-demo', { scope: 'customer', role: 'engineer', contact: null })).status, 403, 'contacts are edited by admins');
+  assert.equal((await tech.send('PUT', '/api/admin/checks', { enabled: false })).status, 403);
+  // The other MSP never sees the default MSP's actions.
+  const theirs = await acme.json('/api/actions');
+  const tl = theirs.actions || theirs.items || theirs;
+  assert.ok(!JSON.stringify(tl).includes('cust-demo'));
+  const cc = (await acme('/api/contacts/cust-demo')).status;
+  assert.ok(cc === 403 || cc === 404, `contacts of another MSP's customer: ${cc}`);
+  // Turning inbox decisions off for technical users takes effect at once.
+  const cadmin = await login('admin@demo.example');
+  assert.equal((await cadmin.send('PUT', '/api/roles', { layer: 'customer', id: 'cust-demo', overrides: { technical_user: { 'inbox.approve': false } } })).status, 200);
+  void ctx;
+  const anyId = list[0]?.id || 'x';
+  assert.equal((await tech.send('POST', `/api/actions/${anyId}/decline`, {})).status, 403);
 });

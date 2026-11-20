@@ -30,12 +30,12 @@ export const ROLE_INFO = {
   customer_admin: {
     label: 'Customer admin', scope: 'Their own organisation',
     summary: 'The customer\'s own administrator, usually the IT or workplace lead.',
-    duties: ['Manage their estate: device records, rooms and schematics', 'Maintain sites and site contacts (SPOC)', 'Create technical users and end users', 'Approve actions in the customer inbox', 'Adjust permissions for technical and end users'],
+    duties: ['Manage their estate: device records, rooms and schematics', 'Maintain sites and site contacts (SPOC)', 'Create technical users and end users', 'Decide actions in the action inbox and keep site contacts current', 'Adjust permissions for technical and end users'],
   },
   technical_user: {
     label: 'Technical user', scope: 'Their own organisation',
     summary: 'Engineers and support staff who look after the rooms day to day.',
-    duties: ['See every device and its diagnostics', 'Run remote actions such as a reboot', 'Sync connections on demand and update room schematics', 'Work on and approve technical actions'],
+    duties: ['See every device and its diagnostics', 'Run remote actions such as a reboot', 'Sync connections on demand and update room schematics', 'Decide and carry out actions in the action inbox'],
   },
   end_user: {
     label: 'End user', scope: 'Their own organisation, read only',
@@ -54,9 +54,12 @@ export const PERMISSIONS = [
   { key: 'devices.actions', group: 'Technical', label: 'Run remote actions', help: 'Reboot and other device actions through the vendor APIs.', min: 'technical_user' },
   { key: 'connections.sync', group: 'Technical', label: 'Sync connections now', help: 'Pull fresh data from a connection on demand.', min: 'technical_user' },
   { key: 'rooms.design', group: 'Technical', label: 'Edit room schematics and drawings', help: 'Cabling schematics and design file uploads.', min: 'technical_user' },
-  { key: 'inbox.approve', group: 'Technical', label: 'Approve inbox actions', help: 'Approve or reject proposed actions in the customer inbox.', min: 'technical_user' },
+  { key: 'inbox.view', group: 'Technical', label: 'See the action inbox', help: 'Proposed actions from the daily checks.', min: 'technical_user' },
+  { key: 'inbox.approve', group: 'Technical', label: 'Decide inbox actions', help: 'Approve or decline proposed actions, send dispatches, mark them done.', min: 'technical_user' },
+  { key: 'inbox.run', group: 'Technical', label: 'Run the checks now', help: 'Start the daily checks on demand.', min: 'technical_user' },
+  { key: 'contacts.view', group: 'Technical', label: 'See site contacts', help: 'Site and room contacts (SPOC), engineer and renewals contacts.', min: 'technical_user' },
   { key: 'estate.edit', group: 'Technical', label: 'Edit device records', help: 'Bulk edit, add devices by hand or CSV, set room platforms.', min: 'technical_user' },
-  { key: 'sites.manage', group: 'Administration', label: 'Manage sites and contacts', help: 'Site details, map positions and site contacts (SPOC).', min: 'customer_admin' },
+  { key: 'sites.manage', group: 'Administration', label: 'Manage sites and contacts', help: 'Site details and map positions; site, room, engineer and renewals contacts.', min: 'customer_admin' },
   { key: 'users.manage', group: 'Administration', label: 'Manage users', help: 'Create, change and remove users at lower levels.', min: 'customer_admin' },
   { key: 'roles.manage', group: 'Administration', label: 'Adjust role permissions', help: 'Change what lower roles can do, within your own permissions.', min: 'customer_admin' },
   { key: 'audit.view', group: 'Administration', label: 'View the audit log', help: 'Who did what, for the customers in your scope.', min: 'customer_admin' },
@@ -73,8 +76,8 @@ const ALL = PERMISSION_KEYS;
 export const DEFAULTS = {
   super_admin: ALL,
   msp_admin: ALL.filter((k) => k !== 'platform.manage'),
-  customer_admin: ['estate.view', 'service.view', 'issue.report', 'connections.view', 'devices.actions', 'connections.sync', 'rooms.design', 'inbox.approve', 'estate.edit', 'sites.manage', 'users.manage', 'roles.manage', 'audit.view'],
-  technical_user: ['estate.view', 'service.view', 'issue.report', 'connections.view', 'devices.actions', 'connections.sync', 'rooms.design', 'inbox.approve'],
+  customer_admin: ['estate.view', 'service.view', 'issue.report', 'connections.view', 'devices.actions', 'connections.sync', 'rooms.design', 'inbox.view', 'inbox.approve', 'inbox.run', 'contacts.view', 'estate.edit', 'sites.manage', 'users.manage', 'roles.manage', 'audit.view'],
+  technical_user: ['estate.view', 'service.view', 'issue.report', 'connections.view', 'devices.actions', 'connections.sync', 'rooms.design', 'inbox.view', 'inbox.approve', 'inbox.run', 'contacts.view'],
   end_user: ['estate.view', 'service.view', 'issue.report'],
 };
 

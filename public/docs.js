@@ -64,7 +64,7 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
       <h4>Who can do what</h4>
       ${table(['Role', 'Sees', 'Can change'], [
         ['<b>Super admin</b>', 'Every customer', 'Everything a provider admin can, plus onboarding and deleting customers, users, the model master, and running API checks'],
-        ['<b>Provider admin</b>', 'Every customer (or one, after <b>Enter customer</b>)', 'Connections and keys, rooms, schematics, adding and editing devices (one at a time or by CSV), remote actions; reads the audit log and API tracker'],
+        ['<b>Provider admin</b>', 'Every customer (or one, after <b>Enter customer</b>)', 'Connections and keys, rooms, schematics, adding and editing devices (one at a time or by CSV), remote actions, Action inbox decisions and site contacts; reads the audit log and API tracker'],
         ['<b>Customer</b>', 'Their own estate only', 'Nothing: read-only views of health, alerts, SLA, lifecycle and error codes'],
       ])}
       <h4>Health colours</h4>
@@ -132,13 +132,44 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
       <h4>${link('errors', 'Error codes')}</h4><p>The reference for every Estate Monitor code: what it means, likely causes and checks. Codes are the same whichever vendor reported the fault, so one runbook covers every make.</p>`,
     },
     ...(admin ? [{
+      id: 'inbox', title: 'Action inbox',
+      html: `<p>Every day the ${link('inbox', 'Action inbox')} checks each customer's estate and proposes actions. You answer <b>Yes</b> or <b>No</b>. Pick a customer at the top, or look at all customers at once.</p>
+      <h4>What the daily check looks for</h4>
+      ${table(['Check', 'Proposed action', 'How Yes is carried out'], [
+        ['Device <b>offline</b> for 15 minutes or more', 'Power-cycle', 'Through Domotz (PoE or PDU power-cycle) when it reports the device. An offline device can\'t receive a cloud reboot, so otherwise the steps are emailed to the site contact.'],
+        ['Device <b>critical</b> (online, with a fault)', 'Restart', 'Through the vendor API that reports it (Poly Lens, Webex, Zoom Rooms, Neat Pulse, Yealink, Sony BRAVIA, Domotz). Otherwise emailed to the site contact.'],
+        ['Device that <b>keeps dropping off</b> (3 or more incidents in 7 days)', 'Inspect on site', 'Emails inspection steps (cables, power, network port, heat) to the site contact.'],
+        ['<b>Firmware below the customer\'s baseline</b>, per model', 'Update firmware', 'Emails a task to the customer\'s engineer or service desk, with where to update in each vendor portal (no connected API pushes firmware).'],
+        ['<b>Warranty</b> expired or ending within the notice period (when the baseline requires warranty)', 'Renew warranty', 'Emails the device list to the renewals contact.'],
+        ['Model past the customer\'s <b>lifecycle limit</b> (end of sale, support or life)', 'Plan replacement', 'Emails the device list to the renewals contact.'],
+        ['<b>Connection</b> failing to sync, or not synced for a long time', 'Retry the sync', 'Runs the sync now.'],
+        ['Connection <b>rejecting its credentials</b>', 'Renew credentials', 'Opens Connections to enter new ones.'],
+        ['Site with <b>no local contact</b>, room with <b>no meeting platform</b>, devices with <b>no warranty date</b>', 'Fix the configuration', 'Opens the page where you fix it.'],
+      ])}
+      <h4>Yes and No</h4>
+      ${list([
+        '<b>Yes</b> on an API action asks you to confirm with a second click, then runs it on each affected device (up to 50 per action) and shows the result per device. On demo connections nothing is sent. If it fails for an offline or faulty device, <b>Send to site instead</b> turns it into a field dispatch.',
+        '<b>Yes</b> on a dispatch or request opens the email: the site contact (or the engineer or renewals contact) is filled in, and the step-by-step instructions are written for each device\'s type and include the room, serial number, MAC and what the monitoring shows. Edit anything, then send. Devices at one site go in one email.',
+        'When email sending is not set up on the server, the page says so: <b>Approve and open email</b> opens your own email app with the message (and <b>Copy text</b> copies it). Press <b>Mark as sent</b> once you have sent it.',
+        '<b>No</b> declines the action, with an optional reason. The same issue on the same devices is not proposed again for 7, 30 (default), 90 days or a year. New devices with the same problem are still proposed.',
+        '<b>Mark done</b> closes an approved or sent action by hand. A sent dispatch also closes itself as <b>Done</b> when a later check finds every device on it healthy again.',
+      ])}
+      <h4>Status and duplicates</h4>
+      <p>Actions move through <b>To decide</b> (proposed), <b>Approved</b>, <b>Sent</b>, <b>Failed</b>, <b>Done</b>, <b>Declined</b> and <b>Cleared</b> (the issue went away before anyone decided). An issue already in an open action is never proposed again; new devices with the same problem at the same site join the open proposal instead of creating another. A remote fix that didn't hold within 7 days is proposed again as a site dispatch. Each action has a reference (for example EM-1042) that is in the email subject, so replies can be matched. Every decision, email and API call is in the ${link('audit', 'audit log')}. Closed actions are kept for 180 days.</p>
+      <h4>Site contacts</h4>
+      <p><b>Site contacts</b> on the inbox page holds, per customer: a local contact (SPOC) for each site with name, email and phone; optional room contacts (a room contact gets that room's dispatches, with the site contact in copy); an engineer or service desk contact for firmware tasks; and a renewals contact for warranty and replacements.</p>
+      <h4>Schedule</h4>
+      <p>The checks run every day at 06:00 UTC by default. The super admin changes the time or switches them off with <b>Change</b> beside the schedule. Any admin can press <b>Run checks now</b> for one customer or all of them.</p>
+      ${note('Only admins see the Action inbox. An admin who has entered a customer sees and decides only that customer\'s actions.')}`,
+    }] : []),
+    ...(admin ? [{
       id: 'configure', title: 'Configuration',
       html: `<h4>${link('connections', 'Connections')}</h4>
       <p>A connection links one customer to one source. Each starts on <b>Mock data</b> (built-in demo data in the same format as the real API, no keys needed). To go live: <b>Configure</b>, choose <b>Live API</b>, paste the settings and secrets, press <b>Test connection</b>, then <b>Save</b>. Secrets are encrypted (AES-256-GCM) before they are stored and are never shown again; to change one, paste a new value. <b>Sync now</b> runs a sync straight away; otherwise every connection syncs on a schedule: every 5 minutes by default, changed under <b>Configure › Sync schedule</b> (a default for all connections, and an interval per connection).</p>
       <h4>${link('models', 'Model master')}</h4><p>The catalogue of make, model and device type, which connectors can monitor each model, the approved firmware baseline, lifecycle dates and known releases. Every firmware version first seen in the fleet is added automatically. Only the super admin edits it.</p>
       ${role === 'super_admin' ? `<h4>${link('customers', 'Customers')}</h4><p><b>Onboard customer</b> creates the customer, its sites (city presets fill in map positions), user logins, connections (on demo data to start) and optionally pre-loaded rooms and schematics. Set each customer's SLA target under Sites and users.</p>` : ''}
       <h4>${link('apis', 'API tracker')}</h4><p>Every external API the app uses, which customers and connections use it, live call counts and errors, and the result of reachability checks (a 401 or 403 counts as up because the service answered). The super admin runs <b>Check all APIs</b>, which also tests each connection with its own credentials. Checks also run every 30 minutes.</p>
-      <h4>${link('audit', 'Audit log')}</h4><p>Sign-ins, customer views, device edits and imports, actions, room and schematic changes, onboarding, users, connection changes and tests (never secret values), model master changes and API checks. Filter and export to CSV.</p>`,
+      <h4>${link('audit', 'Audit log')}</h4><p>Sign-ins, customer views, device edits and imports, actions, Action inbox decisions and dispatch emails, site contacts, room and schematic changes, onboarding, users, connection changes and tests (never secret values), model master changes and API checks. Filter and export to CSV.</p>`,
     }] : []),
     {
       id: 'connectors', title: 'Connectors',
@@ -177,6 +208,10 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
         ['<span class="mono">DATABASE_URL</span>', 'Keep everything in Postgres instead of files (recommended for large estates). Existing files are imported on the first start.'],
         ['<span class="mono">ALERT_MAX</span>, <span class="mono">ALERT_RETENTION_DAYS</span>, <span class="mono">HISTORY_RETENTION_DAYS</span>', 'How many alerts are kept (10,000), for how long (30 days), and days of health history (35).'],
         ['<span class="mono">API_CHECK_MINUTES</span>', 'Minutes between automatic API checks (default 30, 0 turns them off).'],
+        ['<span class="mono">MAIL_FROM</span>', 'Sender for Action inbox emails, e.g. <span class="mono">Estate Monitor &lt;noreply@yourdomain.com&gt;</span>. Needed with one of the three below.'],
+        ['<span class="mono">RESEND_API_KEY</span>, <span class="mono">SENDGRID_API_KEY</span> or <span class="mono">SMTP_URL</span>', 'How Action inbox emails are sent: Resend or SendGrid over HTTPS (best on Railway, which blocks outbound SMTP on its lower plans), or SMTP (<span class="mono">smtps://user:pass@host:465</span>, or <span class="mono">smtp://…:587</span> with STARTTLS). Without one, emails open in the admin\'s own email app.'],
+        ['<span class="mono">MAIL_REPLY_TO</span>, <span class="mono">DISPATCH_SIGNATURE</span>', 'Optional Reply-To address for dispatch emails, and the sign-off name (default "The IT support team").'],
+        ['<span class="mono">ACTION_RETENTION_DAYS</span>', 'Days closed Action inbox actions are kept (default 180).'],
         ['<span class="mono">MAP_TILE_URL</span>, <span class="mono">MAP_TILE_NAME</span>, <span class="mono">MAP_TILE_ATTRIBUTION</span>', 'Your own map tile server.'],
         ['<span class="mono">DATA_DIR</span>', 'Where the store, history and documents are kept (default ./data).'],
       ])}`,
@@ -189,6 +224,7 @@ export function docSections({ connectors = [], role = 'customer_viewer', status 
         <dt>A device has no site or the wrong room</dt><dd>Fix it in the vendor's portal (site, group, location or Room field), or edit it here; edits survive syncs.</dd>
         <dt>Remote action says permission denied</dt><dd>The read-only scope used for monitoring is not enough. Add the permission listed for the action to the live credentials.</dd>
         <dt>The CSV import rejects every row</dt><dd>Check the header row matches the template, the file is saved as CSV UTF-8, and make and model match the model master exactly (copy them from the bottom of the template).</dd>
+        ${admin ? '<dt>The Action inbox says email sending isn\'t set up</dt><dd>Set <span class="mono">MAIL_FROM</span> and one of <span class="mono">RESEND_API_KEY</span>, <span class="mono">SENDGRID_API_KEY</span> or <span class="mono">SMTP_URL</span> on the server (see Hosting and settings) and restart. Until then, dispatches open in your own email app.</dd><dt>An offline device is not offered a remote reboot</dt><dd>A device that is offline can\'t receive a command from its cloud. Only a power-cycle of its switch port or PDU outlet (through Domotz) can reach it; otherwise the steps go to the site contact.</dd>' : ''}
         <dt>Everything reset</dt><dd>The free hosting plan has a temporary disk; see Hosting and settings.</dd>
       </dl>`,
     },

@@ -54,8 +54,9 @@ test('a customer user cannot reach another customer through any API parameter', 
     assert.ok(!body.includes(other) && !body.includes('Northwind'), `${p} leaks the other customer`);
   }
   // Admin-only and super-admin-only endpoints refuse a customer user.
-  for (const [p, method] of [['/api/audit', 'GET'], ['/api/admin/customers', 'GET'], ['/api/admin/sync', 'GET'], ['/api/admin/apis', 'GET'], [`/api/connections/${theirConn.id}/sync`, 'POST'], [`/api/devices/${encodeURIComponent(theirDevice.id)}/actions`, 'GET']]) {
-    const r = await as(p, { method, ...(method === 'POST' ? { body: '{}' } : {}) });
+  for (const [p, method] of [['/api/audit', 'GET'], ['/api/admin/customers', 'GET'], ['/api/admin/sync', 'GET'], ['/api/admin/apis', 'GET'], [`/api/connections/${theirConn.id}/sync`, 'POST'], [`/api/devices/${encodeURIComponent(theirDevice.id)}/actions`, 'GET'],
+    ['/api/actions', 'GET'], ['/api/actions/summary', 'GET'], [`/api/contacts/${other}`, 'GET'], ['/api/checks/run', 'POST'], ['/api/admin/checks', 'PUT']]) {
+    const r = await as(p, { method, ...(method !== 'GET' ? { body: '{}' } : {}) });
     assert.equal(r.status, 403, `${method} ${p}`);
   }
   // An admin who has entered one customer is held to that customer too.
