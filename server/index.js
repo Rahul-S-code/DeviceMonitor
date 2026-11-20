@@ -50,8 +50,8 @@ export function createApp({ dataDir = path.resolve(ROOT, process.env.DATA_DIR ||
       su.password = hashPassword(process.env.SUPERADMIN_PASSWORD);
       store.save();
       console.log('[seed] Super admin password updated from SUPERADMIN_PASSWORD');
-    }
-  }
+    } else if (su) console.log('[seed] Super admin password matches SUPERADMIN_PASSWORD');
+  } else if (production) console.warn('[seed] SUPERADMIN_PASSWORD is not set for this service; the super admin keeps its existing password');
   // Map base layers. OpenStreetMap's own tiles by default; MAP_TILE_URL adds a
   // self-hosted or other open tile server (e.g. https://tiles.example.com/{z}/{x}/{y}.png).
   const mapLayers = [
